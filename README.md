@@ -22,7 +22,7 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
   - C++23 debugging
   - planning
 - Random local initialization with no external base checkpoint
-- 3,596 unique bootstrap training records
+- 3,632 unique bootstrap training records
 - 320 disjoint held-out anchors
 - Full-weight shadow-candidate training
 - Exact-resume checkpoints containing model, optimizer, pending gradients, accumulation phase, data order/cursor, and CPU/CUDA random state
@@ -78,7 +78,7 @@ Launch the application. No manual setup sequence is required. **Automatic setup 
 
 When bootstrap is incomplete, ThreadSpire opens directly on **Connections**. The page shows the current phase, overall bootstrap progress, verified target tokens, elapsed time, measured ETA, and worker heartbeat. A training worker that stops reporting for 15 minutes is terminated and resumed from its exact checkpoint. The ETA is derived from measured completed steps rather than a fabricated fixed duration.
 
-Existing partial generations are preserved. Micro bootstrap now targets 12,000 cumulative steps by default (18,000 for Standard and 25,000 for Large) instead of stopping at the first undertrained checkpoint. Repair selects the strongest loss-gated descendant, decays its learning rate across cumulative progress, checkpoints exact state, and keeps the active generation untouched until held-out loss and generation canaries both pass.
+Existing partial generations are preserved. Micro bootstrap now targets 24,000 cumulative steps by default (36,000 for Standard and 50,000 for Large) instead of stopping at the first undertrained checkpoint. On upgrade, the bundled corpus and held-out anchors refresh while user-imported data and learned episodes remain intact. Repair selects the strongest loss-gated descendant, decays its learning rate across cumulative progress, checkpoints exact state, and keeps the active generation untouched until held-out loss and the stricter generation canaries both pass.
 
 The manual controls are collapsed by default behind **Show advanced recovery controls** and remain available only for deliberate recovery and diagnostics. **Stop** disables automatic recovery so the host does not immediately restart against the user's instruction.
 
@@ -145,7 +145,7 @@ This gate blocks obvious loops and corruption. It does not prove factual correct
 
 ## Bootstrap corpus
 
-`resources/bootstrap.jsonl` contains 3,596 unique training records spanning:
+`resources/bootstrap.jsonl` contains 3,632 unique training records spanning:
 
 - English conversation and instruction following
 - ordinary profanity without irrelevant refusal
@@ -175,7 +175,7 @@ Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `r
 
 ## Storage limits
 
-The **Storage & Logs** page refreshes in the background every five seconds and reports exact bytes and file counts without blocking the UI. Automatic retention applies only to recoverable ThreadSpire-owned artifacts:
+The main **Task** page now keeps three live cards in view: **Training Data**, **Active Model**, and **PyTorch / CUDA Runtime — Not Training Data**. The detailed **Storage & Logs** page refreshes in the background every five seconds and reports exact bytes and file counts without blocking the UI. Automatic retention applies only to recoverable ThreadSpire-owned artifacts:
 
 - active/internal repair history retains the active lineage and recent candidates (normally four protected/current generations)
 - repository trajectories retain at most 20 runs or 2 GiB

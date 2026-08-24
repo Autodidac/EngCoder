@@ -769,8 +769,9 @@ void test_internal_model_lifecycle_state_and_progress() {
     const auto state = threadspire::ai::runtime::inspect_internal_model_state(paths);
     require(state.manifest_valid && state.trained && !state.bootstrap_complete,
             "a four-step legacy generation must be detected as incomplete bootstrap state");
-    require(threadspire::ai::runtime::default_bootstrap_target(state) == 1200U,
-            "the persisted bootstrap target must be preserved");
+    require(!state.bootstrap_policy_current &&
+                threadspire::ai::runtime::default_bootstrap_target(state) == 24000U,
+            "a stale bootstrap policy must upgrade to the stronger micro target");
 
     const auto progress = threadspire::ai::runtime::read_internal_model_progress(paths);
     require(progress.available && !progress.stale && progress.step == 6U,
@@ -789,20 +790,37 @@ void test_storage_monitor_reports_exact_background_footprint() {
         root / "models" / "internal" / "generations" / "g000001");
     std::filesystem::create_directories(root / "trajectories" / "run-1");
     std::filesystem::create_directories(root / "logs");
+    std::filesystem::create_directories(root / "data");
+    std::filesystem::create_directories(root / "memory");
     std::ofstream(root / "runtime" / "stable.bin", std::ios::binary)
         << std::string(1024U, 'r');
     std::ofstream(
         root / "models" / "internal" / "generations" / "g000000" / "weights.bin",
         std::ios::binary) << std::string(4096U, 'm');
+    const std::string pointer_text{R"({"generation":"g000000"})"};
+    std::ofstream(root / "models" / "internal" / "active.json", std::ios::binary)
+        << pointer_text;
     std::ofstream(root / "logs" / "app.log", std::ios::binary)
         << std::string(16U, 'l');
+    std::ofstream(root / "data" / "bootstrap.jsonl", std::ios::binary)
+        << std::string(64U, 'd');
+    std::ofstream(root / "memory" / "episodes.jsonl", std::ios::binary)
+        << std::string(32U, 'e');
 
     const auto snapshot = threadspire::ai::runtime::inspect_storage(root, 3U);
-    require(snapshot.total_bytes == 5136U && snapshot.files == 3U,
+    const auto expected_total = 5136U + pointer_text.size() + 64U + 32U;
+    require(snapshot.total_bytes == expected_total && snapshot.files == 6U,
             "storage monitor must report exact recursive bytes and files");
     require(snapshot.generation_directories == 2U &&
                 snapshot.trajectory_directories == 1U,
             "storage monitor must count model generations and repository trajectories");
+    require(snapshot.training_data_bytes == 96U &&
+                snapshot.training_data_files == 2U &&
+                snapshot.active_generation == "g000000" &&
+                snapshot.active_model_bytes == 4096U &&
+                snapshot.active_model_files == 1U &&
+                snapshot.runtime_bytes == 1024U,
+            "storage monitor must surface training data, active model, and runtime sizes separately");
     require(!snapshot.largest_files.empty() &&
                 snapshot.largest_files.front().bytes == 4096U,
             "storage monitor must identify the largest application-data files");
@@ -854,8 +872,11 @@ void test_windows_ui_source_contract() {
                 ui.find("L\"Use tools\"") != std::string::npos &&
                 ui.find("models_manual_capabilities") != std::string::npos &&
                 ui.find("run_media_request") != std::string::npos &&
-                ui.find("update_storage_report") != std::string::npos,
-            "the Task surface must route text, code, repository, tool, image, and audio capabilities and expose live storage accounting");
+                ui.find("update_storage_report") != std::string::npos &&
+                ui.find("TRAINING DATA") != std::string::npos &&
+                ui.find("ACTIVE MODEL") != std::string::npos &&
+                ui.find("NOT TRAINING DATA") != std::string::npos,
+            "the Task surface must route every capability and prominently separate training-data, active-model, and runtime sizes");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
                 ui.find(".analysis_prompt = analysis_prompt") != std::string::npos,

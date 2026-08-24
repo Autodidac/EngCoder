@@ -1,5 +1,10 @@
 # Changelog
 
+- Replaced the permissive three-canary English gate with six deterministic fluency, exact-instruction, grammar, definition, and conversational-context checks; old v1-ready manifests now resume bootstrap instead of serving corrupt prose.
+- Extended the Micro/Standard/Large English bootstrap targets to 24k/36k/50k cumulative steps and added curriculum weighting plus grounded conversational examples without materially increasing disk usage.
+- Added always-visible live Training Data, Active Model, and PyTorch/CUDA Runtime size cards to the Task page, with the runtime explicitly labeled as not training data.
+- Strengthened local teacher and independent-verifier prompts to require complete grammatical English and reject invented fragments.
+
 ## 0.5.8
 
 - Bootstrap canary rejection now returns a repair-required result instead of being misreported as successful training followed by a failed host start.

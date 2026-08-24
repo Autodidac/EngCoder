@@ -25,6 +25,12 @@ struct StorageSnapshot final {
     std::filesystem::path root;
     std::uintmax_t total_bytes{0};
     std::size_t files{0};
+    std::uintmax_t training_data_bytes{0};
+    std::size_t training_data_files{0};
+    std::uintmax_t active_model_bytes{0};
+    std::size_t active_model_files{0};
+    std::uintmax_t runtime_bytes{0};
+    std::string active_generation;
     std::size_t generation_directories{0};
     std::size_t trajectory_directories{0};
     std::int64_t sampled_unix_ms{0};

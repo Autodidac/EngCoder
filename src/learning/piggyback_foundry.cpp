@@ -180,8 +180,9 @@ struct Verification final {
     std::string target_instruction;
     if (normalized.starts_with("english")) {
         target_instruction =
-            "Prioritize plain English comprehension, instruction following, factual explanations, "
-            "conversation, summarization, and precise wording. Do not introduce programming unless the task asks for it.";
+            "Prioritize complete grammatical English, natural conversation, instruction following, factual explanations, "
+            "summarization, and precise wording. Use complete sentences, vary sentence structure, reject fragments, "
+            "and do not introduce programming unless the task asks for it.";
     } else if (normalized.starts_with("cpp23")) {
         target_instruction =
             "Prioritize modern C++23 correctness, safety, performance, complete source-level answers, and buildable code.";
@@ -225,8 +226,8 @@ struct Verification final {
     backend::CompletionClient client;
     const auto prompt =
         "Evaluate a candidate training answer against a trusted reference. The candidate may use different "
-        "wording, but it must be correct, directly answer the task, preserve important constraints, and contain "
-        "no unsupported claims. Return JSON only with this exact shape: "
+        "wording, but it must be correct, directly answer the task, preserve important constraints, use fluent grammatical "
+        "sentences without invented fragments, and contain no unsupported claims. Return JSON only with this exact shape: "
         "{\"accepted\":true|false,\"score\":0.0,\"reason\":\"brief reason\"}.\n\n"
         "TASK:\n" + example.prompt +
         "\n\nTRUSTED REFERENCE:\n" + example.reference +

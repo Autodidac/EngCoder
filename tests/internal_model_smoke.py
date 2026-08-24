@@ -48,6 +48,15 @@ def main() -> int:
         assert not model.assess_generation_quality(
             "ND aterererere aterererererrerrere at atererorereroresterererrererest"
         ).accepted
+        assert not model.assess_generation_quality(
+            "30 Cou conthis a core bence A cthect in correcove c"
+        ).accepted
+        assert model.english_vocabulary_ratio(
+            "Throughput is the amount of work completed per unit of time."
+        ) >= 0.9
+        assert not model.assess_generation_quality(
+            "The application dooten respond.0 I coded the response."
+        ).accepted
         repeated = model.ByteTokenizer.encode_text("abcdefghabcdefgh")
         blocked = model.blocked_no_repeat_tokens(repeated, 8, 512)
         assert model.ByteTokenizer.encode_text("a")[0] in blocked

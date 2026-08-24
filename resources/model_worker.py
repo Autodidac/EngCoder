@@ -457,6 +457,7 @@ class ServerState:
                 and loaded.manifest.get("bootstrap_complete", False)
                 and loaded.manifest.get("full_backbone_trained", False)
                 and loaded.manifest.get("generation_ready", False)
+                and internal.manifest_uses_current_bootstrap_policy(loaded.manifest)
             ):
                 raise RuntimeError(
                     "ThreadSpire internal weights have not passed full-backbone bootstrap and generation readiness"

@@ -129,8 +129,10 @@ void materialize_embedded_resources(const AppPaths& paths) {
     write_resource(IDR_DEFAULT_MODELS, paths.model_registry, false);
     write_resource(IDR_SEED_DATA, paths.data / "seed.jsonl", false);
     write_resource(IDR_ANCHOR_DATA, paths.data / "anchors.jsonl", false);
-    write_resource(IDR_BOOTSTRAP_DATA, paths.bootstrap_dataset, false);
-    write_resource(IDR_BOOTSTRAP_ANCHORS, paths.bootstrap_anchors, false);
+    // These are versioned bundled sources, not user-authored evidence. Refresh them
+    // on upgrade so a resumed bootstrap actually receives the stronger curriculum.
+    write_resource(IDR_BOOTSTRAP_DATA, paths.bootstrap_dataset, true);
+    write_resource(IDR_BOOTSTRAP_ANCHORS, paths.bootstrap_anchors, true);
     write_resource(IDR_CUSTOM_TRAINING_TEMPLATE, paths.custom_training_template, false);
 }
 

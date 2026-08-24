@@ -39,7 +39,7 @@ Compiler and tests can provide deterministic verification. A model judging its o
 The bundled files are message-disjoint:
 
 ```text
-bootstrap.jsonl          3,596 unique training records
+bootstrap.jsonl          3,632 unique training records
 bootstrap_anchors.jsonl    320 held-out anchors
 ```
 

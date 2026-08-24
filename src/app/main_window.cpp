@@ -86,6 +86,9 @@ constexpr int chat_hint = 325;
 constexpr int chat_source_label = 326;
 constexpr int chat_source = 327;
 constexpr int chat_open_output = 328;
+constexpr int chat_training_data_size = 329;
+constexpr int chat_active_model_size = 330;
+constexpr int chat_runtime_size = 331;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -708,6 +711,20 @@ void draw_dark_text(
     } else {
         stream << minutes << L":" << std::setfill(L'0') << std::setw(2) << remaining;
     }
+    return stream.str();
+}
+
+[[nodiscard]] std::wstring format_bytes_compact(const std::uintmax_t bytes) {
+    constexpr std::array units{L"B", L"KiB", L"MiB", L"GiB", L"TiB"};
+    auto value = static_cast<double>(bytes);
+    std::size_t unit = 0U;
+    while (value >= 1024.0 && unit + 1U < units.size()) {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::wostringstream stream;
+    stream << std::fixed << std::setprecision(unit == 0U ? 0 : 2)
+           << value << L' ' << units[unit];
     return stream.str();
 }
 
@@ -1610,6 +1627,18 @@ void MainWindow::create_chat_page() {
     create_control(
         L"STATIC", L"AI source: connected local LLM • no responding model discovered yet",
         WS_CHILD | WS_VISIBLE, 0, id::chat_backend, parent);
+    create_control(
+        L"STATIC", L"TRAINING DATA\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_training_data_size, parent);
+    create_control(
+        L"STATIC", L"ACTIVE MODEL\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_active_model_size, parent);
+    create_control(
+        L"STATIC", L"PYTORCH / CUDA RUNTIME\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_runtime_size, parent);
 
     create_control(
         L"STATIC", L"Repository",
@@ -2235,7 +2264,21 @@ void MainWindow::layout_controls() {
         workspace_settings_width,
         row);
 
-    const auto workspace_repository_y = workspace_status_y + row + gap;
+    const auto workspace_storage_y = workspace_status_y + row + gap;
+    const auto workspace_storage_height = scaled(52, dpi_);
+    const auto workspace_storage_card_width = (width - gap * 2) / 3;
+    move_control(
+        control(id::chat_training_data_size),
+        0, workspace_storage_y, workspace_storage_card_width, workspace_storage_height);
+    move_control(
+        control(id::chat_active_model_size),
+        workspace_storage_card_width + gap, workspace_storage_y,
+        workspace_storage_card_width, workspace_storage_height);
+    move_control(
+        control(id::chat_runtime_size),
+        (workspace_storage_card_width + gap) * 2, workspace_storage_y,
+        width - (workspace_storage_card_width + gap) * 2, workspace_storage_height);
+    const auto workspace_repository_y = workspace_storage_y + workspace_storage_height + gap;
     const auto show_workspace_repository = workspace_coding_mode();
     for (const auto identifier : {
              id::chat_repository_label,
@@ -4799,8 +4842,8 @@ void MainWindow::create_internal_model(
         ? "large-local"
         : (selected_index == 1 ? "standard" : "micro");
     std::size_t bootstrap_target = selected_index == 2
-        ? 25000U
-        : (selected_index == 1 ? 18000U : 12000U);
+        ? 50000U
+        : (selected_index == 1 ? 36000U : 24000U);
 
     if (state.manifest_valid) {
         bootstrap_target = runtime::default_bootstrap_target(state);
@@ -6166,8 +6209,32 @@ void MainWindow::update_storage_report(const bool force) {
         }
     }
     if (snapshot.has_value()) {
+        std::wostringstream training_card;
+        training_card << L"TRAINING DATA\r\n"
+                      << format_bytes_compact(snapshot->training_data_bytes)
+                      << L" • " << snapshot->training_data_files << L" source files";
+        set_control_text(id::chat_training_data_size, training_card.str());
+        std::wostringstream model_card;
+        model_card << L"ACTIVE MODEL";
+        if (!snapshot->active_generation.empty()) {
+            model_card << L" — " << widen(snapshot->active_generation);
+        }
+        model_card << L"\r\n" << format_bytes_compact(snapshot->active_model_bytes);
+        set_control_text(id::chat_active_model_size, model_card.str());
+        set_control_text(
+            id::chat_runtime_size,
+            L"PYTORCH / CUDA RUNTIME — NOT TRAINING DATA\r\n" +
+                format_bytes_compact(snapshot->runtime_bytes));
+
         std::wostringstream report;
-        report << L"Total: " << format_bytes(snapshot->total_bytes)
+        report << L"Training data sources: " << format_bytes(snapshot->training_data_bytes)
+               << L" across " << snapshot->training_data_files << L" files"
+               << L"\r\nActive model " << widen(snapshot->active_generation) << L": "
+               << format_bytes(snapshot->active_model_bytes)
+               << L" across " << snapshot->active_model_files << L" files"
+               << L"\r\nPrivate PyTorch/CUDA runtime (not training data): "
+               << format_bytes(snapshot->runtime_bytes)
+               << L"\r\n\r\nTotal application data: " << format_bytes(snapshot->total_bytes)
                << L" across " << snapshot->files << L" files";
         if (storage_sample_available_) {
             const auto changed = static_cast<std::int64_t>(snapshot->total_bytes) -

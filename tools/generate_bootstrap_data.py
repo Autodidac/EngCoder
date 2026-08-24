@@ -39,8 +39,9 @@ def record(
     tags: Iterable[str],
     *,
     kind: str = "sft",
+    curriculum_weight: int = 1,
 ) -> dict:
-    return {
+    item = {
         "id": identifier,
         "domain": domain,
         "kind": kind,
@@ -54,6 +55,9 @@ def record(
         "tags": list(tags),
         "provenance": "threadspire-deterministic-bootstrap",
     }
+    if curriculum_weight > 1:
+        item["curriculum_weight"] = min(4, int(curriculum_weight))
+    return item
 
 
 def _slug(value: str) -> str:
@@ -132,8 +136,40 @@ def english_records() -> list[dict]:
                     prompt + suffix,
                     answer,
                     ("english", "conversation", "foundation"),
+                    curriculum_weight=3,
                 ))
                 index += 1
+
+    grounded_exchanges = [
+        ("The build stopped at the first compiler error.", "What should I inspect first?", "Inspect the first compiler error and the command that produced it."),
+        ("The test passed after the patch.", "What does that tell us?", "It is evidence that the patched behavior works for that test case."),
+        ("The application window is blank.", "Where should I start?", "Start with control visibility, layout dimensions, and z-order."),
+        ("The worker saved a checkpoint before stopping.", "Can training continue?", "Yes. Resume from the saved checkpoint instead of restarting the run."),
+        ("The active model stayed unchanged while a candidate trained.", "Why is that useful?", "It keeps serving stable while the candidate is evaluated in isolation."),
+        ("The response contains invented word fragments.", "Should it become training data?", "No. Reject it as negative evidence and do not treat it as a correct answer."),
+        ("The data directory is three megabytes.", "Is that the five-gigabyte runtime?", "No. The training data and the private machine-learning runtime are separate storage categories."),
+        ("The local teacher produced an answer.", "Is that enough to trust it?", "No. A distinct verifier or trusted reference should validate the answer before weight training."),
+        ("The held-out loss improved.", "Is the model automatically fluent?", "No. Loss improvement must be combined with generated-language and instruction-following checks."),
+        ("The server health check returned ready.", "What is running?", "The model host is running and has loaded a generation that passed its readiness policy."),
+        ("The file grew during training.", "What should the interface show?", "Show the current size, its category, and the change since the previous sample."),
+        ("The user selected a training package.", "Should that interrupt an active pass?", "No. Apply the selection at a safe boundary and preserve the active checkpoint."),
+    ]
+    grounded_systems = [
+        "Use the supplied facts and answer in complete plain-English sentences.",
+        "Answer the question directly from the context. Do not invent missing facts.",
+        "Respond as a practical assistant using clear grammatical English.",
+    ]
+    for system_index, system in enumerate(grounded_systems):
+        for exchange_index, (context, question, answer) in enumerate(grounded_exchanges):
+            out.append(record(
+                f"boot-eng-grounded-{system_index:02d}-{exchange_index:04d}",
+                "english",
+                system,
+                f"Context: {context} Question: {question}",
+                answer,
+                ("english", "conversation", "context", "foundation"),
+                curriculum_weight=2,
+            ))
 
     # Ordinary profanity and frustration must not trigger irrelevant refusals.
     reactions = [
@@ -1074,7 +1110,11 @@ def split_train_anchors(records: Sequence[dict], anchor_count: int) -> tuple[lis
     randomizer.shuffle(training)
     randomizer.shuffle(anchors)
     held_out = [
-        {**item, "id": "anchor-" + str(item["id"]), "provenance": "threadspire-held-out-anchor"}
+        {
+            **{key: value for key, value in item.items() if key != "curriculum_weight"},
+            "id": "anchor-" + str(item["id"]),
+            "provenance": "threadspire-held-out-anchor",
+        }
         for item in anchors
     ]
     return training, held_out

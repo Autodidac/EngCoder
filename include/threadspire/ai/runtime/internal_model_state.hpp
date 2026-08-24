@@ -16,7 +16,9 @@ struct InternalModelState final {
     bool bootstrap_complete{false};
     bool full_backbone_trained{false};
     bool generation_ready{false};
+    bool bootstrap_policy_current{false};
     std::string generation;
+    std::string bootstrap_policy;
     std::string status;
     std::string profile_name;
     std::string error;

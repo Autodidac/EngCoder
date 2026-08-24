@@ -18,6 +18,7 @@ from typing import Any
 
 ENGLISH_TARGET = "english-foundation"
 ENGLISH_INTERNAL_SCOPE = "english-core"
+BOOTSTRAP_POLICY = "full-backbone-english-v2"
 _INTERNAL_TRAIN_COMMAND = "train-internal"
 
 _CPP_LABELS = {
@@ -92,6 +93,9 @@ def established(data_root: Path | None = None) -> bool:
     ):
         document = read_json(data_root / "state" / name)
         if document is None:
+            continue
+        foundation = document.get("english_foundation") if isinstance(document, dict) else None
+        if not isinstance(foundation, dict) or foundation.get("bootstrap_policy") != BOOTSTRAP_POLICY:
             continue
         complete = False
         evaluated = False

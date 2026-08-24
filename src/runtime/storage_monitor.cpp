@@ -1,9 +1,14 @@
 #include "threadspire/ai/runtime/storage_monitor.hpp"
 
+#include "threadspire/ai/core/json.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <fstream>
+#include <iterator>
 #include <ranges>
+#include <string>
 #include <system_error>
 #include <utility>
 
@@ -86,6 +91,69 @@ void inspect_item(
     return count;
 }
 
+
+void measure_item(
+    std::uintmax_t& bytes,
+    std::size_t& files,
+    const std::filesystem::path& item,
+    const std::stop_token stop_token) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(item, error)) {
+        const auto size = std::filesystem::file_size(item, error);
+        if (!error) {
+            bytes += size;
+            ++files;
+        }
+        return;
+    }
+    error.clear();
+    if (!std::filesystem::is_directory(item, error)) {
+        return;
+    }
+    std::filesystem::recursive_directory_iterator iterator(
+        item,
+        std::filesystem::directory_options::skip_permission_denied,
+        error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (iterator != end && !stop_token.stop_requested()) {
+        if (iterator->is_regular_file(error) && !error) {
+            const auto size = iterator->file_size(error);
+            if (!error) {
+                bytes += size;
+                ++files;
+            }
+        }
+        error.clear();
+        iterator.increment(error);
+        error.clear();
+    }
+}
+
+[[nodiscard]] std::string read_active_generation(const std::filesystem::path& root) {
+    std::ifstream stream(
+        root / "models" / "internal" / "active.json",
+        std::ios::binary);
+    if (!stream) {
+        return {};
+    }
+    const std::string text{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    std::string parse_error;
+    const auto document = core::json::try_parse(text, parse_error);
+    if (!document.has_value()) {
+        return {};
+    }
+    const auto generation = core::json::string_or(document->find("generation"));
+    const std::filesystem::path component(generation);
+    if (generation.empty() || component.filename() != component ||
+        generation.find('/') != std::string::npos ||
+        generation.find('\\') != std::string::npos) {
+        return {};
+    }
+    return generation;
+}
+
 } // namespace
 
 StorageSnapshot inspect_storage(
@@ -109,6 +177,9 @@ StorageSnapshot inspect_storage(
                 .path = iterator->path(),
             };
             inspect_item(snapshot, category, iterator->path(), largest_file_count, stop_token);
+            if (category.name == "runtime") {
+                snapshot.runtime_bytes = category.bytes;
+            }
             snapshot.total_bytes += category.bytes;
             snapshot.files += category.files;
             snapshot.categories.push_back(std::move(category));
@@ -119,6 +190,25 @@ StorageSnapshot inspect_storage(
         snapshot.generation_directories = directory_count(
             root / "models" / "internal" / "generations");
         snapshot.trajectory_directories = directory_count(root / "trajectories");
+        measure_item(
+            snapshot.training_data_bytes,
+            snapshot.training_data_files,
+            root / "data",
+            stop_token);
+        measure_item(
+            snapshot.training_data_bytes,
+            snapshot.training_data_files,
+            root / "memory" / "episodes.jsonl",
+            stop_token);
+        snapshot.active_generation = read_active_generation(root);
+        if (!snapshot.active_generation.empty()) {
+            measure_item(
+                snapshot.active_model_bytes,
+                snapshot.active_model_files,
+                root / "models" / "internal" / "generations" /
+                    snapshot.active_generation,
+                stop_token);
+        }
     } catch (...) {
     }
     return snapshot;

@@ -15,6 +15,7 @@ _threadspire_curriculum_guard.install()
 
 
 from collections import Counter
+from functools import lru_cache
 from dataclasses import asdict, dataclass, field
 import codecs
 import hashlib
@@ -44,13 +45,17 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
-BOOTSTRAP_POLICY = "full-backbone-english-v1"
+BOOTSTRAP_POLICY = "full-backbone-english-v2"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
 SkillRoutes: TypeAlias = tuple[SkillRoute, ...]
 SkillInput: TypeAlias = Sequence[str] | Sequence[Sequence[str]]
 TrainingSequence: TypeAlias = tuple[list[int], list[int], SkillRoute]
+
+
+def manifest_uses_current_bootstrap_policy(manifest: dict[str, Any]) -> bool:
+    return str(manifest.get("bootstrap_policy", "")) == BOOTSTRAP_POLICY
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -88,7 +93,10 @@ def update_english_foundation_state(
     if not isinstance(prior, dict):
         prior = {}
     prior_evaluation = bool(prior.get("evaluation_passed", False))
-    prior_established = bool(prior.get("established", False))
+    prior_established = bool(
+        prior.get("established", False)
+        and prior.get("bootstrap_policy") == BOOTSTRAP_POLICY
+    )
 
     accepted_active_english = bool(promoted and evaluation_passed)
     evaluation_ready = prior_evaluation or accepted_active_english
@@ -934,6 +942,80 @@ def _looks_like_code(text: str) -> bool:
     return marker_count >= 2 or (marker_count >= 1 and brace_count >= 3)
 
 
+@lru_cache(maxsize=1)
+def _trusted_english_vocabulary() -> frozenset[str]:
+    """Build a compact vocabulary from the exact bundled trusted corpus.
+
+    This is a corruption detector, not a spelling authority. It gives the
+    output gate enough knowledge to reject drafts made mostly of invented word
+    fragments without shipping another language model or a large dictionary.
+    """
+
+    vocabulary = {
+        "a", "an", "and", "are", "as", "at", "be", "because", "but",
+        "by", "can", "do", "for", "from", "has", "have", "help", "how",
+        "i", "if", "in", "is", "it", "me", "not", "of", "on", "or",
+        "please", "ready", "that", "the", "this", "to", "was", "what",
+        "when", "where", "which", "will", "with", "you", "your",
+    }
+    module_path = Path(__file__).resolve()
+    candidates = (
+        module_path.parent.parent / "data" / "bootstrap.jsonl",
+        module_path.with_name("bootstrap.jsonl"),
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        item = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    domain = str(item.get("domain", item.get("skill", ""))).lower()
+                    tags = {str(tag).lower() for tag in item.get("tags", [])}
+                    if not (domain.startswith("english") or "english" in tags):
+                        continue
+                    for message in item.get("messages", []):
+                        if not isinstance(message, dict):
+                            continue
+                        vocabulary.update(
+                            word.lower().strip("'-")
+                            for word in re.findall(
+                                r"[A-Za-z][A-Za-z'-]*",
+                                str(message.get("content", "")),
+                            )
+                        )
+        except OSError:
+            continue
+        break
+    return frozenset(word for word in vocabulary if word)
+
+
+def english_vocabulary_ratio(text: str) -> float:
+    vocabulary = _trusted_english_vocabulary()
+    words = [
+        word.lower().strip("'-")
+        for word in re.findall(r"[A-Za-z][A-Za-z'-]*", text)
+        if len(word.strip("'-")) >= 3
+    ]
+    if not words:
+        return 1.0
+
+    def recognized(word: str) -> bool:
+        if word in vocabulary:
+            return True
+        for suffix in ("'s", "ing", "ed", "es", "s", "ly", "er"):
+            if word.endswith(suffix) and len(word) > len(suffix) + 2:
+                stem = word[:-len(suffix)]
+                if stem in vocabulary or (suffix == "ing" and stem + "e" in vocabulary):
+                    return True
+        return False
+
+    return sum(recognized(word) for word in words) / len(words)
+
+
 def assess_generation_quality(text: str) -> GenerationQuality:
     """Reject obvious corruption and repetition before a draft reaches the UI.
 
@@ -957,7 +1039,10 @@ def assess_generation_quality(text: str) -> GenerationQuality:
         return GenerationQuality(False, "repeated character-fragment loop")
 
     code_like = _looks_like_code(stripped)
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", stripped.lower())
+    raw_words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", stripped)
+    words = [word.lower() for word in raw_words]
+    if not code_like and re.search(r"(?<!\d)\.\d+[A-Za-z]*", stripped):
+        return GenerationQuality(False, "malformed sentence-number fragment")
     if words:
         run = 1
         maximum_run = 1
@@ -966,6 +1051,22 @@ def assess_generation_quality(text: str) -> GenerationQuality:
             maximum_run = max(maximum_run, run)
         if maximum_run >= (8 if code_like else 4):
             return GenerationQuality(False, "consecutive repeated-word loop")
+
+    if not code_like:
+        one_letter_fragments = sum(
+            len(word) == 1 and word.lower() not in {"a", "i"}
+            for word in raw_words
+        )
+        embedded_capitals = sum(
+            any(character.isupper() for character in word[1:])
+            for word in raw_words
+        )
+        if one_letter_fragments >= 2:
+            return GenerationQuality(False, "multiple one-letter word fragments")
+        if embedded_capitals >= 2:
+            return GenerationQuality(False, "multiple malformed capitalized fragments")
+        if len(words) >= 6 and english_vocabulary_ratio(stripped) < 0.45:
+            return GenerationQuality(False, "most generated words are not trusted English vocabulary")
 
     if len(words) >= 20:
         counts = Counter(words)
@@ -1095,66 +1196,124 @@ def evaluate_generation_readiness(
         device=device,
     )
     canaries = (
-        (
-            "lowercase",
-            [
-                {
-                    "role": "system",
-                    "content": "Return only the requested transformed text.",
-                },
-                {
-                    "role": "user",
-                    "content": "Convert this to lowercase: THREAD AND CHECKPOINT",
-                },
+        {
+            "name": "greeting",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Reply naturally in plain English."},
+                {"role": "user", "content": "Hi. Are you ready to help?"},
             ],
-            ("thread", "checkpoint"),
-        ),
-        (
-            "grammar",
-            [
-                {
-                    "role": "system",
-                    "content": "Correct the English and return only the sentence.",
-                },
+            "required_any": ("hello", "hi"),
+            "required_all": (),
+            "exact": (),
+            "minimum_vocabulary_ratio": 0.75,
+        },
+        {
+            "name": "lowercase",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Return only the requested transformed text."},
+                {"role": "user", "content": "Convert this to lowercase: THREAD AND CHECKPOINT"},
+            ],
+            "required_any": (),
+            "required_all": (),
+            "exact": ("thread and checkpoint",),
+            "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "grammar",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Correct the English and return only the sentence."},
                 {"role": "user", "content": "The application don't respond."},
             ],
-            ("application", "respond"),
-        ),
-        (
-            "definition",
-            [
+            "required_any": (),
+            "required_all": (),
+            "exact": (
+                "the application doesn't respond",
+                "the application does not respond",
+            ),
+            "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "definition",
+            "critical": True,
+            "messages": [
                 {"role": "system", "content": "Answer in precise, plain English."},
-                {
-                    "role": "user",
-                    "content": "Describe throughput without an analogy.",
-                },
+                {"role": "user", "content": "Describe throughput without an analogy."},
             ],
-            ("throughput", "time"),
-        ),
+            "required_any": (),
+            "required_all": ("throughput", "work", "time"),
+            "exact": (),
+            "minimum_vocabulary_ratio": 0.80,
+        },
+        {
+            "name": "direct-instruction",
+            "critical": False,
+            "messages": [
+                {"role": "system", "content": "Follow the user's format exactly."},
+                {"role": "user", "content": "Reply with exactly these two words: Ready now"},
+            ],
+            "required_any": (),
+            "required_all": (),
+            "exact": ("ready now",),
+            "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "conversation-context",
+            "critical": False,
+            "messages": [
+                {"role": "system", "content": "Respond as a practical local assistant."},
+                {"role": "user", "content": "The build failed after my change."},
+                {"role": "assistant", "content": "Show me the first error and the build command."},
+                {"role": "user", "content": "What should I inspect first?"},
+            ],
+            "required_any": ("error", "compiler", "log", "command"),
+            "required_all": (),
+            "exact": (),
+            "minimum_vocabulary_ratio": 0.75,
+        },
     )
     samples: list[dict[str, Any]] = []
     passed_count = 0
-    for name, messages, required_terms in canaries:
+    critical_passed = True
+    for canary in canaries:
         output = "".join(
             piece
             for piece, _ in generate_tokens(
-                loaded, messages, "fast", 64, 0.0, top_p=1.0
+                loaded, canary["messages"], "fast", 72, 0.0, top_p=1.0
             )
         ).strip()
         quality = assess_generation_quality(output)
-        semantic_match = all(term in output.lower() for term in required_terms)
-        sample_passed = quality.accepted and semantic_match
+        normalized = re.sub(r"[^a-z0-9']+", " ", output.lower()).strip()
+        exact = canary["exact"]
+        required_all = canary["required_all"]
+        required_any = canary["required_any"]
+        semantic_match = bool(
+            (not exact or normalized in exact)
+            and all(term in normalized for term in required_all)
+            and (not required_any or any(term in normalized for term in required_any))
+        )
+        vocabulary_ratio = english_vocabulary_ratio(output)
+        sample_passed = bool(
+            quality.accepted
+            and semantic_match
+            and vocabulary_ratio >= canary["minimum_vocabulary_ratio"]
+        )
         passed_count += int(sample_passed)
+        if canary["critical"] and not sample_passed:
+            critical_passed = False
         samples.append({
-            "name": name,
+            "name": canary["name"],
             "passed": sample_passed,
             "structural_quality": quality.accepted,
+            "semantic_match": semantic_match,
+            "vocabulary_ratio": vocabulary_ratio,
             "reason": quality.reason,
             "output": output,
         })
-    structurally_sound = all(bool(sample["structural_quality"]) for sample in samples)
     return GenerationReadiness(
-        passed=structurally_sound and passed_count >= 2,
+        passed=critical_passed and passed_count >= len(canaries) - 1,
         score=passed_count / len(canaries),
         samples=tuple(samples),
     )
@@ -1309,7 +1468,12 @@ def load_training_sequences(
                     "english-core", "cpp23-core", "cpp23-debugging", "planning"
                 }:
                     route = tuple(dict.fromkeys(("english-core", normalized_skill)))
-                sequences.append((tokens, labels, route))
+                sequence = (tokens, labels, route)
+                try:
+                    curriculum_weight = int(record.get("curriculum_weight", 1))
+                except (TypeError, ValueError):
+                    curriculum_weight = 1
+                sequences.extend([sequence] * max(1, min(curriculum_weight, 4)))
     return sequences
 
 
@@ -1476,7 +1640,10 @@ def train_candidate(
     if (
         training_data_scope == "english-core"
         and max(0, int(bootstrap_target_steps)) > 0
-        and not bool(loaded.manifest.get("bootstrap_complete", False))
+        and not (
+            bool(loaded.manifest.get("bootstrap_complete", False))
+            and manifest_uses_current_bootstrap_policy(loaded.manifest)
+        )
     ):
         repair_generation = resolve_bootstrap_repair_generation(
             state_root,
@@ -1502,11 +1669,15 @@ def train_candidate(
     prior_bootstrap_target = max(0, int(loaded.manifest.get("bootstrap_target_steps", 0)))
     effective_bootstrap_target = max(prior_bootstrap_target, max(0, int(bootstrap_target_steps)))
     prior_full_backbone = bool(loaded.manifest.get("full_backbone_trained", False))
-    prior_generation_ready = bool(loaded.manifest.get("generation_ready", False))
+    current_policy = manifest_uses_current_bootstrap_policy(loaded.manifest)
+    prior_generation_ready = bool(
+        loaded.manifest.get("generation_ready", False) and current_policy
+    )
     prior_bootstrap_complete = bool(
         loaded.manifest.get("bootstrap_complete", False)
         and prior_full_backbone
         and prior_generation_ready
+        and current_policy
     )
     bootstrap_backbone_required = bool(
         training_data_scope == "english-core"
@@ -2100,6 +2271,7 @@ def status_payload(state_root: Path) -> dict[str, Any]:
             and manifest.get("bootstrap_complete", False)
             and manifest.get("full_backbone_trained", False)
             and manifest.get("generation_ready", False)
+            and manifest_uses_current_bootstrap_policy(manifest)
         )
         return {
             "initialized": True,

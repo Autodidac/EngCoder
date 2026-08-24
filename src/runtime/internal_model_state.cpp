@@ -11,9 +11,12 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 
 namespace threadspire::ai::runtime {
 namespace {
+
+constexpr std::string_view current_bootstrap_policy = "full-backbone-english-v2";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -90,17 +93,17 @@ namespace {
 } // namespace
 
 std::size_t default_bootstrap_target(const InternalModelState& state) noexcept {
-    if (state.bootstrap_target_steps > 0U) {
+    if (state.bootstrap_policy_current && state.bootstrap_target_steps > 0U) {
         return state.bootstrap_target_steps;
     }
     const auto profile = lowercase(state.profile_name);
     if (profile.find("large") != std::string::npos) {
-        return 25000U;
+        return 50000U;
     }
     if (profile.find("standard") != std::string::npos) {
-        return 18000U;
+        return 36000U;
     }
-    return 12000U;
+    return 24000U;
 }
 
 InternalModelState inspect_internal_model_state(const app::AppPaths& paths) noexcept {
@@ -147,14 +150,17 @@ InternalModelState inspect_internal_model_state(const app::AppPaths& paths) noex
         state.tokens_seen = uint64_or(manifest->find("tokens_seen"));
         state.steps = size_or(manifest->find("steps"));
         state.bootstrap_target_steps = size_or(manifest->find("bootstrap_target_steps"));
+        state.bootstrap_policy = core::json::string_or(manifest->find("bootstrap_policy"));
+        state.bootstrap_policy_current = state.bootstrap_policy == current_bootstrap_policy;
         state.trained = state.status == "trained";
         state.full_backbone_trained = core::json::bool_or(
             manifest->find("full_backbone_trained"), false);
-        state.generation_ready = core::json::bool_or(
+        state.generation_ready = state.bootstrap_policy_current && core::json::bool_or(
             manifest->find("generation_ready"), false);
         state.bootstrap_complete =
             core::json::bool_or(manifest->find("bootstrap_complete"), false) &&
-            state.trained && state.full_backbone_trained && state.generation_ready;
+            state.trained && state.full_backbone_trained && state.generation_ready &&
+            state.bootstrap_policy_current;
         return state;
     } catch (const std::exception& exception) {
         state.error = exception.what();
