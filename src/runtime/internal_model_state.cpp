@@ -95,12 +95,12 @@ std::size_t default_bootstrap_target(const InternalModelState& state) noexcept {
     }
     const auto profile = lowercase(state.profile_name);
     if (profile.find("large") != std::string::npos) {
-        return 2500U;
+        return 25000U;
     }
     if (profile.find("standard") != std::string::npos) {
-        return 1800U;
+        return 18000U;
     }
-    return 1200U;
+    return 12000U;
 }
 
 InternalModelState inspect_internal_model_state(const app::AppPaths& paths) noexcept {

@@ -14,6 +14,7 @@
 #include "threadspire/ai/routing/router.hpp"
 #include "threadspire/ai/routing/task.hpp"
 #include "threadspire/ai/runtime/internal_model_state.hpp"
+#include "threadspire/ai/runtime/storage_monitor.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -779,6 +780,38 @@ void test_internal_model_lifecycle_state_and_progress() {
     std::filesystem::remove_all(root);
 }
 
+void test_storage_monitor_reports_exact_background_footprint() {
+    const auto root = temporary_root();
+    std::filesystem::create_directories(root / "runtime");
+    std::filesystem::create_directories(
+        root / "models" / "internal" / "generations" / "g000000");
+    std::filesystem::create_directories(
+        root / "models" / "internal" / "generations" / "g000001");
+    std::filesystem::create_directories(root / "trajectories" / "run-1");
+    std::filesystem::create_directories(root / "logs");
+    std::ofstream(root / "runtime" / "stable.bin", std::ios::binary)
+        << std::string(1024U, 'r');
+    std::ofstream(
+        root / "models" / "internal" / "generations" / "g000000" / "weights.bin",
+        std::ios::binary) << std::string(4096U, 'm');
+    std::ofstream(root / "logs" / "app.log", std::ios::binary)
+        << std::string(16U, 'l');
+
+    const auto snapshot = threadspire::ai::runtime::inspect_storage(root, 3U);
+    require(snapshot.total_bytes == 5136U && snapshot.files == 3U,
+            "storage monitor must report exact recursive bytes and files");
+    require(snapshot.generation_directories == 2U &&
+                snapshot.trajectory_directories == 1U,
+            "storage monitor must count model generations and repository trajectories");
+    require(!snapshot.largest_files.empty() &&
+                snapshot.largest_files.front().bytes == 4096U,
+            "storage monitor must identify the largest application-data files");
+    require(!snapshot.categories.empty() &&
+                snapshot.categories.front().name == "models",
+            "storage categories must be sorted by descending disk usage");
+    std::filesystem::remove_all(root);
+}
+
 void test_windows_ui_source_contract() {
     const auto source = std::filesystem::path(THREADSPIRE_SOURCE_DIR);
     const auto ui = read_text_file(source / "src/app/main_window.cpp");
@@ -800,10 +833,12 @@ void test_windows_ui_source_contract() {
                 ui.find("Start the model server on the Models page first") == std::string::npos &&
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
-    require(ui.find("L\"Workspace\"") != std::string::npos &&
-                ui.find("L\"Coding Agent\"") != std::string::npos &&
-                ui.find("L\"Local AI\"") != std::string::npos,
-            "Workspace, Coding Agent, and Local AI must remain the primary tabs");
+    require(ui.find("L\"Task\", Page::chat") != std::string::npos &&
+                ui.find("L\"Connections\", Page::models") != std::string::npos &&
+                ui.find("L\"Run Details\", Page::long_horizon") != std::string::npos &&
+                ui.find("L\"Storage & Logs\", Page::logs") != std::string::npos &&
+                ui.find("L\"Coding Agent\", Page::coding") == std::string::npos,
+            "the primary navigation must expose one Task surface with supporting connections, run details, and storage pages");
     require(ui.find("ThreadSpire — local evolving AI") != std::string::npos,
             "the user-facing application source must use the ThreadSpire product name");
     require(ui.find("L\"Connected local LLM\"") != std::string::npos &&
@@ -812,8 +847,15 @@ void test_windows_ui_source_contract() {
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
                 ui.find("id::chat_clear") != std::string::npos &&
-                ui.find("Ctrl+Enter sends") != std::string::npos,
+                ui.find("Ctrl+Enter runs") != std::string::npos,
             "the primary workspace must expose an explicit synchronized runtime source and complete conversation controls");
+    require(ui.find("L\"Generate image\"") != std::string::npos &&
+                ui.find("L\"Generate speech\"") != std::string::npos &&
+                ui.find("L\"Use tools\"") != std::string::npos &&
+                ui.find("models_manual_capabilities") != std::string::npos &&
+                ui.find("run_media_request") != std::string::npos &&
+                ui.find("update_storage_report") != std::string::npos,
+            "the Task surface must route text, code, repository, tool, image, and audio capabilities and expose live storage accounting");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
                 ui.find(".analysis_prompt = analysis_prompt") != std::string::npos,
@@ -1131,6 +1173,7 @@ int main() {
         test_reference_verified_evidence_can_incubate();
         test_targeted_and_custom_training_import();
         test_internal_model_lifecycle_state_and_progress();
+        test_storage_monitor_reports_exact_background_footprint();
         test_windows_ui_source_contract();
         test_worker_and_resource_contract();
         test_seed_material_counts();

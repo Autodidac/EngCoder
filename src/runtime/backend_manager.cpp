@@ -1,11 +1,15 @@
 #include "threadspire/ai/runtime/backend_manager.hpp"
 
+#include "threadspire/ai/core/json.hpp"
 #include "threadspire/ai/platform/process.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,7 +17,41 @@
 namespace threadspire::ai::runtime {
 namespace {
 
-[[nodiscard]] std::string last_log_line(const std::filesystem::path& log_path) {
+[[nodiscard]] std::string structured_log_detail(const std::string& tail) {
+    auto position = tail.rfind("\n{");
+    while (position != std::string::npos) {
+        const auto candidate = tail.substr(position + 1U);
+        std::string parse_error;
+        const auto document = core::json::try_parse(candidate, parse_error);
+        if (document.has_value()) {
+            const auto status = core::json::string_or(document->find("status"));
+            if (status == "rejected") {
+                const auto generation = core::json::string_or(document->find("generation"), "unknown");
+                const auto previous = core::json::number_or(document->find("previous_loss"), NAN);
+                const auto validation = core::json::number_or(document->find("validation_loss"), NAN);
+                const auto readiness = core::json::number_or(
+                    document->find("generation_readiness_score"), 0.0);
+                std::ostringstream detail;
+                detail << "candidate " << generation << " was not promoted";
+                if (std::isfinite(previous) && std::isfinite(validation)) {
+                    detail << " (held-out loss " << std::fixed << std::setprecision(4)
+                           << validation << " vs " << previous
+                           << "; canary score " << readiness << ')';
+                }
+                detail << "; the strongest saved candidate remains available for repair";
+                return detail.str();
+            }
+            const auto error = core::json::string_or(document->find("error"));
+            if (!error.empty()) {
+                return error;
+            }
+        }
+        position = position == 0U ? std::string::npos : tail.rfind("\n{", position - 1U);
+    }
+    return {};
+}
+
+[[nodiscard]] std::string last_log_detail(const std::filesystem::path& log_path) {
     std::ifstream stream(log_path, std::ios::binary);
     if (!stream) {
         return {};
@@ -29,6 +67,9 @@ namespace {
     std::string tail{
         std::istreambuf_iterator<char>(stream),
         std::istreambuf_iterator<char>()};
+    if (const auto detail = structured_log_detail(tail); !detail.empty()) {
+        return detail;
+    }
     while (!tail.empty() && (tail.back() == '\r' || tail.back() == '\n' || tail.back() == ' ' || tail.back() == '\t')) {
         tail.pop_back();
     }
@@ -44,6 +85,23 @@ namespace {
     return line;
 }
 
+void rotate_log_if_needed(const std::filesystem::path& log_path, const bool append) noexcept {
+    if (!append) {
+        return;
+    }
+    std::error_code error;
+    constexpr std::uintmax_t maximum_log_bytes = 16U * 1024U * 1024U;
+    if (!std::filesystem::is_regular_file(log_path, error) ||
+        std::filesystem::file_size(log_path, error) <= maximum_log_bytes || error) {
+        return;
+    }
+    auto previous = log_path;
+    previous += ".previous";
+    std::filesystem::remove(previous, error);
+    error.clear();
+    std::filesystem::rename(log_path, previous, error);
+}
+
 [[nodiscard]] util::OperationResult run_step(
     const std::filesystem::path& executable,
     std::vector<std::string> arguments,
@@ -52,6 +110,7 @@ namespace {
     const bool append,
     const std::stop_token stop_token,
     std::string step_name) {
+    rotate_log_if_needed(log_path, append);
     const auto result = platform::run_process(
         platform::ProcessSpec{
             .executable = executable,
@@ -77,7 +136,7 @@ namespace {
         };
     }
     if (result.exit_code != 0) {
-        const auto detail = last_log_line(log_path);
+        const auto detail = last_log_detail(log_path);
         return {
             .state = util::OperationState::failed,
             .exit_code = result.exit_code,

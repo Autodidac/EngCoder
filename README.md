@@ -1,6 +1,8 @@
 # ThreadSpire
 
-ThreadSpire is a single native Windows C++23 application for running and continuously improving a **locally initialized internal language model**.
+ThreadSpire is a local task workbench: describe one outcome, choose a capability, and run it through a compatible local model or tool harness. Text, code help, repository work, MCP tools, image generation, and speech generation share one **Task** interface. Connections, verified learning, detailed runs, and storage are supporting surfaces rather than separate competing products.
+
+ThreadSpire can also run and continuously improve a **locally initialized internal language model**. Learning is isolated from package/model selection: the selected training target changes only when the user changes it, foreground work preempts and checkpoints training, and automatic repair resumes the strongest quality-gated candidate.
 
 The internal model does not load Qwen, Llama, OpenAI, LM Studio, Ollama, or Hugging Face model weights. Its transformer weights are created from random initialization on the user's machine, trained by the private PyTorch worker, evaluated as shadow generations, and promoted only when the candidate passes the configured gates.
 
@@ -32,7 +34,9 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 - Trusted custom JSONL import with an embedded template, automatic shadow updates, and manual queue/retry
 - Fully dark owner-drawn Win32 tabs, buttons, selectors, edits, progress, and status surfaces
 - Optional external-model LoRA and FFN-delta tools retained under the advanced skill workflow
-- First-class C++23 Coding Agent, compiler/test trajectories, MCP tools, routing, logs, and rollback
+- One capability-aware Task surface for chat, code, repositories, MCP tools, OpenAI-compatible image generation, and speech generation
+- Compiler/test-backed repository trajectories with bounded history and rollback
+- Live application-data size, file count, growth delta, category totals, generation/run counts, and largest-file reporting
 
 ## Internal model profiles
 
@@ -72,9 +76,9 @@ Application state is stored under:
 
 Launch the application. No manual setup sequence is required. **Automatic setup and recovery** is enabled by default and performs the private-runtime installation, dependency verification, model initialization, exact checkpoint resume, bootstrap evaluation/promotion, and internal-host startup. If a stage fails, it reports the concrete reason and retries with bounded backoff. If the host later exits, it is restarted automatically.
 
-When bootstrap is incomplete, ThreadSpire opens directly on **Local AI**. The page shows the current phase, overall bootstrap progress, verified target tokens, elapsed time, measured ETA, and worker heartbeat. A training worker that stops reporting for 15 minutes is terminated and resumed from its exact checkpoint. The ETA is derived from measured completed steps rather than a fabricated fixed duration.
+When bootstrap is incomplete, ThreadSpire opens directly on **Connections**. The page shows the current phase, overall bootstrap progress, verified target tokens, elapsed time, measured ETA, and worker heartbeat. A training worker that stops reporting for 15 minutes is terminated and resumed from its exact checkpoint. The ETA is derived from measured completed steps rather than a fabricated fixed duration.
 
-Existing partial generations are preserved. A legacy Micro generation at four promoted steps, for example, resumes toward the 1,200-step bootstrap target rather than recreating random weights or waiting behind stale pause/inference markers.
+Existing partial generations are preserved. Micro bootstrap now targets 12,000 cumulative steps by default (18,000 for Standard and 25,000 for Large) instead of stopping at the first undertrained checkpoint. Repair selects the strongest loss-gated descendant, decays its learning rate across cumulative progress, checkpoints exact state, and keeps the active generation untouched until held-out loss and generation canaries both pass.
 
 The manual controls are collapsed by default behind **Show advanced recovery controls** and remain available only for deliberate recovery and diagnostics. **Stop** disables automatic recovery so the host does not immediately restart against the user's instruction.
 
@@ -160,13 +164,25 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 
 ## Interface
 
-1. **Workspace** — source selection, Assistant/Coding Agent mode, conversation, feedback, routing, tools, and learning state.
-2. **Coding Agent** — code-focused interaction and compiler/test-backed repository execution.
-3. **Local AI** — automatic internal-model lifecycle/progress, local-server discovery, MCP, and advanced recovery controls.
-4. **Learning** — an English-first but fully switchable target selector, automatic/manual evidence controls, trusted custom JSONL import, automatic shadow updates, manual queue/retry, and the live evidence/training pipeline.
-5. **Skill Modules** — internal skill generations, optional LoRA candidates, promotion, and rollback.
-6. **Long Horizon** — repeated inspect/build/test/repair loops.
-7. **Logs** — backend, compiler, training, and trajectory logs.
+1. **Task** — choose Ask/write, Code help, Repository task, Generate image, Generate speech, or Use tools; then select a compatible source/model and run it from the same prompt/output surface.
+2. **Connections** — local-server discovery, capability declarations, MCP, internal-model lifecycle/progress, and advanced recovery controls.
+3. **Learning** — persistent target selection, automatic/manual verified evidence, trusted JSONL import, shadow updates, and live training status.
+4. **Skills** — internal skill generations, optional LoRA candidates, promotion, and rollback.
+5. **Run Details** — advanced build/test commands and progress for repository tasks started from Task.
+6. **Storage & Logs** — live disk accounting plus backend, compiler, training, and trajectory logs.
+
+Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Task.
+
+## Storage limits
+
+The **Storage & Logs** page refreshes in the background every five seconds and reports exact bytes and file counts without blocking the UI. Automatic retention applies only to recoverable ThreadSpire-owned artifacts:
+
+- active/internal repair history retains the active lineage and recent candidates (normally four protected/current generations)
+- repository trajectories retain at most 20 runs or 2 GiB
+- generated images and generated audio each retain at most 100 recent files or 2 GiB
+- append-only backend logs rotate at 16 MiB and retain one previous file
+
+The private Python/PyTorch runtime is shown separately because it is large but normally stable; it is not repeatedly copied for each model generation.
 
 ## Validation
 

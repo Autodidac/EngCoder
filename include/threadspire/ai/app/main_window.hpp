@@ -2,6 +2,7 @@
 
 #include "threadspire/ai/app/app_paths.hpp"
 #include "threadspire/ai/backend/agent_orchestrator.hpp"
+#include "threadspire/ai/backend/media_client.hpp"
 #include "threadspire/ai/learning/continual_learning_service.hpp"
 #include "threadspire/ai/learning/piggyback_foundry.hpp"
 #include "threadspire/ai/long_horizon/runner.hpp"
@@ -9,6 +10,7 @@
 #include "threadspire/ai/models/local_provider.hpp"
 #include "threadspire/ai/models/model_registry.hpp"
 #include "threadspire/ai/runtime/backend_server.hpp"
+#include "threadspire/ai/runtime/storage_monitor.hpp"
 #include "threadspire/ai/util/async_operation.hpp"
 
 #include <Windows.h>
@@ -61,6 +63,15 @@ private:
         custom_model,
     };
 
+    enum class WorkspaceTask {
+        ask,
+        code_help,
+        repository,
+        image,
+        speech,
+        tool,
+    };
+
     enum class LifecycleAction {
         none,
         install_backend,
@@ -98,6 +109,8 @@ private:
     void update_piggyback_result();
     void update_learning_report();
     void update_skill_report();
+    void update_media_result();
+    void update_storage_report(bool force = false);
     void update_log_view();
     void flush_stream_text();
     void handle_command(int identifier);
@@ -113,6 +126,7 @@ private:
     void preview_route();
     void send_prompt();
     void send_coding_prompt();
+    void run_media_request(backend::MediaKind kind);
     void send_request(RequestSurface surface);
     void accept_last_response();
     void reject_last_response();
@@ -141,10 +155,13 @@ private:
     void start_long_horizon();
     void cancel_long_horizon();
     void update_long_horizon_result();
+    void select_page_tab(Page page);
 
     [[nodiscard]] models::ModelRegistry runtime_model_snapshot() const;
     [[nodiscard]] std::optional<models::ModelProfile> best_coding_model() const;
+    [[nodiscard]] WorkspaceTask workspace_task() const noexcept;
     [[nodiscard]] bool workspace_coding_mode() const;
+    [[nodiscard]] bool model_supports_workspace_task(const models::ModelProfile& model) const noexcept;
     [[nodiscard]] std::optional<std::string> selected_model_id() const;
     [[nodiscard]] bool source_accepts(const models::ModelProfile& model) const noexcept;
     void apply_source_filter(models::ModelRegistry& registry) const;
@@ -215,6 +232,8 @@ private:
     util::AsyncOperation piggyback_operation_;
     util::AsyncOperation chat_operation_;
     util::AsyncOperation long_horizon_operation_;
+    util::AsyncOperation media_operation_;
+    util::AsyncOperation storage_operation_;
     std::unordered_map<int, HWND> controls_;
     std::vector<HWND> page_windows_;
     std::filesystem::path active_log_;
@@ -225,12 +244,14 @@ private:
     std::optional<mcp::ConnectionResult> pending_mcp_result_;
     std::optional<learning::PiggybackResult> pending_piggyback_result_;
     std::optional<long_horizon::Result> pending_long_horizon_result_;
+    std::optional<backend::MediaResult> pending_media_result_;
+    std::optional<runtime::StorageSnapshot> pending_storage_snapshot_;
     mutable std::mutex stream_mutex_;
     std::string pending_stream_text_;
     int stream_target_control_{0};
     std::vector<std::string> model_selector_ids_;
     std::string preferred_model_id_;
-    InferenceSource inference_source_{InferenceSource::custom_model};
+    InferenceSource inference_source_{InferenceSource::automatic};
     std::string workspace_transcript_;
     std::vector<std::pair<std::string, std::string>> conversation_history_;
     std::size_t pending_transcript_heading_offset_{std::string::npos};
@@ -255,6 +276,10 @@ private:
     std::string custom_training_skill_{"custom-skill"};
     std::filesystem::path custom_training_dataset_;
     std::chrono::steady_clock::time_point next_piggyback_at_{};
+    std::chrono::steady_clock::time_point next_storage_refresh_{};
+    std::uintmax_t previous_storage_bytes_{0};
+    bool storage_sample_available_{false};
+    bool media_result_pending_{false};
 };
 
 } // namespace threadspire::ai::app

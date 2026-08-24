@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.30)
 
 project(
     ThreadSpire
-    VERSION 0.5.8
+    VERSION 0.6.0
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -33,11 +33,13 @@ set(THREADSPIRE_AI_CORE_SOURCES
     src/learning/piggyback_foundry.cpp
     src/backend/completion_client.cpp
     src/backend/agent_orchestrator.cpp
+    src/backend/media_client.cpp
     src/mcp/client.cpp
     src/long_horizon/runner.cpp
     src/runtime/backend_server.cpp
     src/runtime/backend_manager.cpp
     src/runtime/internal_model_state.cpp
+    src/runtime/storage_monitor.cpp
     src/resource/resource_governor.cpp
     src/util/async_operation.cpp)
 

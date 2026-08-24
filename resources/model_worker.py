@@ -1026,7 +1026,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "ThreadSpire/0.5.8"
+    server_version = "ThreadSpire/0.6.0"
 
     @property
     def state(self) -> ServerState:
@@ -2239,7 +2239,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "ThreadSpire", "version": "0.5.8"},
+                    "clientInfo": {"name": "ThreadSpire", "version": "0.6.0"},
                 },
             },
         )

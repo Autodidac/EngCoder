@@ -20,6 +20,54 @@
 namespace threadspire::ai::long_horizon {
 namespace {
 
+[[nodiscard]] std::uintmax_t tree_size(const std::filesystem::path& root) noexcept {
+    std::error_code error;
+    std::uintmax_t bytes = 0U;
+    std::filesystem::recursive_directory_iterator iterator(
+        root, std::filesystem::directory_options::skip_permission_denied, error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (iterator != end) {
+        if (iterator->is_regular_file(error) && !error) {
+            bytes += iterator->file_size(error);
+        }
+        error.clear();
+        iterator.increment(error);
+        error.clear();
+    }
+    return bytes;
+}
+
+void prune_trajectory_history(const std::filesystem::path& root) noexcept {
+    struct Entry final {
+        std::filesystem::file_time_type modified;
+        std::filesystem::path path;
+        std::uintmax_t bytes;
+    };
+    std::error_code error;
+    std::vector<Entry> entries;
+    for (std::filesystem::directory_iterator iterator(
+             root, std::filesystem::directory_options::skip_permission_denied, error), end;
+         iterator != end; iterator.increment(error), error.clear()) {
+        if (iterator->is_directory(error) && !error) {
+            entries.push_back({iterator->last_write_time(error), iterator->path(), tree_size(iterator->path())});
+        }
+        error.clear();
+    }
+    std::ranges::sort(entries, {}, &Entry::modified);
+    std::uintmax_t total = 0U;
+    for (const auto& entry : entries) {
+        total += entry.bytes;
+    }
+    constexpr std::size_t maximum_runs = 20U;
+    constexpr std::uintmax_t maximum_bytes = 2U * 1024U * 1024U * 1024U;
+    while (!entries.empty() && (entries.size() >= maximum_runs || total > maximum_bytes)) {
+        total -= std::min(total, entries.front().bytes);
+        std::filesystem::remove_all(entries.front().path, error);
+        error.clear();
+        entries.erase(entries.begin());
+    }
+}
+
 [[nodiscard]] std::string make_run_id() {
     static thread_local std::mt19937_64 generator(std::random_device{}());
     std::ostringstream stream;
@@ -503,7 +551,9 @@ Result run(const Request& request, const std::stop_token stop_token) {
         return result;
     }
 
-    result.run_directory = request.state_root / "trajectories" / make_run_id();
+    const auto trajectories_root = request.state_root / "trajectories";
+    prune_trajectory_history(trajectories_root);
+    result.run_directory = trajectories_root / make_run_id();
     std::filesystem::create_directories(result.run_directory);
     result.trajectory_path = result.run_directory / "trajectory.jsonl";
     std::ofstream(result.trajectory_path, std::ios::trunc).close();

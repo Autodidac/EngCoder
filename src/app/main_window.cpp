@@ -85,6 +85,7 @@ constexpr int chat_mcp_status = 324;
 constexpr int chat_hint = 325;
 constexpr int chat_source_label = 326;
 constexpr int chat_source = 327;
+constexpr int chat_open_output = 328;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -117,6 +118,8 @@ constexpr int models_manual_protocol = 406;
 constexpr int models_manual_coding = 407;
 constexpr int models_manual_teacher = 408;
 constexpr int models_manual_add = 409;
+constexpr int models_manual_capabilities_label = 438;
+constexpr int models_manual_capabilities = 439;
 constexpr int models_mcp_label = 410;
 constexpr int models_mcp_endpoint = 411;
 constexpr int models_mcp_connect = 412;
@@ -194,6 +197,9 @@ constexpr int horizon_report = 714;
 constexpr int logs_open = 800;
 constexpr int logs_open_root = 801;
 constexpr int logs_view = 802;
+constexpr int logs_refresh_storage = 803;
+constexpr int logs_storage = 804;
+constexpr int logs_storage_header = 805;
 } // namespace id
 
 
@@ -705,6 +711,21 @@ void draw_dark_text(
     return stream.str();
 }
 
+[[nodiscard]] std::wstring format_bytes(const std::uintmax_t bytes) {
+    constexpr std::array units{L"B", L"KiB", L"MiB", L"GiB", L"TiB"};
+    auto value = static_cast<double>(bytes);
+    std::size_t unit = 0U;
+    while (value >= 1024.0 && unit + 1U < units.size()) {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::wostringstream stream;
+    stream << std::fixed << std::setprecision(unit == 0U ? 0 : 2)
+           << value << L' ' << units[unit]
+           << L" (" << bytes << L" bytes)";
+    return stream.str();
+}
+
 struct LearningProgress final {
     bool available{false};
     std::string phase;
@@ -1041,7 +1062,7 @@ MainWindow::MainWindow(const HINSTANCE instance)
     } else if (preferred_source == "local") {
         inference_source_ = InferenceSource::local_bridge;
     } else {
-        inference_source_ = InferenceSource::custom_model;
+        inference_source_ = InferenceSource::automatic;
     }
 
     const auto saved_training_target = trim_line_endings(read_text(
@@ -1140,6 +1161,8 @@ MainWindow::~MainWindow() {
     piggyback_operation_.cancel();
     chat_operation_.cancel();
     long_horizon_operation_.cancel();
+    media_operation_.cancel();
+    storage_operation_.cancel();
 
     backend_operation_.wait();
     discovery_operation_.wait();
@@ -1147,6 +1170,8 @@ MainWindow::~MainWindow() {
     piggyback_operation_.wait();
     chat_operation_.wait();
     long_horizon_operation_.wait();
+    media_operation_.wait();
+    storage_operation_.wait();
 
     if (learning_service_ != nullptr) {
         learning_service_->request_stop();
@@ -1296,7 +1321,14 @@ LRESULT MainWindow::handle_message(
         const auto* header = reinterpret_cast<const NMHDR*>(lparam);
         if (header->idFrom == static_cast<UINT_PTR>(id::tabs) && header->code == TCN_SELCHANGE) {
             const auto selected = TabCtrl_GetCurSel(control(id::tabs));
-            show_page(static_cast<Page>(std::clamp(selected, 0, 6)));
+            TCITEMW item{};
+            item.mask = TCIF_PARAM;
+            if (selected >= 0 && TabCtrl_GetItem(control(id::tabs), selected, &item) != FALSE) {
+                show_page(static_cast<Page>(std::clamp<LONG_PTR>(
+                    item.lParam,
+                    static_cast<LONG_PTR>(Page::chat),
+                    static_cast<LONG_PTR>(Page::logs))));
+            }
         }
         return 0;
     }
@@ -1447,23 +1479,30 @@ void MainWindow::create_controls() {
         TCM_SETITEMSIZE,
         0,
         MAKELPARAM(scaled(150, dpi_), scaled(30, dpi_))));
-    for (const auto* label : {
-             L"Workspace",
-             L"Coding Agent",
-             L"Local AI",
-             L"Learning",
-             L"Skill Modules",
-             L"Long Horizon",
-             L"Logs"}) {
+    const std::array tabs_and_pages{
+        std::pair{L"Task", Page::chat},
+        std::pair{L"Connections", Page::models},
+        std::pair{L"Learning", Page::learning},
+        std::pair{L"Skills", Page::skills},
+        std::pair{L"Run Details", Page::long_horizon},
+        std::pair{L"Storage & Logs", Page::logs},
+    };
+    auto selected_tab = 0;
+    auto tab_index = 0;
+    for (const auto& [label, page] : tabs_and_pages) {
         TCITEMW item{};
-        item.mask = TCIF_TEXT;
+        item.mask = TCIF_TEXT | TCIF_PARAM;
         item.pszText = const_cast<wchar_t*>(label);
+        item.lParam = static_cast<LPARAM>(page);
         static_cast<void>(TabCtrl_InsertItem(tabs, TabCtrl_GetItemCount(tabs), &item));
+        selected_tab = page == page_ ? tab_index : selected_tab;
+        ++tab_index;
     }
     if (automatic_lifecycle_enabled_ && !internal_model_ready(paths_)) {
         page_ = Page::models;
+        selected_tab = 1;
     }
-    static_cast<void>(TabCtrl_SetCurSel(tabs, static_cast<int>(page_)));
+    static_cast<void>(TabCtrl_SetCurSel(tabs, selected_tab));
     create_control(
         L"STATIC", L"Discovering local AI…",
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
@@ -1523,14 +1562,22 @@ void MainWindow::create_controls() {
 void MainWindow::create_chat_page() {
     const auto parent = control(id::page_chat);
 
-    create_control(L"STATIC", L"Mode", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
+    create_control(L"STATIC", L"Task", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
     const auto mode = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_mode, parent);
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Assistant")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Ask / write")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Coding Agent")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Code help")));
+    static_cast<void>(::SendMessageW(
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Repository task")));
+    static_cast<void>(::SendMessageW(
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Generate image")));
+    static_cast<void>(::SendMessageW(
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Generate speech")));
+    static_cast<void>(::SendMessageW(
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Use tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
     create_control(L"STATIC", L"AI source", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
@@ -1602,7 +1649,7 @@ void MainWindow::create_chat_page() {
         static_cast<DWORD_PTR>(id::chat_send)));
 
     create_control(
-        L"BUTTON", L"Send", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        L"BUTTON", L"Run task", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
         0, id::chat_send, parent);
     create_control(
         L"BUTTON", L"Stop", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -1617,8 +1664,11 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Clear", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_clear, parent);
     create_control(
-        L"STATIC", L"Ctrl+Enter sends. Shift+Enter or Enter inserts a new line.",
+        L"STATIC", L"Ctrl+Enter runs. Shift+Enter or Enter inserts a new line.",
         WS_CHILD | WS_VISIBLE, 0, id::chat_hint, parent);
+    create_control(
+        L"BUTTON", L"Open outputs", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::chat_open_output, parent);
 
     create_control(
         L"STATIC", L"Execution details", WS_CHILD | WS_VISIBLE,
@@ -1775,6 +1825,13 @@ void MainWindow::create_models_page() {
     create_control(
         L"BUTTON", L"Add endpoint", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_manual_add, parent);
+
+    create_control(
+        L"STATIC", L"Capabilities", WS_CHILD | WS_VISIBLE,
+        0, id::models_manual_capabilities_label, parent);
+    create_control(
+        L"EDIT", L"chat,code,repository,tools", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::models_manual_capabilities, parent);
 
     create_control(
         L"STATIC", L"MCP tool servers",
@@ -2016,7 +2073,7 @@ void MainWindow::create_skills_page() {
 
 void MainWindow::create_long_horizon_page() {
     const auto parent = control(id::page_long_horizon);
-    create_control(L"STATIC", L"Git repository", WS_CHILD | WS_VISIBLE, 0, id::horizon_repository_label, parent);
+    create_control(L"STATIC", L"Repository", WS_CHILD | WS_VISIBLE, 0, id::horizon_repository_label, parent);
     create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::horizon_repository, parent);
@@ -2047,7 +2104,7 @@ void MainWindow::create_long_horizon_page() {
         BS_AUTOCHECKBOX, 0, id::horizon_clean, parent);
     set_checked(id::horizon_clean, true);
     create_control(
-        L"BUTTON", L"Start autonomous loop", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        L"BUTTON", L"Start / resume run", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
         0, id::horizon_start, parent);
     create_control(
         L"BUTTON", L"Cancel + rollback", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -2061,11 +2118,21 @@ void MainWindow::create_long_horizon_page() {
 void MainWindow::create_logs_page() {
     const auto parent = control(id::page_logs);
     create_control(
+        L"STATIC", L"Live application-data footprint (refreshes every 5 seconds)",
+        WS_CHILD | WS_VISIBLE, 0, id::logs_storage_header, parent);
+    create_control(
         L"BUTTON", L"Open active log", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::logs_open, parent);
     create_control(
         L"BUTTON", L"Open application data", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::logs_open_root, parent);
+    create_control(
+        L"BUTTON", L"Refresh sizes", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::logs_refresh_storage, parent);
+    create_control(
+        L"EDIT", L"Measuring storage in the background…", WS_CHILD | WS_VISIBLE | WS_BORDER |
+        ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        WS_EX_CLIENTEDGE, id::logs_storage, parent);
     create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
@@ -2128,10 +2195,10 @@ void MainWindow::layout_controls() {
     // Primary workspace: connection, model, conversation, coding mode, and learning state
     // are intentionally visible without requiring another tab.
     auto workspace_x = 0;
-    move_control(control(id::chat_mode_label), workspace_x, 0, scaled(44, dpi_), row);
-    workspace_x += scaled(48, dpi_);
-    move_control(control(id::chat_mode), workspace_x, 0, scaled(138, dpi_), row + scaled(120, dpi_));
-    workspace_x += scaled(138, dpi_) + gap;
+    move_control(control(id::chat_mode_label), workspace_x, 0, scaled(40, dpi_), row);
+    workspace_x += scaled(44, dpi_);
+    move_control(control(id::chat_mode), workspace_x, 0, scaled(190, dpi_), row + scaled(160, dpi_));
+    workspace_x += scaled(190, dpi_) + gap;
     move_control(control(id::chat_source_label), workspace_x, 0, scaled(62, dpi_), row);
     workspace_x += scaled(66, dpi_);
     move_control(control(id::chat_source), workspace_x, 0, scaled(218, dpi_), row + scaled(120, dpi_));
@@ -2251,6 +2318,7 @@ void MainWindow::layout_controls() {
     move_workspace_action(id::chat_accept, scaled(126, dpi_));
     move_workspace_action(id::chat_reject, scaled(82, dpi_));
     move_workspace_action(id::chat_clear, scaled(72, dpi_));
+    move_workspace_action(id::chat_open_output, scaled(112, dpi_));
     move_control(
         control(id::chat_hint),
         action_x,
@@ -2511,6 +2579,16 @@ void MainWindow::layout_controls() {
         width - add_endpoint_width,
         y,
         add_endpoint_width,
+        row);
+    y += row + gap * 2;
+    move_control(
+        control(id::models_manual_capabilities_label),
+        0, y, models_label_width, row);
+    move_control(
+        control(id::models_manual_capabilities),
+        models_label_width + gap,
+        y,
+        width - models_label_width - gap,
         row);
     y += row + gap * 2;
 
@@ -2865,7 +2943,13 @@ void MainWindow::layout_controls() {
 
     move_control(control(id::logs_open), 0, 0, button, row);
     move_control(control(id::logs_open_root), button + gap, 0, scaled(180, dpi_), row);
-    move_control(control(id::logs_view), 0, row + gap, width, height - row - gap);
+    move_control(control(id::logs_refresh_storage), button + gap + scaled(188, dpi_), 0, scaled(130, dpi_), row);
+    move_control(control(id::logs_storage_header), 0, row + gap, width, row);
+    const auto storage_y = row * 2 + gap;
+    const auto storage_height = std::max(scaled(180, dpi_), height * 44 / 100);
+    move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
+    const auto log_y = storage_y + storage_height + gap;
+    move_control(control(id::logs_view), 0, log_y, width, height - log_y);
 
     show_page(page_);
 }
@@ -2902,6 +2986,20 @@ void MainWindow::show_page(const Page page) {
     }
 }
 
+void MainWindow::select_page_tab(const Page page) {
+    const auto tabs = control(id::tabs);
+    const auto count = TabCtrl_GetItemCount(tabs);
+    for (auto index = 0; index < count; ++index) {
+        TCITEMW item{};
+        item.mask = TCIF_PARAM;
+        if (TabCtrl_GetItem(tabs, index, &item) != FALSE &&
+            item.lParam == static_cast<LPARAM>(page)) {
+            static_cast<void>(TabCtrl_SetCurSel(tabs, index));
+            return;
+        }
+    }
+}
+
 void MainWindow::handle_command(const int identifier) {
     switch (identifier) {
     case id::chat_route:
@@ -2925,7 +3023,7 @@ void MainWindow::handle_command(const int identifier) {
         open_local_ai_page();
         break;
     case id::chat_repository_browse: {
-        const auto selected = choose_directory(L"Select a repository for Coding Agent mode");
+        const auto selected = choose_directory(L"Select a repository for this task");
         if (selected.has_value()) {
             set_control_text(id::chat_repository, selected->wstring());
         }
@@ -3120,6 +3218,15 @@ void MainWindow::handle_command(const int identifier) {
     case id::logs_open_root:
         open_path(paths_.root);
         break;
+    case id::logs_refresh_storage:
+        update_storage_report(true);
+        break;
+    case id::chat_open_output: {
+        std::error_code error;
+        std::filesystem::create_directories(paths_.root / "outputs", error);
+        open_path(paths_.root / "outputs");
+        break;
+    }
     default:
         break;
     }
@@ -3127,16 +3234,26 @@ void MainWindow::handle_command(const int identifier) {
 
 
 void MainWindow::update_workspace_mode() {
-    const auto coding = workspace_coding_mode();
+    const auto task = workspace_task();
+    const auto label = [&]() -> const wchar_t* {
+        switch (task) {
+        case WorkspaceTask::ask: return L"Prompt";
+        case WorkspaceTask::code_help: return L"Code question or requested change";
+        case WorkspaceTask::repository: return L"Repository task";
+        case WorkspaceTask::image: return L"Image prompt";
+        case WorkspaceTask::speech: return L"Text to speak";
+        case WorkspaceTask::tool: return L"Tool task";
+        }
+        return L"Prompt";
+    }();
     set_control_text(
         id::chat_prompt_label,
-        coding ? L"Message to Coding Agent" : L"Message");
+        label);
     set_control_text(
         id::chat_response_label,
-        coding ? L"Conversation — Coding Agent" : L"Conversation");
-    set_status(coding
-        ? L"Workspace switched to Coding Agent mode"
-        : L"Workspace switched to Assistant mode");
+        task == WorkspaceTask::repository ? L"Task and verified run result" : L"Task output");
+    set_status(L"Task capability changed; the model list now shows only compatible sources");
+    refresh_model_selectors();
     layout_controls();
 }
 
@@ -3153,7 +3270,8 @@ void MainWindow::refresh_model_selectors() {
         backend_operation_.running();
     std::vector<models::ModelProfile> available;
     for (const auto& model : snapshot.models()) {
-        if (!model.enabled || !source_accepts(model)) {
+        if (!model.enabled || !source_accepts(model) ||
+            !model_supports_workspace_task(model)) {
             continue;
         }
         if (inference_source_ == InferenceSource::automatic &&
@@ -3381,12 +3499,24 @@ void MainWindow::update_model_selection(const int source_identifier) {
 }
 
 void MainWindow::stop_active_request() {
-    if (!chat_operation_.running()) {
-        set_status(L"No foreground model request is running");
+    if (chat_operation_.running()) {
+        chat_operation_.cancel();
+        set_status(L"Stopping the current local model request…");
         return;
     }
-    chat_operation_.cancel();
-    set_status(L"Stopping the current local model request…");
+    if (media_operation_.running()) {
+        media_operation_.cancel();
+        set_status(L"Stopping media generation…");
+        return;
+    }
+    if (long_horizon_operation_.running()) {
+        long_horizon_operation_.cancel();
+        set_status(L"Stopping the repository task at its next safe boundary…");
+        return;
+    }
+    {
+        set_status(L"No foreground model request is running");
+    }
 }
 
 void MainWindow::clear_workspace() {
@@ -3407,25 +3537,44 @@ void MainWindow::clear_workspace() {
     set_control_text(id::chat_plan, L"Waiting for a message.");
     set_control_text(
         id::chat_response,
-        L"Workspace cleared. Type below and select Send. "
-        L"Use Coding Agent mode for C++23 work.");
-    set_status(L"Workspace cleared");
+        L"Task cleared. Choose a capability, describe the outcome, and select Run task.");
+    set_status(L"Task cleared");
 }
 
 void MainWindow::open_local_ai_page() {
     show_page(Page::models);
-    static_cast<void>(TabCtrl_SetCurSel(
-        control(id::tabs),
-        static_cast<int>(Page::models)));
+    select_page_tab(Page::models);
     set_status(L"Local AI connections and MCP settings");
 }
 
+MainWindow::WorkspaceTask MainWindow::workspace_task() const noexcept {
+    const auto selection = static_cast<int>(::SendMessageW(
+        control(id::chat_mode), CB_GETCURSEL, 0, 0));
+    return static_cast<WorkspaceTask>(std::clamp(selection, 0, 5));
+}
+
 bool MainWindow::workspace_coding_mode() const {
-    return static_cast<int>(::SendMessageW(
-               control(id::chat_mode),
-               CB_GETCURSEL,
-               0,
-               0)) == 1;
+    const auto task = workspace_task();
+    return task == WorkspaceTask::code_help || task == WorkspaceTask::repository;
+}
+
+bool MainWindow::model_supports_workspace_task(const models::ModelProfile& model) const noexcept {
+    switch (workspace_task()) {
+    case WorkspaceTask::image:
+        return models::has_capability(model, "image") || models::has_capability(model, "image-generation");
+    case WorkspaceTask::speech:
+        return models::has_capability(model, "audio") || models::has_capability(model, "speech") ||
+               models::has_capability(model, "audio-generation");
+    case WorkspaceTask::repository:
+    case WorkspaceTask::code_help:
+        return model.coding_agent || models::has_capability(model, "code") ||
+               models::has_capability(model, "cpp23") || models::has_capability(model, "repository");
+    case WorkspaceTask::tool:
+        return model.supports_tools || models::has_capability(model, "tools");
+    case WorkspaceTask::ask:
+        return models::has_capability(model, "chat") || models::has_capability(model, "english");
+    }
+    return false;
 }
 
 std::optional<std::string> MainWindow::selected_model_id() const {
@@ -3606,6 +3755,14 @@ void MainWindow::preview_route() {
         }
     }
 
+    if (workspace_task() == WorkspaceTask::tool) {
+        analysis.kind = routing::TaskKind::tool_action;
+        analysis.needs_tools = true;
+        if (std::ranges::find(analysis.required_capabilities, "tools") ==
+            analysis.required_capabilities.end()) {
+            analysis.required_capabilities.push_back("tools");
+        }
+    }
     routing::AdaptiveRouter router;
     const auto plan = router.plan(analysis, snapshot);
     set_control_text(id::chat_plan, format_plan(plan, &snapshot));
@@ -3615,10 +3772,136 @@ void MainWindow::preview_route() {
 }
 
 void MainWindow::send_prompt() {
-    send_request(
-        workspace_coding_mode()
-            ? RequestSurface::workspace_coding
-            : RequestSurface::assistant);
+    switch (workspace_task()) {
+    case WorkspaceTask::repository:
+        run_coding_agent();
+        return;
+    case WorkspaceTask::image:
+        run_media_request(backend::MediaKind::image);
+        return;
+    case WorkspaceTask::speech:
+        run_media_request(backend::MediaKind::speech);
+        return;
+    case WorkspaceTask::code_help:
+        send_request(RequestSurface::workspace_coding);
+        return;
+    case WorkspaceTask::tool:
+    case WorkspaceTask::ask:
+        send_request(RequestSurface::assistant);
+        return;
+    }
+}
+
+void MainWindow::run_media_request(const backend::MediaKind kind) {
+    if (chat_operation_.running() || media_operation_.running() ||
+        long_horizon_operation_.running()) {
+        set_status(L"Another foreground task is already running");
+        return;
+    }
+    const auto prompt = narrow(control_text(id::chat_prompt));
+    if (prompt.empty()) {
+        set_status(kind == backend::MediaKind::image
+            ? L"Enter an image prompt first"
+            : L"Enter text to speak first");
+        return;
+    }
+
+    auto snapshot = runtime_model_snapshot();
+    apply_source_filter(snapshot);
+    for (auto& model : snapshot.models()) {
+        model.enabled = model.enabled && model_supports_workspace_task(model);
+    }
+    const models::ModelProfile* selected = nullptr;
+    if (const auto requested = selected_model_id(); requested.has_value()) {
+        selected = snapshot.find(*requested);
+        if (selected != nullptr && !selected->enabled) {
+            selected = nullptr;
+        }
+    } else {
+        for (const auto& model : snapshot.models()) {
+            if (!model.enabled) {
+                continue;
+            }
+            if (selected == nullptr) {
+                selected = &model;
+                continue;
+            }
+            const auto score = [](const models::ModelProfile& value) {
+                return value.priority * 1000.0 +
+                    value.quality * value.reliability * 100.0;
+            };
+            if (score(model) > score(*selected)) {
+                selected = &model;
+            }
+        }
+    }
+    if (selected == nullptr) {
+        const auto capability = kind == backend::MediaKind::image ? L"image" : L"speech/audio";
+        const auto error = L"No ready " + std::wstring(capability) +
+            L" model is configured. Add an OpenAI-compatible endpoint in Connections and advertise that capability.";
+        set_control_text(id::chat_response, error);
+        set_control_text(id::chat_plan, L"No compatible endpoint was selected; no request was sent.");
+        set_status(error);
+        return;
+    }
+
+    last_prompt_ = prompt;
+    last_response_.clear();
+    last_model_id_ = selected->id;
+    last_models_used_ = {selected->id};
+    last_tool_events_.clear();
+    routing::TaskAnalyzer analyzer;
+    last_analysis_ = analyzer.analyze(prompt);
+    workspace_transcript_ += workspace_transcript_.empty() ? "" : "\r\n";
+    workspace_transcript_ += kind == backend::MediaKind::image
+        ? "YOU — IMAGE REQUEST\r\n\r\n"
+        : "YOU — SPEECH REQUEST\r\n\r\n";
+    workspace_transcript_ += prompt + "\r\n\r\nGENERATING — " + selected->display_name + "\r\n";
+    set_control_text(id::chat_response, widen(workspace_transcript_));
+    set_control_text(id::chat_prompt, L"");
+    set_control_text(
+        id::chat_plan,
+        widen("Capability: " + std::string(kind == backend::MediaKind::image ? "image" : "speech") +
+            "\r\nModel: " + selected->display_name +
+            "\r\nEndpoint: " + selected->endpoint +
+            "\r\nOutput: " + (paths_.root / "outputs").string()));
+    set_status(kind == backend::MediaKind::image
+        ? L"Generating image…"
+        : L"Generating speech…");
+
+    learning_service_->set_interactive_busy(true);
+    media_result_pending_ = true;
+    const backend::MediaRequest request{
+        .kind = kind,
+        .model = *selected,
+        .prompt = prompt,
+        .output_root = paths_.root / "outputs",
+    };
+    if (!media_operation_.start(
+            [this, request](const std::stop_token token) {
+                struct BusyReset final {
+                    learning::ContinualLearningService* service;
+                    ~BusyReset() { service->set_interactive_busy(false); }
+                } reset{learning_service_.get()};
+                auto result = backend::MediaClient{}.generate(request, token);
+                const auto succeeded = result.succeeded;
+                const auto message = succeeded ? "media generation complete" : result.error;
+                {
+                    std::lock_guard lock(result_mutex_);
+                    pending_media_result_ = std::move(result);
+                }
+                return util::OperationResult{
+                    .state = succeeded ? util::OperationState::succeeded :
+                        (token.stop_requested() ? util::OperationState::cancelled : util::OperationState::failed),
+                    .exit_code = succeeded ? 0 : 1,
+                    .message = message,
+                };
+            },
+            kind == backend::MediaKind::image ? "generating image" : "generating speech")) {
+        learning_service_->set_interactive_busy(false);
+        media_result_pending_ = false;
+        set_status(L"Unable to schedule media generation");
+    }
 }
 
 void MainWindow::send_coding_prompt() {
@@ -3632,6 +3915,10 @@ void MainWindow::send_request(const RequestSurface surface) {
     }
     if (long_horizon_operation_.running()) {
         set_status(L"The build/test coding agent is using the inference lane");
+        return;
+    }
+    if (media_operation_.running()) {
+        set_status(L"Media generation is using the foreground inference lane");
         return;
     }
 
@@ -3656,6 +3943,11 @@ void MainWindow::send_request(const RequestSurface surface) {
 
     auto snapshot = runtime_model_snapshot();
     apply_source_filter(snapshot);
+    if (workspace) {
+        for (auto& model : snapshot.models()) {
+            model.enabled = model.enabled && model_supports_workspace_task(model);
+        }
+    }
     if (inference_source_ == InferenceSource::custom_model &&
         !backend_server_.running()) {
         const auto error =
@@ -3715,6 +4007,10 @@ void MainWindow::send_request(const RequestSurface surface) {
     } else {
         execution_prompt = recent_context;
         execution_prompt += "Current user message:\n" + raw_prompt;
+    }
+    if (workspace && workspace_task() == WorkspaceTask::tool) {
+        execution_prompt = "Use the available MCP tools to complete this task. Report each tool action and its result.\n\n" +
+            execution_prompt;
     }
 
     last_prompt_ = raw_prompt;
@@ -3779,10 +4075,13 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto* memory_store = &learning_service_->memory_store();
     const auto mcp_client = mcp_client_;
 
+    const auto routing_prompt = workspace && workspace_task() == WorkspaceTask::tool
+        ? std::string{"Use MCP tools to complete this task: "} + raw_prompt
+        : raw_prompt;
     const auto started = chat_operation_.start(
         [this,
          surface,
-         analysis_prompt = raw_prompt,
+         analysis_prompt = routing_prompt,
          execution_prompt = std::move(execution_prompt),
          internal_base_url,
          snapshot = std::move(snapshot),
@@ -4043,6 +4342,30 @@ void MainWindow::add_manual_local_ai() {
         protocol,
         checked(id::models_manual_coding),
         checked(id::models_manual_teacher));
+    const auto capabilities = narrow(control_text(id::models_manual_capabilities));
+    if (!capabilities.empty()) {
+        profile.capabilities.clear();
+        std::size_t begin = 0U;
+        while (begin <= capabilities.size()) {
+            const auto end = capabilities.find(',', begin);
+            auto item = capabilities.substr(
+                begin,
+                end == std::string::npos ? std::string::npos : end - begin);
+            const auto first = item.find_first_not_of(" \t\r\n");
+            const auto last = item.find_last_not_of(" \t\r\n");
+            if (first != std::string::npos) {
+                item = item.substr(first, last - first + 1U);
+                profile.capabilities.push_back(std::move(item));
+            }
+            if (end == std::string::npos) {
+                break;
+            }
+            begin = end + 1U;
+        }
+        profile.supports_tools = models::has_capability(profile, "tools");
+        profile.coding_agent = profile.coding_agent || models::has_capability(profile, "code") ||
+            models::has_capability(profile, "repository") || models::has_capability(profile, "cpp23");
+    }
     const auto display_name = profile.display_name;
     {
         std::lock_guard lock(model_mutex_);
@@ -4476,8 +4799,8 @@ void MainWindow::create_internal_model(
         ? "large-local"
         : (selected_index == 1 ? "standard" : "micro");
     std::size_t bootstrap_target = selected_index == 2
-        ? 2500U
-        : (selected_index == 1 ? 1800U : 1200U);
+        ? 25000U
+        : (selected_index == 1 ? 18000U : 12000U);
 
     if (state.manifest_valid) {
         bootstrap_target = runtime::default_bootstrap_target(state);
@@ -4776,12 +5099,18 @@ void MainWindow::browse_coding_repository() {
 }
 
 void MainWindow::run_coding_agent() {
-    const auto repository = control_text(id::coding_repository);
-    const auto task = control_text(id::coding_task);
+    const auto repository = control_text(id::chat_repository);
+    const auto task = control_text(id::chat_prompt);
     if (repository.empty() || task.empty()) {
         set_status(L"Select a repository and enter a coding task");
         return;
     }
+    last_prompt_ = narrow(task);
+    workspace_transcript_ += workspace_transcript_.empty() ? "" : "\r\n";
+    workspace_transcript_ += "YOU — REPOSITORY TASK\r\n\r\n" + last_prompt_ +
+        "\r\n\r\nRUN — BUILD / TEST / REPAIR\r\n\r\nStarting…\r\n";
+    set_control_text(id::chat_response, widen(workspace_transcript_));
+    set_control_text(id::chat_prompt, L"");
     set_control_text(id::horizon_repository, repository);
     set_control_text(id::horizon_task, task);
     long_horizon_from_coding_ = true;
@@ -4798,6 +5127,10 @@ void MainWindow::browse_repository() {
 void MainWindow::start_long_horizon() {
     if (long_horizon_operation_.running()) {
         set_status(L"An autonomous coding loop is already running");
+        return;
+    }
+    if (media_operation_.running()) {
+        set_status(L"Wait for media generation before starting the repository task");
         return;
     }
     if (chat_operation_.running()) {
@@ -4828,7 +5161,7 @@ void MainWindow::start_long_horizon() {
     if (!repair_model.has_value()) {
         set_status(L"No responding coding model is available. Discover a local coding model first.");
         show_page(Page::models);
-        TabCtrl_SetCurSel(control(id::tabs), static_cast<int>(Page::models));
+        select_page_tab(Page::models);
         return;
     }
 
@@ -4875,10 +5208,10 @@ void MainWindow::start_long_horizon() {
         L"Starting implementation -> build -> diagnose -> repair -> test loop…");
     if (long_horizon_from_coding_) {
         set_control_text(
-            id::coding_response,
-            L"Starting compiler/test-backed coding loop. Progress is also available on Long Horizon…");
+            id::chat_response,
+            widen(workspace_transcript_ + "\r\nProgress and advanced controls are available in Run Details.\r\n"));
     }
-    set_status(L"Coding agent started; background weight learning is yielding");
+    set_status(L"Repository task started; background weight learning is yielding");
     learning_service_->set_interactive_busy(true);
     static_cast<void>(long_horizon_operation_.start(
         [this, request, task, model_id = repair_model->id](const std::stop_token token) mutable {
@@ -4969,9 +5302,9 @@ void MainWindow::update_long_horizon_result() {
     const auto report_text = report.str();
     set_control_text(id::horizon_report, report_text);
     if (long_horizon_from_coding_) {
-        set_control_text(id::coding_response, report_text);
-        last_response_surface_ = RequestSurface::coding;
-        last_prompt_ = narrow(control_text(id::coding_task));
+        workspace_transcript_ += "\r\nREPOSITORY RUN RESULT\r\n\r\n" + narrow(report_text) + "\r\n";
+        set_control_text(id::chat_response, widen(workspace_transcript_));
+        last_response_surface_ = RequestSurface::workspace_coding;
         last_response_ = result->final_diff.empty()
             ? result->operation.message
             : result->final_diff;
@@ -5198,10 +5531,12 @@ void MainWindow::update_internal_model_lifecycle_ui() {
 
 void MainWindow::update_periodic_state() {
     update_chat_result();
+    update_media_result();
     update_discovery_result();
     update_mcp_result();
     update_piggyback_result();
     update_long_horizon_result();
+    update_storage_report();
     drive_automatic_lifecycle();
     update_internal_model_lifecycle_ui();
 
@@ -5250,6 +5585,10 @@ void MainWindow::update_periodic_state() {
         set_control_text(
             id::chat_learning_status,
             L"Foreground inference active. Background learning is paused.");
+    } else if (media_operation_.running()) {
+        set_control_text(
+            id::chat_learning_status,
+            L"Media generation active. Background learning is paused.");
     } else if (piggyback_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
@@ -5290,6 +5629,7 @@ void MainWindow::update_periodic_state() {
         !weight_update_busy &&
         !chat_operation_.running() &&
         !long_horizon_operation_.running() &&
+        !media_operation_.running() &&
         std::chrono::steady_clock::now() >= next_piggyback_at_) {
         generate_piggyback(true);
     }
@@ -5455,6 +5795,46 @@ void MainWindow::update_chat_result() {
             : L"Reply verified. Automatic teacher-data generation is disabled.");
 }
 
+void MainWindow::update_media_result() {
+    std::optional<backend::MediaResult> result;
+    {
+        std::lock_guard lock(result_mutex_);
+        if (pending_media_result_.has_value()) {
+            result = std::move(pending_media_result_);
+            pending_media_result_.reset();
+        }
+    }
+    if (!result.has_value()) {
+        return;
+    }
+    media_result_pending_ = false;
+    if (!result->succeeded) {
+        workspace_transcript_ += "ERROR — MEDIA GENERATION\r\n\r\n" +
+            (result->error.empty() ? std::string{"The media endpoint failed."} : result->error) +
+            "\r\n";
+        set_control_text(id::chat_response, widen(workspace_transcript_));
+        set_status(result->error == "media generation cancelled"
+            ? L"Media generation cancelled"
+            : L"Media generation failed — details are shown in Task");
+        return;
+    }
+
+    const auto kind = result->kind == backend::MediaKind::image ? "IMAGE" : "AUDIO";
+    workspace_transcript_ += std::string{"OUTPUT — "} + kind + "\r\n\r\n" +
+        result->output_path.string() + "\r\n";
+    set_control_text(id::chat_response, widen(workspace_transcript_));
+    set_control_text(
+        id::chat_plan,
+        widen("Completed\r\nModel: " + result->model_id +
+            "\r\nMIME type: " + result->mime_type +
+            "\r\nSaved file: " + result->output_path.string()));
+    last_response_.clear();
+    set_status(result->kind == backend::MediaKind::image
+        ? L"Image generated and saved; select Open outputs to view it"
+        : L"Speech generated and saved; select Open outputs to play it");
+    update_storage_report(true);
+}
+
 void MainWindow::update_discovery_result() {
     std::optional<models::ProviderDiscoveryReport> report;
     {
@@ -5500,7 +5880,7 @@ void MainWindow::update_discovery_result() {
     set_control_text(id::models_discovery_status, text.str());
     set_status(report->models.empty()
         ? L"No local model server found"
-        : L"Connected local AI is ready for Assistant and Coding Agent");
+        : L"Connected local AI is ready for compatible Task capabilities");
 }
 
 void MainWindow::update_mcp_result() {
@@ -5609,7 +5989,7 @@ void MainWindow::update_skill_report() {
     report << L"Skill modules\r\n"
            << L"Accepted memory is immediate. LoRA is the fast candidate layer; promoted full-rank modules remain independently versioned.\r\n\r\n";
     if (modules.empty()) {
-        report << L"No skill has accepted evidence yet. Use Assistant/Coding Agent acceptance or local teacher generation.";
+        report << L"No skill has accepted evidence yet. Accept a verified Task response or use local teacher generation.";
     }
     for (const auto& module : modules) {
         report << L"[" << widen(module.skill) << L"]\r\n"
@@ -5774,6 +6154,73 @@ void MainWindow::update_learning_report() {
         }
     }
     set_control_text(id::learning_jobs, report.str());
+}
+
+void MainWindow::update_storage_report(const bool force) {
+    std::optional<runtime::StorageSnapshot> snapshot;
+    {
+        std::lock_guard lock(result_mutex_);
+        if (pending_storage_snapshot_.has_value()) {
+            snapshot = std::move(pending_storage_snapshot_);
+            pending_storage_snapshot_.reset();
+        }
+    }
+    if (snapshot.has_value()) {
+        std::wostringstream report;
+        report << L"Total: " << format_bytes(snapshot->total_bytes)
+               << L" across " << snapshot->files << L" files";
+        if (storage_sample_available_) {
+            const auto changed = static_cast<std::int64_t>(snapshot->total_bytes) -
+                static_cast<std::int64_t>(previous_storage_bytes_);
+            report << L"\r\nChange since previous sample: "
+                   << (changed >= 0 ? L"+" : L"-")
+                   << format_bytes(static_cast<std::uintmax_t>(std::abs(changed)));
+        }
+        report << L"\r\nModel generations: " << snapshot->generation_directories
+               << L" (automatic retention keeps the active lineage plus recent repair candidates)"
+               << L"\r\nRepository trajectories: " << snapshot->trajectory_directories
+               << L" (bounded to 20 runs / 2 GiB)"
+               << L"\r\nGenerated media: bounded to 100 recent files per type / 2 GiB per type"
+               << L"\r\n\r\nTop-level usage\r\n";
+        for (const auto& category : snapshot->categories) {
+            report << L"  " << widen(category.name) << L": "
+                   << format_bytes(category.bytes) << L" • "
+                   << category.files << L" files\r\n";
+        }
+        report << L"\r\nLargest files\r\n";
+        for (const auto& file : snapshot->largest_files) {
+            report << L"  " << file.relative_path.wstring() << L": "
+                   << format_bytes(file.bytes) << L"\r\n";
+        }
+        previous_storage_bytes_ = snapshot->total_bytes;
+        storage_sample_available_ = true;
+        set_control_text(id::logs_storage, report.str());
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (storage_operation_.running() || (!force && now < next_storage_refresh_)) {
+        return;
+    }
+    next_storage_refresh_ = now + std::chrono::seconds(5);
+    if (force) {
+        set_status(L"Refreshing application-data sizes in the background…");
+    }
+    static_cast<void>(storage_operation_.start(
+        [this](const std::stop_token token) {
+            auto value = runtime::inspect_storage(paths_.root, 8U, token);
+            {
+                std::lock_guard lock(result_mutex_);
+                pending_storage_snapshot_ = std::move(value);
+            }
+            return util::OperationResult{
+                .state = token.stop_requested()
+                    ? util::OperationState::cancelled
+                    : util::OperationState::succeeded,
+                .exit_code = token.stop_requested() ? 1 : 0,
+                .message = token.stop_requested() ? "storage scan cancelled" : "storage scan complete",
+            };
+        },
+        "measuring application-data storage"));
 }
 
 void MainWindow::update_log_view() {

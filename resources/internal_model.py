@@ -676,19 +676,22 @@ def resolve_bootstrap_repair_generation(
 
     candidates: list[tuple[float, float, int, int, str]] = []
     for generation, manifest in manifests.items():
-        if generation == active_generation or not descends_from_active(generation):
+        if generation == active_generation:
             continue
         if manifest.get("status") != "candidate-rejected":
+            continue
+        try:
+            metrics = json.loads((paths[generation] / "metrics.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            continue
+        recorded_active = str(metrics.get("active_generation_at_start", ""))
+        if not descends_from_active(generation) and recorded_active != active_generation:
             continue
         if manifest.get("bootstrap_policy") != BOOTSTRAP_POLICY:
             continue
         if canonical_training_scope(str(manifest.get("training_data_scope", ""))) != "english-core":
             continue
         if bool(manifest.get("bootstrap_complete", False)) or bool(manifest.get("generation_ready", False)):
-            continue
-        try:
-            metrics = json.loads((paths[generation] / "metrics.json").read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError, json.JSONDecodeError):
             continue
         if not bool(metrics.get("loss_gate_passed", False)):
             continue
@@ -704,6 +707,59 @@ def resolve_bootstrap_repair_generation(
             generation,
         ))
     return max(candidates)[-1] if candidates else None
+
+
+def prune_internal_artifacts(
+    state_root: Path,
+    protected_generations: set[str],
+    keep_generations: int = 4,
+) -> tuple[int, int]:
+    """Bound recoverable history without touching the active or current lineage."""
+    generations_root = internal_root(state_root) / "generations"
+    if not generations_root.is_dir():
+        return 0, 0
+    candidates: list[tuple[int, str, Path]] = []
+    for path in generations_root.iterdir():
+        if not path.is_dir() or path.name.endswith(".tmp") or path.name in protected_generations:
+            continue
+        try:
+            manifest = generation_manifest(path)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            continue
+        if manifest.get("status") not in {"candidate-rejected", "trained-candidate"}:
+            continue
+        candidates.append((int(manifest.get("created_unix_ms", 0)), path.name, path))
+    candidates.sort(reverse=True)
+    retained_total = len(protected_generations)
+    removable = candidates[max(0, keep_generations - retained_total):]
+    removed = 0
+    reclaimed = 0
+    checkpoints_root = internal_root(state_root) / "checkpoints"
+    for _, generation, path in removable:
+        try:
+            reclaimed += sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+            shutil.rmtree(path)
+            removed += 1
+            if checkpoints_root.is_dir():
+                for checkpoint in checkpoints_root.glob(f"{generation}-*"):
+                    shutil.rmtree(checkpoint, ignore_errors=True)
+        except OSError:
+            continue
+    return removed, reclaimed
+
+
+def bootstrap_learning_rate(
+    initial_rate: float,
+    prior_steps: int,
+    current_steps: int,
+    target_steps: int,
+) -> float:
+    """Cosine-decay the full bootstrap history instead of restarting hot each pass."""
+    if target_steps <= 0:
+        return initial_rate
+    progress = min(1.0, max(0.0, (prior_steps + current_steps) / target_steps))
+    multiplier = 0.10 + 0.90 * 0.5 * (1.0 + math.cos(math.pi * progress))
+    return initial_rate * multiplier
 
 
 def save_generation(
@@ -1458,6 +1514,19 @@ def train_candidate(
         and not prior_bootstrap_complete
     )
     optimizer_scope = "all" if bootstrap_backbone_required else training_data_scope
+    if bootstrap_backbone_required:
+        # The desktop may only know the active generation's step count. Once a
+        # repair descendant is selected, cap this pass against that candidate's
+        # cumulative history so retries cannot overshoot by a full bootstrap.
+        # If the target has been reached but canaries still fail, use one small
+        # extension window rather than an ineffective one-step retry.
+        if prior_total_steps < effective_bootstrap_target:
+            maximum_steps = min(
+                max(1, int(maximum_steps)),
+                effective_bootstrap_target - prior_total_steps,
+            )
+        else:
+            maximum_steps = max(1, effective_bootstrap_target // 10)
     scope_filter = (
         None
         if training_data_scope in {"all", "core", "bootstrap", "general"}
@@ -1476,7 +1545,9 @@ def train_candidate(
     if not sequences:
         raise RuntimeError("no verified internal-model training examples were available")
     parameters = configure_training_scope(model, optimizer_scope)
-    optimizer = torch.optim.AdamW(parameters, lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1)
+    initial_learning_rate = bootstrap_learning_rate(
+        learning_rate, prior_total_steps, 0, effective_bootstrap_target)
+    optimizer = torch.optim.AdamW(parameters, lr=initial_learning_rate, betas=(0.9, 0.95), weight_decay=0.1)
     use_amp = device.type == "cuda"
     amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
     write_progress(
@@ -1620,6 +1691,11 @@ def train_candidate(
                     cursor = 0
                 batch_items.append(sequences[order[cursor]])
                 cursor += 1
+            if bootstrap_backbone_required:
+                rate = bootstrap_learning_rate(
+                    learning_rate, prior_total_steps, steps, effective_bootstrap_target)
+                for group in optimizer.param_groups:
+                    group["lr"] = rate
             input_ids, labels, active_skills = collate_batch(batch_items, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 result = model(input_ids, skills=active_skills, labels=labels)
@@ -1855,6 +1931,13 @@ def train_candidate(
             validation_loss=validation_loss,
         )
     metrics["english_foundation_established"] = english_established
+    active_pointer = resolve_active_generation(state_root).name
+    removed_generations, reclaimed_bytes = prune_internal_artifacts(
+        state_root,
+        {active_pointer, generation, parent},
+    )
+    metrics["retention_removed_generations"] = removed_generations
+    metrics["retention_reclaimed_bytes"] = reclaimed_bytes
     atomic_write_text(path / "metrics.json", json.dumps(metrics, indent=2) + "\n")
     needs_bootstrap_repair = bool(effective_bootstrap_target > 0 and not promoted)
     write_progress(

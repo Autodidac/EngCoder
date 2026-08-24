@@ -262,7 +262,7 @@ HttpResponse http_request(const HttpRequest& request, HttpChunkCallback on_chunk
     }
 
     InternetHandle session(::WinHttpOpen(
-        L"ThreadSpire/0.5.8",
+        L"ThreadSpire/0.6.0",
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
