@@ -1,0 +1,12 @@
+/out/
+/.vs/
+/.vscode/
+__pycache__/
+*.py[cod]
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.log
+*.tmp
+.DS_Store

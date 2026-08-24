@@ -1,0 +1,1518 @@
+#include "threadspire/ai/learning/continual_learning_service.hpp"
+
+#include "threadspire/ai/platform/process.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <fstream>
+#include <iterator>
+#include <ranges>
+#include <sstream>
+#include <string_view>
+#include <utility>
+
+namespace threadspire::ai::learning {
+namespace {
+
+[[nodiscard]] std::string make_job_id(const std::string_view skill) {
+    return "learn-" + normalize_skill(skill) + '-' + std::to_string(memory::now_unix_ms());
+}
+
+void set_marker(const std::filesystem::path& path, const bool enabled) {
+    std::error_code error;
+    if (enabled) {
+        std::filesystem::create_directories(path.parent_path(), error);
+        std::ofstream stream(path, std::ios::trunc);
+        stream << "1\n";
+    } else {
+        std::filesystem::remove(path, error);
+    }
+}
+
+[[nodiscard]] double read_metric(
+    const std::filesystem::path& path,
+    const std::string_view key,
+    const double fallback) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        return fallback;
+    }
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    const auto marker = '"' + std::string(key) + '"';
+    auto position = contents.find(marker);
+    if (position == std::string::npos) {
+        return fallback;
+    }
+    position = contents.find(':', position + marker.size());
+    if (position == std::string::npos) {
+        return fallback;
+    }
+    try {
+        return std::stod(contents.substr(position + 1U));
+    } catch (...) {
+        return fallback;
+    }
+}
+
+[[nodiscard]] std::string read_string_metric(
+    const std::filesystem::path& path,
+    const std::string_view key) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        return {};
+    }
+    const std::string contents{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    const auto marker = '"' + std::string(key) + '"';
+    auto position = contents.find(marker);
+    if (position == std::string::npos) {
+        return {};
+    }
+    position = contents.find(':', position + marker.size());
+    if (position == std::string::npos) {
+        return {};
+    }
+    position = contents.find('"', position + 1U);
+    if (position == std::string::npos) {
+        return {};
+    }
+    const auto end = contents.find('"', position + 1U);
+    if (end == std::string::npos) {
+        return {};
+    }
+    return contents.substr(position + 1U, end - position - 1U);
+}
+
+[[nodiscard]] std::filesystem::path candidate_root(
+    const LearningSettings& settings,
+    const std::string_view candidate_id) {
+    return settings.state_root / "candidates" / std::string(candidate_id);
+}
+
+void clear_training_markers(const std::filesystem::path& state_root) noexcept {
+    std::error_code error;
+    std::filesystem::remove(state_root / "control" / "training.active", error);
+    error.clear();
+    std::filesystem::remove(state_root / "control" / "training.requested", error);
+}
+
+constexpr int preempted_exit_code = 75;
+
+[[nodiscard]] bool terminal_state(const LearningJobState state) noexcept {
+    switch (state) {
+    case LearningJobState::succeeded:
+    case LearningJobState::failed:
+    case LearningJobState::cancelled:
+    case LearningJobState::interrupted:
+        return true;
+    case LearningJobState::queued:
+    case LearningJobState::waiting_for_resources:
+    case LearningJobState::training_lora:
+    case LearningJobState::training_internal:
+    case LearningJobState::validating:
+    case LearningJobState::consolidating:
+        return false;
+    }
+    return false;
+}
+
+[[nodiscard]] std::filesystem::path internal_generation_path(
+    const std::filesystem::path& state_root,
+    const std::string_view generation) {
+    return state_root / "models" / "internal" / "generations" / std::string(generation);
+}
+
+[[nodiscard]] std::string internal_generation_name(const std::filesystem::path& path) {
+    const auto value = path.filename().string();
+    return value.starts_with('g') ? value : std::string{};
+}
+
+[[nodiscard]] std::string internal_training_scope(const std::string_view skill) {
+    const auto normalized = normalize_skill(skill);
+    if (normalized == "cpp23-debugging" || normalized.starts_with("cpp23-debug") ||
+        normalized.find("compiler") != std::string::npos ||
+        normalized.find("repair") != std::string::npos) {
+        return "cpp23-debugging";
+    }
+    if (normalized == "planning" || normalized.find("planning") != std::string::npos ||
+        normalized.find("architecture") != std::string::npos ||
+        normalized.find("long-horizon") != std::string::npos ||
+        normalized == "tool-use") {
+        return "planning";
+    }
+    if (normalized == "cpp23-core" || normalized.starts_with("cpp23-") ||
+        normalized == "build-systems") {
+        return "cpp23-core";
+    }
+    return "english-core";
+}
+
+void publish_file(
+    const std::filesystem::path& destination,
+    const std::string_view contents) {
+    std::filesystem::create_directories(destination.parent_path());
+    const auto temporary = destination.string() + ".tmp";
+    {
+        std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+        stream << contents;
+        stream.flush();
+        if (!stream) {
+            throw std::runtime_error("unable to write state file: " + destination.string());
+        }
+    }
+    std::error_code error;
+    std::filesystem::remove(destination, error);
+    error.clear();
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        throw std::runtime_error("unable to publish state file: " + error.message());
+    }
+}
+
+} // namespace
+
+std::string_view to_string(const LearningJobState state) noexcept {
+    switch (state) {
+    case LearningJobState::queued:
+        return "queued";
+    case LearningJobState::waiting_for_resources:
+        return "waiting-for-resources";
+    case LearningJobState::training_lora:
+        return "training-lora";
+    case LearningJobState::training_internal:
+        return "training-internal";
+    case LearningJobState::validating:
+        return "validating";
+    case LearningJobState::consolidating:
+        return "consolidating";
+    case LearningJobState::succeeded:
+        return "succeeded";
+    case LearningJobState::failed:
+        return "failed";
+    case LearningJobState::cancelled:
+        return "cancelled";
+    case LearningJobState::interrupted:
+        return "interrupted";
+    }
+    return "queued";
+}
+
+ContinualLearningService::ContinualLearningService(LearningSettings settings)
+    : settings_(std::move(settings)),
+      memory_store_(settings_.state_root / "memory" / "episodes.jsonl"),
+      expert_registry_(settings_.state_root / "experts" / "registry"),
+      candidate_registry_(settings_.state_root / "candidates" / "registry"),
+      resource_governor_(settings_.resource_policy) {
+    std::filesystem::create_directories(settings_.state_root / "jobs");
+    std::filesystem::create_directories(settings_.state_root / "control");
+    expert_registry_.load();
+    candidate_registry_.load();
+    recover_interrupted_candidates();
+    publish_control_files();
+    worker_ = std::jthread([this](const std::stop_token stop_token) {
+        worker_loop(stop_token);
+    });
+}
+
+ContinualLearningService::~ContinualLearningService() {
+    request_stop();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+    clear_training_markers(settings_.state_root);
+}
+
+bool ContinualLearningService::submit(memory::Episode episode) {
+    LearningSettings settings;
+    {
+        std::lock_guard lock(mutex_);
+        settings = settings_;
+    }
+    if (episode.prompt.empty() || (episode.response.empty() && !episode.human_rejected)) {
+        return false;
+    }
+    episode.skill = normalize_skill(episode.skill);
+    if (episode.id.empty()) {
+        episode.id = memory::make_episode_id();
+    }
+    if (episode.created_unix_ms == 0) {
+        episode.created_unix_ms = memory::now_unix_ms();
+    }
+    episode.deterministic_verified = episode.deterministic_verified ||
+                                     (episode.compiler_passed && episode.tests_passed);
+    episode.content_hash = memory::make_content_hash(
+        episode.skill,
+        episode.prompt,
+        episode.response.empty() ? episode.correction : episode.response);
+
+    const auto prior_examples = memory_store_.training_count_for_skill(episode.skill);
+    auto decision = knowledge_classifier_.classify(episode, prior_examples + 1U);
+    if (episode.score < settings.policy.minimum_episode_score) {
+        decision.eligible_for_weight_training = false;
+        if (decision.destination == KnowledgeDestination::lora_incubation) {
+            decision.destination = KnowledgeDestination::retrieval_memory;
+        }
+        decision.reason = "stored for memory, but below the configured weight-training score";
+    }
+    episode.eligible_for_training = decision.eligible_for_weight_training;
+    episode.knowledge_destination = std::string(to_string(decision.destination));
+    if (!memory_store_.append_if_new(episode)) {
+        return false;
+    }
+
+    std::string skill_to_queue;
+    if (episode.human_accepted || episode.deterministic_verified ||
+        episode.reference_verified) {
+        std::lock_guard lock(mutex_);
+        auto& module = expert_registry_.ensure(episode.skill, settings_.base_model);
+        ++module.accepted_episodes;
+        if (episode.eligible_for_training) {
+            ++module.episodes_since_update;
+        }
+        if (episode.compiler_passed) {
+            ++module.compiler_verified_episodes;
+        }
+        if (episode.tests_passed) {
+            ++module.test_verified_episodes;
+        }
+        module.updated_unix_ms = memory::now_unix_ms();
+        expert_registry_.save(module);
+        if (expert_registry_.ready_for_lora(module, settings.policy)) {
+            skill_to_queue = module.skill;
+        }
+    }
+    if (!skill_to_queue.empty()) {
+        request_skill_update(std::move(skill_to_queue));
+    }
+    return true;
+}
+
+void ContinualLearningService::request_skill_update(std::string skill) {
+    skill = normalize_skill(skill);
+    {
+        std::lock_guard lock(mutex_);
+        auto& module = expert_registry_.ensure(skill, settings_.base_model);
+        module.updated_unix_ms = memory::now_unix_ms();
+        expert_registry_.save(module);
+    }
+    queue_request(LearningRequest{
+        .skill = std::move(skill),
+        .candidate_id = std::nullopt,
+        .kind = CandidateKind::lora_overlay,
+    });
+}
+
+void ContinualLearningService::queue_request(LearningRequest request) {
+    {
+        std::lock_guard lock(mutex_);
+        const auto duplicate = std::ranges::any_of(queue_, [&request](const LearningRequest& queued) {
+            return queued.skill == request.skill && queued.kind == request.kind &&
+                   queued.candidate_id == request.candidate_id;
+        });
+        if (!duplicate) {
+            queue_.push_back(std::move(request));
+        }
+    }
+    condition_.notify_all();
+}
+
+void ContinualLearningService::pause(const bool value) {
+    paused_.store(value, std::memory_order_release);
+    publish_control_files();
+    condition_.notify_all();
+}
+
+void ContinualLearningService::set_interactive_busy(const bool value) {
+    if (value) {
+        static_cast<void>(interactive_leases_.fetch_add(1U, std::memory_order_acq_rel));
+    } else {
+        auto current = interactive_leases_.load(std::memory_order_acquire);
+        while (current != 0U &&
+               !interactive_leases_.compare_exchange_weak(
+                   current,
+                   current - 1U,
+                   std::memory_order_acq_rel,
+                   std::memory_order_acquire)) {
+        }
+    }
+    publish_control_files();
+    condition_.notify_all();
+}
+
+void ContinualLearningService::request_stop() {
+    worker_.request_stop();
+    condition_.notify_all();
+}
+
+void ContinualLearningService::set_python_executable(std::filesystem::path path) {
+    std::lock_guard lock(mutex_);
+    settings_.python_executable = std::move(path);
+}
+
+void ContinualLearningService::set_base_model(std::string model) {
+    std::lock_guard lock(mutex_);
+    settings_.base_model = std::move(model);
+}
+
+bool ContinualLearningService::rollback_skill(const std::string_view skill) {
+    std::lock_guard promotion_lock(promotion_mutex_);
+
+    ExpertModule snapshot;
+    LearningSettings settings;
+    {
+        std::lock_guard lock(mutex_);
+        const auto* module = expert_registry_.find(skill);
+        if (module == nullptr ||
+            (module->previous_adapter_path.empty() && module->previous_module_path.empty() &&
+             module->previous_state == ExpertState::memory_only)) {
+            return false;
+        }
+        snapshot = *module;
+        settings = settings_;
+    }
+
+    const auto internal = snapshot.base_model.starts_with("threadspire://");
+    if (internal) {
+        const auto target_generation = internal_generation_name(snapshot.previous_module_path);
+        const auto current_generation = internal_generation_name(snapshot.module_path);
+        if (target_generation.empty() || current_generation.empty() ||
+            !std::filesystem::is_regular_file(settings.python_executable) ||
+            !std::filesystem::is_regular_file(settings.worker_script)) {
+            return false;
+        }
+
+        const auto rollback_result = platform::run_process(
+            platform::ProcessSpec{
+                .executable = settings.python_executable,
+                .arguments = {
+                    settings.worker_script.string(),
+                    "activate-internal",
+                    "--state-root", settings.state_root.string(),
+                    "--generation", target_generation,
+                    "--expected-current", current_generation,
+                },
+                .working_directory = settings.state_root,
+                .log_file = settings.state_root / "logs" / "internal-rollback.log",
+                .append_log = true,
+            },
+            [] { return false; });
+        if (!rollback_result.launched || rollback_result.exit_code != 0) {
+            return false;
+        }
+    }
+
+    std::lock_guard lock(mutex_);
+    auto* module = expert_registry_.find(skill);
+    if (module == nullptr || module->generation != snapshot.generation ||
+        module->state != snapshot.state ||
+        module->adapter_path != snapshot.adapter_path ||
+        module->module_path != snapshot.module_path ||
+        module->previous_adapter_path != snapshot.previous_adapter_path ||
+        module->previous_module_path != snapshot.previous_module_path) {
+        return false;
+    }
+
+    const auto current_state = module->state;
+    const auto current_adapter = module->adapter_path;
+    const auto current_module = module->module_path;
+    module->state = module->previous_state;
+    module->adapter_path = module->previous_adapter_path;
+    module->module_path = module->previous_module_path;
+    module->previous_state = current_state;
+    module->previous_adapter_path = current_adapter;
+    module->previous_module_path = current_module;
+    module->promoted_candidate_id = internal
+        ? "manual-internal-generation-rollback"
+        : "manual-rollback";
+    ++module->generation;
+    module->updated_unix_ms = memory::now_unix_ms();
+    expert_registry_.save(*module);
+    return true;
+}
+
+bool ContinualLearningService::paused() const noexcept {
+    return paused_.load(std::memory_order_acquire);
+}
+
+bool ContinualLearningService::interactive_busy() const noexcept {
+    return interactive_leases_.load(std::memory_order_acquire) != 0U;
+}
+
+std::vector<LearningJobStatus> ContinualLearningService::statuses() const {
+    std::lock_guard lock(mutex_);
+    return statuses_;
+}
+
+LearningPipelineSnapshot ContinualLearningService::pipeline_snapshot() const {
+    std::lock_guard lock(mutex_);
+    LearningPipelineSnapshot snapshot{
+        .queued_updates = queue_.size(),
+        .active_job = std::nullopt,
+    };
+    const auto active = std::ranges::find_if(
+        statuses_.rbegin(),
+        statuses_.rend(),
+        [](const LearningJobStatus& status) {
+            return !terminal_state(status.state);
+        });
+    if (active != statuses_.rend()) {
+        snapshot.active_job = *active;
+    }
+    return snapshot;
+}
+
+std::vector<ExpertModule> ContinualLearningService::expert_snapshot() const {
+    std::lock_guard lock(mutex_);
+    return expert_registry_.modules();
+}
+
+std::vector<CandidateRecord> ContinualLearningService::candidate_snapshot() const {
+    std::lock_guard lock(mutex_);
+    return candidate_registry_.candidates();
+}
+
+LearningSettings ContinualLearningService::settings_snapshot() const {
+    std::lock_guard lock(mutex_);
+    return settings_;
+}
+
+const memory::EpisodeStore& ContinualLearningService::memory_store() const noexcept {
+    return memory_store_;
+}
+
+void ContinualLearningService::recover_interrupted_candidates() {
+    const auto interrupted = candidate_registry_.mark_inflight_interrupted();
+    if (!settings_.resume_interrupted_candidates) {
+        return;
+    }
+    for (const auto& candidate : interrupted) {
+        queue_.push_back(LearningRequest{
+            .skill = candidate.skill,
+            .candidate_id = candidate.id,
+            .kind = candidate.kind,
+        });
+    }
+}
+
+void ContinualLearningService::worker_loop(const std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
+        LearningRequest request;
+        {
+            std::unique_lock lock(mutex_);
+            condition_.wait(lock, stop_token, [this] {
+                return !queue_.empty() && !paused_.load(std::memory_order_acquire) &&
+                       !interactive_busy();
+            });
+            if (stop_token.stop_requested()) {
+                break;
+            }
+            request = std::move(queue_.front());
+            queue_.pop_front();
+        }
+        process_request(request, stop_token);
+    }
+}
+
+void ContinualLearningService::process_request(
+    const LearningRequest& request,
+    const std::stop_token stop_token) {
+    ExpertModule active_module;
+    LearningSettings settings;
+    {
+        std::lock_guard lock(mutex_);
+        const auto* existing = expert_registry_.find(request.skill);
+        if (existing == nullptr) {
+            return;
+        }
+        active_module = *existing;
+        settings = settings_;
+    }
+
+    const auto job_id = make_job_id(request.skill);
+    LearningJobStatus status{
+        .id = job_id,
+        .skill = request.skill,
+        .candidate_id = request.candidate_id.value_or(""),
+        .state = LearningJobState::queued,
+        .message = "candidate queued beside the active skill",
+        .log_path = settings.state_root / "jobs" / (job_id + ".log"),
+        .progress_path = settings.state_root / "jobs" / job_id / "progress.json",
+        .exit_code = -1,
+        .updated_unix_ms = memory::now_unix_ms(),
+    };
+    if (request.candidate_id.has_value()) {
+        std::lock_guard lock(mutex_);
+        if (const auto* candidate = candidate_registry_.find(*request.candidate_id);
+            candidate != nullptr) {
+            status.id = candidate->id;
+            status.candidate_id = candidate->id;
+            status.log_path = candidate->log_path;
+            status.progress_path = candidate->job_directory / "progress.json";
+        }
+    }
+    update_status(status);
+
+    if (request.kind == CandidateKind::full_rank_skill &&
+        !active_module.base_model.starts_with("threadspire://")) {
+        static_cast<void>(run_consolidation(
+            settings, active_module, status, request.candidate_id, stop_token));
+        return;
+    }
+
+    if (active_module.base_model.starts_with("threadspire://")) {
+        static_cast<void>(run_internal_update(
+            settings, active_module, status, request.candidate_id, stop_token));
+        return;
+    }
+
+    if (!run_lora_update(
+            settings, active_module, status, request.candidate_id, stop_token)) {
+        return;
+    }
+
+    if (settings.automatic_consolidation &&
+        expert_registry_.ready_for_consolidation(active_module, settings.policy)) {
+        static_cast<void>(run_consolidation(
+            settings, active_module, status, std::nullopt, stop_token));
+    }
+}
+
+bool ContinualLearningService::run_internal_update(
+    const LearningSettings& settings,
+    ExpertModule& active_module,
+    LearningJobStatus& status,
+    const std::optional<std::string> resume_candidate_id,
+    const std::stop_token stop_token) {
+    if (stop_token.stop_requested()) {
+        status.state = LearningJobState::cancelled;
+        status.message = "cancelled before internal candidate training";
+        update_status(status);
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(settings.python_executable) ||
+        !std::filesystem::is_regular_file(settings.worker_script)) {
+        status.state = LearningJobState::failed;
+        status.message = "Python/PyTorch backend is not installed or selected";
+        update_status(status);
+        return false;
+    }
+
+    CandidateRecord candidate;
+    if (resume_candidate_id.has_value()) {
+        std::optional<CandidateRecord> stored_candidate;
+        {
+            std::lock_guard lock(mutex_);
+            if (const auto* stored = candidate_registry_.find(*resume_candidate_id);
+                stored != nullptr) {
+                stored_candidate = *stored;
+            }
+        }
+        if (!stored_candidate.has_value()) {
+            status.state = LearningJobState::failed;
+            status.message = "resumable internal candidate record was not found";
+            update_status(status);
+            return false;
+        }
+        candidate = *stored_candidate;
+    } else {
+        {
+            std::lock_guard lock(mutex_);
+            candidate = candidate_registry_.create(
+                active_module.skill,
+                active_module.base_model,
+                CandidateKind::full_rank_skill,
+                active_module.generation,
+                {},
+                {},
+                {});
+        }
+        const auto root = candidate_root(settings, candidate.id);
+        candidate.artifact_path = settings.state_root / "models" / "internal";
+        candidate.job_directory = root / "job";
+        candidate.log_path = root / "internal-training.log";
+        candidate.message = "internal skill candidate staged beside the active generation";
+        commit_candidate(candidate);
+    }
+
+    status.id = candidate.id;
+    status.candidate_id = candidate.id;
+    status.log_path = candidate.log_path;
+    status.progress_path = candidate.job_directory / "progress.json";
+    std::filesystem::create_directories(candidate.job_directory);
+
+    resource::TrainingBudget budget;
+    while (!stop_token.stop_requested()) {
+        budget = resource_governor_.plan_training(
+            resource::sample_system_resources(),
+            interactive_busy(),
+            settings.micro_steps,
+            settings.maximum_sequence_tokens,
+            settings.lora_rank);
+        if (budget.permitted) {
+            break;
+        }
+        status.state = LearningJobState::waiting_for_resources;
+        status.message = budget.reason;
+        update_status(status);
+        std::this_thread::sleep_for(budget.retry_after);
+    }
+    if (stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = "internal candidate stopped while waiting for resources";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::training;
+    candidate.message = "training a shadow full-weight internal skill module";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::training_internal;
+    status.message = candidate.message;
+    update_status(status);
+
+    const auto metrics_path = candidate.job_directory / "metrics.json";
+    const auto training_scope = internal_training_scope(active_module.skill);
+    std::vector<std::string> arguments{
+        settings.worker_script.string(),
+        "train-internal",
+        "--state-root", settings.state_root.string(),
+        "--seed-dataset", settings.seed_dataset.string(),
+        "--episodes", memory_store_.path().string(),
+        "--anchors", settings.anchor_dataset.string(),
+        "--scope", training_scope,
+        "--max-steps", std::to_string(std::max<std::size_t>(4U, budget.max_steps)),
+        "--learning-rate", std::to_string(settings.learning_rate),
+        "--batch-size", "2",
+        "--accumulation-steps", "2",
+        "--checkpoint-steps", std::to_string(settings.checkpoint_steps),
+        "--control-dir", (settings.state_root / "control").string(),
+        "--metrics-output", metrics_path.string(),
+        "--progress-file", status.progress_path.string(),
+        "--defer-promotion",
+    };
+    if (settings.require_cuda) {
+        arguments.emplace_back("--require-cuda");
+    }
+
+    std::optional<std::chrono::steady_clock::time_point> foreground_since;
+    const auto result = platform::run_process(
+        platform::ProcessSpec{
+            .executable = settings.python_executable,
+            .arguments = std::move(arguments),
+            .working_directory = settings.state_root,
+            .log_file = candidate.log_path,
+            .append_log = resume_candidate_id.has_value(),
+        },
+        [this, stop_token, &foreground_since, &settings] {
+            if (stop_token.stop_requested()) {
+                return true;
+            }
+            const auto preemption_requested = interactive_busy() || paused();
+            if (!preemption_requested) {
+                foreground_since.reset();
+                return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!foreground_since.has_value()) {
+                foreground_since = now;
+                return false;
+            }
+            return now - *foreground_since >= settings.inference_preemption_grace;
+        });
+    clear_training_markers(settings.state_root);
+
+    status.exit_code = result.exit_code;
+    const auto resumable_preemption = !stop_token.stop_requested() &&
+        (result.exit_code == preempted_exit_code ||
+         (result.cancelled && (interactive_busy() || paused())));
+    if (result.cancelled || result.exit_code == preempted_exit_code || stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = resumable_preemption
+            ? "internal candidate preempted for foreground inference; checkpoint retained"
+            : "internal candidate interrupted; active generation unchanged";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        if (resumable_preemption) {
+            queue_request(LearningRequest{
+                .skill = candidate.skill,
+                .candidate_id = candidate.id,
+                .kind = CandidateKind::full_rank_skill,
+            });
+        }
+        return false;
+    }
+    if (!result.launched || result.exit_code != 0) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = result.error.empty()
+            ? "internal candidate training failed; active generation unchanged"
+            : result.error;
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.validation_score = read_metric(metrics_path, "validation_score", 0.0);
+    candidate.regression_score = read_metric(metrics_path, "regression_score", 1.0);
+    const auto passed_evaluation = read_metric(
+        metrics_path,
+        "passed_evaluation",
+        0.0) > 0.5;
+    if (!passed_evaluation) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = "internal candidate did not improve its held-out loss";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    const auto internal_generation = read_string_metric(metrics_path, "generation");
+    const auto internal_parent = read_string_metric(metrics_path, "parent_generation");
+    if (internal_generation.empty() || internal_parent.empty()) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = "internal candidate metrics did not identify its generation";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.artifact_path = internal_generation_path(
+        settings.state_root, internal_generation);
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+
+    std::lock_guard promotion_lock(promotion_mutex_);
+    auto registry_stale = false;
+    {
+        std::lock_guard lock(mutex_);
+        auto* current = expert_registry_.find(candidate.skill);
+        if (current == nullptr || current->generation != candidate.parent_generation) {
+            candidate.state = CandidateState::rejected;
+            candidate.message = "internal candidate became stale before registry promotion";
+            candidate.updated_unix_ms = memory::now_unix_ms();
+            candidate_registry_.save(candidate);
+            status.state = LearningJobState::failed;
+            status.message = candidate.message;
+            registry_stale = true;
+        }
+    }
+    if (registry_stale) {
+        update_status(status);
+        return false;
+    }
+
+    const auto promotion_result = platform::run_process(
+        platform::ProcessSpec{
+            .executable = settings.python_executable,
+            .arguments = {
+                settings.worker_script.string(),
+                "promote-internal",
+                "--state-root", settings.state_root.string(),
+                "--generation", internal_generation,
+                "--expected-parent", internal_parent,
+            },
+            .working_directory = settings.state_root,
+            .log_file = candidate.log_path,
+            .append_log = true,
+        },
+        [] { return false; });
+    if (!promotion_result.launched || promotion_result.exit_code != 0) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = promotion_result.error.empty()
+            ? "internal candidate promotion failed its parent compare-and-swap"
+            : promotion_result.error;
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    registry_stale = false;
+    {
+        std::lock_guard lock(mutex_);
+        auto* current = expert_registry_.find(candidate.skill);
+        if (current == nullptr || current->generation != candidate.parent_generation) {
+            candidate.state = CandidateState::rejected;
+            candidate.message = "internal candidate registry changed during atomic promotion";
+            candidate.updated_unix_ms = memory::now_unix_ms();
+            candidate_registry_.save(candidate);
+            status.state = LearningJobState::failed;
+            status.message = candidate.message;
+            registry_stale = true;
+        } else {
+            current->previous_state = internal_parent == "g000000"
+                ? current->state
+                : ExpertState::full_rank_active;
+            current->previous_module_path = internal_parent == "g000000"
+                ? std::filesystem::path{}
+                : internal_generation_path(settings.state_root, internal_parent);
+            current->previous_adapter_path = current->adapter_path;
+            current->state = ExpertState::full_rank_active;
+            current->adapter_path.clear();
+            current->module_path = internal_generation_path(
+                settings.state_root, internal_generation);
+            current->promoted_candidate_id = candidate.id;
+            ++current->generation;
+            ++current->lora_generations;
+            current->episodes_since_update = 0;
+            current->validation_score = candidate.validation_score;
+            current->regression_score = candidate.regression_score;
+            current->updated_unix_ms = memory::now_unix_ms();
+            expert_registry_.save(*current);
+            active_module = *current;
+        }
+    }
+    if (registry_stale) {
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::promoted;
+    candidate.message = "internal skill generation promoted; prior active weights remain rollback-ready";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::succeeded;
+    status.message = candidate.message;
+    update_status(status);
+    return true;
+}
+
+bool ContinualLearningService::run_lora_update(
+    const LearningSettings& settings,
+    ExpertModule& active_module,
+    LearningJobStatus& status,
+    const std::optional<std::string> resume_candidate_id,
+    const std::stop_token stop_token) {
+    if (stop_token.stop_requested()) {
+        status.state = LearningJobState::cancelled;
+        status.message = "cancelled before candidate training";
+        update_status(status);
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(settings.python_executable) ||
+        !std::filesystem::is_regular_file(settings.worker_script)) {
+        status.state = LearningJobState::failed;
+        status.message = "Python/PyTorch backend is not installed or selected";
+        update_status(status);
+        return false;
+    }
+
+    CandidateRecord candidate;
+    if (resume_candidate_id.has_value()) {
+        std::optional<CandidateRecord> stored_candidate;
+        {
+            std::lock_guard lock(mutex_);
+            if (const auto* stored = candidate_registry_.find(*resume_candidate_id);
+                stored != nullptr) {
+                stored_candidate = *stored;
+            }
+        }
+        if (!stored_candidate.has_value() ||
+            stored_candidate->kind != CandidateKind::lora_overlay) {
+            status.state = LearningJobState::failed;
+            status.message = "resumable LoRA candidate record was not found";
+            update_status(status);
+            return false;
+        }
+        candidate = *stored_candidate;
+    } else {
+        {
+            std::lock_guard lock(mutex_);
+            candidate = candidate_registry_.create(
+                active_module.skill,
+                active_module.base_model,
+                CandidateKind::lora_overlay,
+                active_module.generation,
+                {},
+                {},
+                {});
+        }
+        const auto root = candidate_root(settings, candidate.id);
+        candidate.artifact_path = root / "adapter";
+        candidate.job_directory = root / "job";
+        candidate.log_path = root / "training.log";
+        candidate.message = "low-rank skill candidate staged; active skill remains untouched";
+        commit_candidate(candidate);
+    }
+
+    status.id = candidate.id;
+    status.candidate_id = candidate.id;
+    status.log_path = candidate.log_path;
+    std::filesystem::create_directories(candidate.job_directory);
+
+    resource::TrainingBudget budget;
+    while (!stop_token.stop_requested()) {
+        budget = resource_governor_.plan_training(
+            resource::sample_system_resources(),
+            interactive_busy(),
+            settings.micro_steps,
+            settings.maximum_sequence_tokens,
+            settings.lora_rank);
+        if (budget.permitted) {
+            break;
+        }
+        status.state = LearningJobState::waiting_for_resources;
+        status.message = budget.reason;
+        update_status(status);
+        std::this_thread::sleep_for(budget.retry_after);
+    }
+    if (stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = "candidate stopped while waiting for resources";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::training;
+    candidate.message = "training a low-rank skill candidate beside the active intelligence";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::training_lora;
+    status.message = candidate.message;
+    update_status(status);
+
+    std::vector<std::string> arguments{
+        settings.worker_script.string(),
+        "train-lora",
+        "--base-model", active_module.base_model,
+        "--episodes", memory_store_.path().string(),
+        "--skill", active_module.skill,
+        "--output", candidate.artifact_path.string(),
+        "--job-dir", candidate.job_directory.string(),
+        "--control-dir", (settings.state_root / "control").string(),
+        "--rank", std::to_string(budget.lora_rank),
+        "--alpha", std::to_string(settings.lora_alpha),
+        "--max-steps", std::to_string(budget.max_steps),
+        "--max-sequence-tokens", std::to_string(budget.maximum_sequence_tokens),
+        "--checkpoint-steps", std::to_string(settings.checkpoint_steps),
+        "--learning-rate", std::to_string(settings.learning_rate),
+    };
+    if (!settings.seed_dataset.empty() &&
+        std::filesystem::is_regular_file(settings.seed_dataset)) {
+        arguments.emplace_back("--seed-dataset");
+        arguments.push_back(settings.seed_dataset.string());
+        arguments.emplace_back("--seed-replay-limit");
+        arguments.push_back(active_module.generation == 0 ? "96" : "24");
+    }
+    if (!settings.anchor_dataset.empty() &&
+        std::filesystem::is_regular_file(settings.anchor_dataset)) {
+        arguments.emplace_back("--anchors");
+        arguments.push_back(settings.anchor_dataset.string());
+    }
+    if (settings.require_cuda) {
+        arguments.emplace_back("--require-cuda");
+    }
+    if (!active_module.module_path.empty()) {
+        arguments.emplace_back("--module");
+        arguments.push_back(active_module.module_path.string());
+    }
+    if (!active_module.adapter_path.empty()) {
+        arguments.emplace_back("--resume-adapter");
+        arguments.push_back(active_module.adapter_path.string());
+    }
+
+    std::optional<std::chrono::steady_clock::time_point> foreground_since;
+    const auto result = platform::run_process(
+        platform::ProcessSpec{
+            .executable = settings.python_executable,
+            .arguments = std::move(arguments),
+            .working_directory = settings.state_root,
+            .log_file = candidate.log_path,
+            .append_log = resume_candidate_id.has_value(),
+        },
+        [this, stop_token, &foreground_since, &settings] {
+            if (stop_token.stop_requested()) {
+                return true;
+            }
+            const auto preemption_requested = interactive_busy() || paused();
+            if (!preemption_requested) {
+                foreground_since.reset();
+                return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!foreground_since.has_value()) {
+                foreground_since = now;
+                return false;
+            }
+            return now - *foreground_since >= settings.inference_preemption_grace;
+        });
+    clear_training_markers(settings.state_root);
+
+    status.exit_code = result.exit_code;
+    const auto resumable_preemption = !stop_token.stop_requested() &&
+        (result.exit_code == preempted_exit_code ||
+         (result.cancelled && (interactive_busy() || paused())));
+    if (result.cancelled || result.exit_code == preempted_exit_code || stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = resumable_preemption
+            ? "candidate preempted for foreground inference or pause; checkpoint retained and resume queued"
+            : "candidate interrupted at a checkpoint; active skill was not changed";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        if (resumable_preemption) {
+            queue_request(LearningRequest{
+                .skill = candidate.skill,
+                .candidate_id = candidate.id,
+                .kind = CandidateKind::lora_overlay,
+            });
+        }
+        return false;
+    }
+    if (!result.launched || result.exit_code != 0) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = result.error.empty()
+            ? "candidate training failed; active skill was not changed"
+            : result.error;
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::evaluating;
+    candidate.message = "evaluating skill improvement and held-out regression";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::validating;
+    status.message = candidate.message;
+    update_status(status);
+
+    candidate.validation_score = read_metric(
+        candidate.job_directory / "metrics.json", "validation_score", 0.0);
+    candidate.regression_score = read_metric(
+        candidate.job_directory / "metrics.json", "regression_score", 1.0);
+    if (candidate.validation_score < settings.policy.minimum_validation_score ||
+        candidate.regression_score > settings.policy.maximum_regression) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = "candidate rejected by validation or regression gate";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        // Keep the accumulated evidence. The next independently verified episode may
+        // trigger a new candidate instead of discarding the entire learning window.
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    bool promoted = false;
+    {
+        std::lock_guard lock(mutex_);
+        auto* current = expert_registry_.find(candidate.skill);
+        if (current != nullptr && current->generation == candidate.parent_generation) {
+            current->previous_state = current->state;
+            current->previous_adapter_path = current->adapter_path;
+            current->previous_module_path = current->module_path;
+            current->adapter_path = candidate.artifact_path;
+            current->state = ExpertState::lora_active;
+            current->episodes_since_update = 0;
+            ++current->lora_generations;
+            ++current->generation;
+            current->validation_score = candidate.validation_score;
+            current->regression_score = candidate.regression_score;
+            current->promoted_candidate_id = candidate.id;
+            current->updated_unix_ms = memory::now_unix_ms();
+            expert_registry_.save(*current);
+            active_module = *current;
+            promoted = true;
+        }
+    }
+    if (!promoted) {
+        candidate.state = CandidateState::rejected;
+        candidate.message =
+            "candidate became stale because the active skill changed during training; active intelligence was not modified";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::promoted;
+    candidate.message = "candidate atomically promoted; prior active version is rollback-ready";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::succeeded;
+    status.message = candidate.message;
+    update_status(status);
+    return true;
+}
+
+bool ContinualLearningService::run_consolidation(
+    const LearningSettings& settings,
+    ExpertModule& active_module,
+    LearningJobStatus& status,
+    const std::optional<std::string> resume_candidate_id,
+    const std::stop_token stop_token) {
+    if (active_module.adapter_path.empty()) {
+        return false;
+    }
+
+    CandidateRecord candidate;
+    if (resume_candidate_id.has_value()) {
+        std::optional<CandidateRecord> stored_candidate;
+        {
+            std::lock_guard lock(mutex_);
+            if (const auto* stored = candidate_registry_.find(*resume_candidate_id);
+                stored != nullptr) {
+                stored_candidate = *stored;
+            }
+        }
+        if (!stored_candidate.has_value() ||
+            stored_candidate->kind != CandidateKind::full_rank_skill) {
+            status.state = LearningJobState::failed;
+            status.message = "resumable full-rank candidate record was not found";
+            update_status(status);
+            return false;
+        }
+        candidate = *stored_candidate;
+    } else {
+        {
+            std::lock_guard lock(mutex_);
+            candidate = candidate_registry_.create(
+                active_module.skill,
+                active_module.base_model,
+                CandidateKind::full_rank_skill,
+                active_module.generation,
+                {},
+                {},
+                {});
+        }
+        const auto root = candidate_root(settings, candidate.id);
+        candidate.artifact_path = root / "skill-module";
+        candidate.job_directory = root / "job";
+        candidate.log_path = root / "consolidation.log";
+        candidate.message = "full-rank skill candidate staged; active LoRA remains live";
+        commit_candidate(candidate);
+    }
+
+    status.id = candidate.id;
+    status.candidate_id = candidate.id;
+    status.log_path = candidate.log_path;
+    std::filesystem::create_directories(candidate.job_directory);
+
+    resource::TrainingBudget budget;
+    while (!stop_token.stop_requested()) {
+        budget = resource_governor_.plan_training(
+            resource::sample_system_resources(),
+            interactive_busy(),
+            settings.full_rank_steps,
+            settings.maximum_sequence_tokens,
+            settings.lora_rank);
+        if (budget.permitted) {
+            break;
+        }
+        status.state = LearningJobState::waiting_for_resources;
+        status.message = budget.reason;
+        update_status(status);
+        std::this_thread::sleep_for(budget.retry_after);
+    }
+    if (stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = "full-rank candidate stopped while waiting for resources";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::training;
+    candidate.message =
+        "refining selected FFN matrices directly beside the active LoRA; active weights remain immutable";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::consolidating;
+    status.message = candidate.message;
+    update_status(status);
+
+    std::vector<std::string> arguments{
+        settings.worker_script.string(),
+        "consolidate-module",
+        "--base-model", active_module.base_model,
+        "--adapter", active_module.adapter_path.string(),
+        "--skill", active_module.skill,
+        "--output", candidate.artifact_path.string(),
+        "--job-dir", candidate.job_directory.string(),
+        "--control-dir", (settings.state_root / "control").string(),
+        "--episodes", memory_store_.path().string(),
+        "--max-steps", std::to_string(std::max<std::size_t>(1U, budget.max_steps)),
+        "--max-sequence-tokens", std::to_string(budget.maximum_sequence_tokens),
+        "--checkpoint-steps", std::to_string(settings.checkpoint_steps),
+        "--layers-per-pass", std::to_string(settings.full_rank_layers_per_pass),
+        "--learning-rate", std::to_string(settings.full_rank_learning_rate),
+    };
+    if (!settings.seed_dataset.empty() &&
+        std::filesystem::is_regular_file(settings.seed_dataset)) {
+        arguments.emplace_back("--seed-dataset");
+        arguments.push_back(settings.seed_dataset.string());
+        arguments.emplace_back("--seed-replay-limit");
+        arguments.push_back(active_module.generation == 0 ? "64" : "24");
+    }
+    if (!settings.anchor_dataset.empty() &&
+        std::filesystem::is_regular_file(settings.anchor_dataset)) {
+        arguments.emplace_back("--anchors");
+        arguments.push_back(settings.anchor_dataset.string());
+    }
+    if (settings.require_cuda) {
+        arguments.emplace_back("--require-cuda");
+    }
+    if (!active_module.module_path.empty()) {
+        arguments.emplace_back("--prior-module");
+        arguments.push_back(active_module.module_path.string());
+    }
+
+    std::optional<std::chrono::steady_clock::time_point> foreground_since;
+    const auto result = platform::run_process(
+        platform::ProcessSpec{
+            .executable = settings.python_executable,
+            .arguments = std::move(arguments),
+            .working_directory = settings.state_root,
+            .log_file = candidate.log_path,
+            .append_log = resume_candidate_id.has_value(),
+        },
+        [this, stop_token, &foreground_since, &settings] {
+            if (stop_token.stop_requested()) {
+                return true;
+            }
+            const auto preemption_requested = interactive_busy() || paused();
+            if (!preemption_requested) {
+                foreground_since.reset();
+                return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!foreground_since.has_value()) {
+                foreground_since = now;
+                return false;
+            }
+            return now - *foreground_since >= settings.inference_preemption_grace;
+        });
+    clear_training_markers(settings.state_root);
+
+    status.exit_code = result.exit_code;
+    const auto resumable_preemption = !stop_token.stop_requested() &&
+        (result.exit_code == preempted_exit_code ||
+         (result.cancelled && (interactive_busy() || paused())));
+    if (result.cancelled || result.exit_code == preempted_exit_code ||
+        stop_token.stop_requested()) {
+        candidate.state = CandidateState::interrupted;
+        candidate.message = resumable_preemption
+            ? "consolidation preempted for foreground inference or pause; resume queued and active LoRA unchanged"
+            : "consolidation interrupted; active LoRA remains unchanged";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::interrupted;
+        status.message = candidate.message;
+        update_status(status);
+        if (resumable_preemption) {
+            queue_request(LearningRequest{
+                .skill = candidate.skill,
+                .candidate_id = candidate.id,
+                .kind = CandidateKind::full_rank_skill,
+            });
+        }
+        return false;
+    }
+    if (!result.launched || result.exit_code != 0 ||
+        !std::filesystem::is_regular_file(candidate.artifact_path / "module.json")) {
+        candidate.state = CandidateState::rejected;
+        candidate.message = "consolidation failed structural validation; active LoRA remains unchanged";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::evaluating;
+    candidate.message = "verifying module checksum, FFN-only tensor contract, and manifest counts";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::validating;
+    status.message = candidate.message;
+    update_status(status);
+
+    const auto inspection = platform::run_process(
+        platform::ProcessSpec{
+            .executable = settings.python_executable,
+            .arguments = {
+                settings.worker_script.string(),
+                "inspect-module",
+                "--module", candidate.artifact_path.string(),
+            },
+            .working_directory = settings.state_root,
+            .log_file = candidate.log_path,
+            .append_log = true,
+        },
+        [stop_token] { return stop_token.stop_requested(); });
+    if (!inspection.launched || inspection.cancelled || inspection.exit_code != 0) {
+        candidate.state = inspection.cancelled
+            ? CandidateState::interrupted
+            : CandidateState::rejected;
+        candidate.message = inspection.cancelled
+            ? "module validation interrupted; active LoRA remains unchanged"
+            : "module integrity validation failed; active LoRA remains unchanged";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = inspection.cancelled
+            ? LearningJobState::interrupted
+            : LearningJobState::failed;
+        status.message = candidate.message;
+        status.exit_code = inspection.exit_code;
+        update_status(status);
+        return false;
+    }
+
+    const auto retention_score = read_metric(
+        candidate.job_directory / "metrics.json", "retention_score", 0.0);
+    const auto measured_regression = read_metric(
+        candidate.job_directory / "metrics.json", "regression_score", 1.0);
+    candidate.validation_score = std::min(active_module.validation_score, retention_score);
+    candidate.regression_score = std::max(active_module.regression_score, measured_regression);
+    if (candidate.validation_score < settings.policy.minimum_validation_score ||
+        candidate.regression_score > settings.policy.maximum_regression) {
+        candidate.state = CandidateState::rejected;
+        candidate.message =
+            "full-rank candidate rejected by retention or regression evaluation; active LoRA remains unchanged";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    bool promoted = false;
+    {
+        std::lock_guard lock(mutex_);
+        auto* current = expert_registry_.find(candidate.skill);
+        if (current != nullptr && current->generation == candidate.parent_generation &&
+            current->adapter_path == active_module.adapter_path) {
+            current->previous_state = current->state;
+            current->previous_adapter_path = current->adapter_path;
+            current->previous_module_path = current->module_path;
+            current->module_path = candidate.artifact_path;
+            current->adapter_path.clear();
+            current->state = ExpertState::full_rank_active;
+            ++current->generation;
+            current->validation_score = candidate.validation_score;
+            current->regression_score = candidate.regression_score;
+            current->promoted_candidate_id = candidate.id;
+            current->updated_unix_ms = memory::now_unix_ms();
+            expert_registry_.save(*current);
+            active_module = *current;
+            promoted = true;
+        }
+    }
+    if (!promoted) {
+        candidate.state = CandidateState::rejected;
+        candidate.message =
+            "full-rank candidate became stale because the active skill changed; active intelligence was not modified";
+        candidate.updated_unix_ms = memory::now_unix_ms();
+        commit_candidate(candidate);
+        status.state = LearningJobState::failed;
+        status.message = candidate.message;
+        update_status(status);
+        return false;
+    }
+
+    candidate.state = CandidateState::promoted;
+    candidate.message =
+        "directly refined full-rank FFN skill atomically promoted; prior LoRA is rollback-ready";
+    candidate.updated_unix_ms = memory::now_unix_ms();
+    commit_candidate(candidate);
+    status.state = LearningJobState::succeeded;
+    status.message = candidate.message;
+    update_status(status);
+    return true;
+}
+
+void ContinualLearningService::update_status(const LearningJobStatus& incoming) {
+    auto status = incoming;
+    status.updated_unix_ms = memory::now_unix_ms();
+    {
+        std::lock_guard lock(mutex_);
+        const auto iterator = std::ranges::find(statuses_, status.id, &LearningJobStatus::id);
+        if (iterator == statuses_.end()) {
+            statuses_.push_back(status);
+        } else {
+            *iterator = status;
+        }
+    }
+    persist_status(status);
+}
+
+void ContinualLearningService::persist_status(const LearningJobStatus& status) const {
+    std::ostringstream stream;
+    stream << "[job]\n"
+           << "id=" << status.id << '\n'
+           << "skill=" << status.skill << '\n'
+           << "candidate_id=" << status.candidate_id << '\n'
+           << "state=" << to_string(status.state) << '\n'
+           << "message=" << status.message << '\n'
+           << "log=" << status.log_path.generic_string() << '\n'
+           << "progress=" << status.progress_path.generic_string() << '\n'
+           << "exit_code=" << status.exit_code << '\n'
+           << "updated_unix_ms=" << status.updated_unix_ms << '\n';
+    publish_file(settings_.state_root / "jobs" / status.id / "status.ini", stream.str());
+}
+
+void ContinualLearningService::commit_module(const ExpertModule& module) {
+    std::lock_guard lock(mutex_);
+    if (auto* existing = expert_registry_.find(module.skill); existing != nullptr) {
+        *existing = module;
+    } else {
+        auto& created = expert_registry_.ensure(module.skill, module.base_model);
+        created = module;
+    }
+    expert_registry_.save(module);
+}
+
+void ContinualLearningService::commit_candidate(const CandidateRecord& candidate) {
+    std::lock_guard lock(mutex_);
+    if (auto* existing = candidate_registry_.find(candidate.id); existing != nullptr) {
+        *existing = candidate;
+    }
+    candidate_registry_.save(candidate);
+}
+
+void ContinualLearningService::publish_control_files() const {
+    const auto control = settings_.state_root / "control";
+    set_marker(control / "training.paused", paused());
+    set_marker(control / "inference.priority", interactive_busy());
+}
+
+} // namespace threadspire::ai::learning
