@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.8
+
+- Bootstrap canary rejection now returns a repair-required result instead of being misreported as successful training followed by a failed host start.
+- Automatic and manual repair continue the strongest checksum-verified rejected descendant, keep the full backbone trainable, and allocate a new generation rather than deterministically repeating or overwriting `g000001`.
+- The native lifecycle re-inspects strict active-generation readiness before starting the host, even if a worker exits successfully.
+- Manual host start now explains how to continue a saved repair candidate, and disabled automatic recovery retains the last concrete repair result on the Local AI dashboard.
+- Added a CPU regression that rejects `g000001`, continues it into `g000002`, and proves the unready active generation is never served.
+
 ## 0.5.7
 
 - Replaced the expert-only English bootstrap with a full shared-backbone update while retaining English-only training and held-out data.

@@ -1,4 +1,4 @@
-# Start Here — ThreadSpire 0.5.7
+# Start Here — ThreadSpire 0.5.8
 
 ## 1. Build and launch once
 
@@ -41,7 +41,7 @@ When bootstrap is incomplete, ThreadSpire opens directly on **Local AI**. That d
 
 The ETA appears after enough work has completed to measure the current machine. A worker that stops reporting progress for 15 minutes is terminated automatically and resumed from its checkpoint instead of being left apparently running overnight.
 
-Version 0.5.7 performs a one-time full-backbone migration. Partial expert-only generations, their candidates/jobs, expert registry, and stale training state move under `%LOCALAPPDATA%\ThreadSpire\quarantine\partial-backbone-*`; nothing is deleted. Verified episode memory and user configuration stay in place. The fresh English pass trains the shared backbone plus the English route and is not usable until held-out loss and deterministic generation canaries pass. Run `SHOW_MODEL_STORAGE.cmd` to open the exact model directory and lineage report.
+Version 0.5.7 and later performs a one-time full-backbone migration. Partial expert-only generations, their candidates/jobs, expert registry, and stale training state move under `%LOCALAPPDATA%\ThreadSpire\quarantine\partial-backbone-*`; nothing is deleted. Verified episode memory and user configuration stay in place. If a full-backbone candidate misses its generation canaries, automatic and manual repair continue from that learned candidate instead of restarting the same pass from random weights. The host remains stopped until a candidate passes held-out loss and deterministic generation canaries. Run `SHOW_MODEL_STORAGE.cmd` to open the exact model directory and lineage report.
 
 ## 4. Talk to the internal model
 
@@ -63,7 +63,7 @@ The internal model begins from random weights created on this machine. It does n
 - Connected local LLMs may generate or verify candidate examples, but their weights never become the ThreadSpire internal model.
 - The internal model cannot teach or verify itself. Keep a capable external local LLM marked as **Teacher** and, preferably, a different model marked as **Verifier**.
 
-Open **Learning**. Version 0.5.7 starts its continual-learning target on **English foundation — recommended first** rather than `cpp23-core`. C++ training remains available but is no longer silently selected. Changing the target affects the next pass only; it does not cancel or retrigger current training.
+Open **Learning**. Version 0.5.7 and later starts its continual-learning target on **English foundation — recommended first** rather than `cpp23-core`. C++ training remains available but is no longer silently selected. Changing the target affects the next pass only; it does not cancel or retrigger current training.
 
 For normal target-specific training:
 

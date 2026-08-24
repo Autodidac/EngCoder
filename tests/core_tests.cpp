@@ -1006,6 +1006,7 @@ void test_worker_and_resource_contract() {
             "foreground bootstrap must clear stale blockers, publish heartbeats, and time out instead of waiting forever");
     const auto internal_model = read_text_file(source / "resources/internal_model.py");
     const auto curriculum_guard = read_text_file(source / "resources/curriculum_guard.py");
+    const auto lifecycle_ui = read_text_file(source / "src/app/main_window.cpp");
     require(internal_model.find("threadspire.internal-progress.v1") != std::string::npos &&
                 internal_model.find("bootstrap_complete") != std::string::npos &&
                 internal_model.find("full_backbone_trained") != std::string::npos &&
@@ -1013,6 +1014,13 @@ void test_worker_and_resource_contract() {
                 internal_model.find("optimizer_scope = \"all\"") != std::string::npos &&
                 internal_model.find("honor_inference_priority") != std::string::npos,
             "internal training must use the full backbone, pass generation canaries, persist completion metadata, and report exact resumable progress");
+    require(internal_model.find("resolve_bootstrap_repair_generation") != std::string::npos &&
+                internal_model.find("resumed_from_repair_generation") != std::string::npos &&
+                internal_model.find("_next_generation(state_root, parent)") != std::string::npos &&
+                worker.find("A rejected shadow candidate is a recoverable training outcome") != std::string::npos &&
+                lifecycle_ui.find("training process exited without publishing a ready generation") != std::string::npos &&
+                lifecycle_ui.find("saved repair candidate") != std::string::npos,
+            "automatic and manual bootstrap repair must continue the strongest rejected lineage and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&

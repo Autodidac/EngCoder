@@ -4570,6 +4570,17 @@ void MainWindow::create_internal_model(
                 return result;
             }
 
+            const auto trained_state = runtime::inspect_internal_model_state(selected_paths);
+            if (!trained_state.manifest_valid || !trained_state.bootstrap_complete) {
+                return util::OperationResult{
+                    .state = util::OperationState::failed,
+                    .exit_code = 3,
+                    .message =
+                        "The training process exited without publishing a ready generation; "
+                        "automatic or manual repair must continue from the saved candidate",
+                };
+            }
+
             std::string message;
             const auto host_started = backend_server_.start(
                 selected_paths.python,
@@ -4650,7 +4661,9 @@ void MainWindow::start_backend(const bool automatic) {
         if (automatic) {
             create_internal_model(true, true);
         } else {
-            set_status(L"The automatic lifecycle must finish bootstrap training before the host can start");
+            set_status(
+                L"The active generation is not ready. Select Create + bootstrap train to continue "
+                L"from the saved repair candidate, or enable automatic recovery.");
             show_page(Page::models);
         }
         return;
@@ -5033,7 +5046,10 @@ void MainWindow::handle_lifecycle_completion() {
         : result.message;
     const auto progress = runtime::read_internal_model_progress(paths_);
     if (completed_action == LifecycleAction::bootstrap_model &&
-        progress.available && progress.phase == "failed") {
+        progress.available &&
+        (progress.phase == "failed" ||
+         progress.phase == "rejected" ||
+         progress.phase == "repair-required")) {
         if (!progress.message.empty()) {
             detail = progress.message;
         }
@@ -5049,6 +5065,7 @@ void MainWindow::handle_lifecycle_completion() {
             ? "internal-model operation was cancelled"
             : "internal-model operation failed without an error message";
     }
+    set_status(widen(detail));
     schedule_lifecycle_retry(std::move(detail));
 }
 
@@ -5124,7 +5141,11 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     std::wostringstream detail;
     const auto now = std::chrono::steady_clock::now();
     if (!automatic_lifecycle_enabled_) {
-        detail << L"Automatic setup and recovery is disabled. Enable it to resume without manual steps.";
+        detail << L"Automatic setup and recovery is disabled.";
+        if (!lifecycle_last_error_.empty()) {
+            detail << L" Last repair result: " << widen(lifecycle_last_error_) << L".";
+        }
+        detail << L" Enable it to resume without manual steps.";
     } else if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             lifecycle_retry_at_ - now).count();

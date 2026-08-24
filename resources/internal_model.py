@@ -608,6 +608,104 @@ def generation_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def load_generation_model(
+    state_root: Path,
+    generation: str,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> LoadedInternalModel:
+    if not generation or Path(generation).name != generation:
+        raise ValueError("invalid internal model generation")
+    path = internal_root(state_root) / "generations" / generation
+    manifest = generation_manifest(path)
+    if str(manifest.get("generation", "")) != generation:
+        raise ValueError("internal model generation manifest does not match its directory")
+    config = ModelConfig.from_path(path / str(manifest.get("config_file", "config.json")))
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if dtype is None:
+        dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else (
+            torch.float16 if device.type == "cuda" else torch.float32
+        )
+    model = ThreadSpireModel(config)
+    model.load_state_dict(load_file(str(path / str(manifest["weights_file"])), device="cpu"), strict=True)
+    model.to(device=device, dtype=dtype)
+    model.eval()
+    return LoadedInternalModel(
+        model=model,
+        config=config,
+        generation=generation,
+        manifest=manifest,
+        device=device,
+    )
+
+
+def resolve_bootstrap_repair_generation(
+    state_root: Path,
+    active_generation: str,
+) -> str | None:
+    """Find the strongest valid rejected descendant to continue bootstrap from."""
+
+    generations_root = internal_root(state_root) / "generations"
+    if not generations_root.is_dir():
+        return None
+    manifests: dict[str, dict[str, Any]] = {}
+    paths: dict[str, Path] = {}
+    for path in generations_root.iterdir():
+        if not path.is_dir() or path.name.endswith(".tmp"):
+            continue
+        try:
+            manifest = generation_manifest(path)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            continue
+        generation = str(manifest.get("generation", ""))
+        if generation != path.name:
+            continue
+        manifests[generation] = manifest
+        paths[generation] = path
+
+    def descends_from_active(generation: str) -> bool:
+        visited: set[str] = set()
+        current = generation
+        while current and current not in visited:
+            visited.add(current)
+            parent = str(manifests.get(current, {}).get("parent") or "")
+            if parent == active_generation:
+                return True
+            current = parent
+        return False
+
+    candidates: list[tuple[float, float, int, int, str]] = []
+    for generation, manifest in manifests.items():
+        if generation == active_generation or not descends_from_active(generation):
+            continue
+        if manifest.get("status") != "candidate-rejected":
+            continue
+        if manifest.get("bootstrap_policy") != BOOTSTRAP_POLICY:
+            continue
+        if canonical_training_scope(str(manifest.get("training_data_scope", ""))) != "english-core":
+            continue
+        if bool(manifest.get("bootstrap_complete", False)) or bool(manifest.get("generation_ready", False)):
+            continue
+        try:
+            metrics = json.loads((paths[generation] / "metrics.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            continue
+        if not bool(metrics.get("loss_gate_passed", False)):
+            continue
+        readiness = float(metrics.get("generation_readiness_score", 0.0))
+        validation_loss = float(manifest.get("validation_loss", float("inf")))
+        if not math.isfinite(validation_loss):
+            continue
+        candidates.append((
+            readiness,
+            -validation_loss,
+            int(manifest.get("steps", 0)),
+            int(manifest.get("created_unix_ms", 0)),
+            generation,
+        ))
+    return max(candidates)[-1] if candidates else None
+
+
 def save_generation(
     state_root: Path,
     model: ThreadSpireModel,
@@ -720,24 +818,7 @@ def load_active_model(
     dtype: torch.dtype | None = None,
 ) -> LoadedInternalModel:
     path = resolve_active_generation(state_root)
-    manifest = generation_manifest(path)
-    config = ModelConfig.from_path(path / str(manifest.get("config_file", "config.json")))
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if dtype is None:
-        dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else (
-            torch.float16 if device.type == "cuda" else torch.float32
-        )
-    model = ThreadSpireModel(config)
-    model.load_state_dict(load_file(str(path / str(manifest["weights_file"])), device="cpu"), strict=True)
-    model.to(device=device, dtype=dtype)
-    model.eval()
-    return LoadedInternalModel(
-        model=model,
-        config=config,
-        generation=str(manifest["generation"]),
-        manifest=manifest,
-        device=device,
-    )
+    return load_generation_model(state_root, path.name, device=device, dtype=dtype)
 
 
 def lane_skills(lane: str) -> tuple[str, ...]:
@@ -1232,11 +1313,21 @@ def configure_training_scope(model: ThreadSpireModel, scope: str) -> list[nn.Par
     return [parameter for parameter in model.parameters() if parameter.requires_grad]
 
 
-def _next_generation(parent: str) -> str:
+def _next_generation(state_root: Path, parent: str) -> str:
     try:
         number = int(parent.removeprefix("g")) + 1
     except ValueError:
         number = int(time.time())
+    generations_root = internal_root(state_root) / "generations"
+    if generations_root.is_dir():
+        for path in generations_root.iterdir():
+            name = path.name.removesuffix(".tmp")
+            if not name.startswith("g"):
+                continue
+            try:
+                number = max(number, int(name.removeprefix("g")) + 1)
+            except ValueError:
+                continue
     return f"g{number:06d}"
 
 
@@ -1314,28 +1405,57 @@ def train_candidate(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    requested_scope = normalize_skill(scope)
+    training_data_scope = canonical_training_scope(scope)
     write_progress(
         progress_file,
         phase="loading-model",
-        message=f"Loading the active generation on {device.type.upper()}",
+        message=f"Loading the strongest active or repair generation on {device.type.upper()}",
         device=device.type,
         maximum_steps=max(1, int(maximum_steps)),
         bootstrap_target_steps=max(0, int(bootstrap_target_steps)),
     )
     loaded = load_active_model(state_root, device=device, dtype=torch.float32)
+    active_generation = loaded.generation
+    if (
+        training_data_scope == "english-core"
+        and max(0, int(bootstrap_target_steps)) > 0
+        and not bool(loaded.manifest.get("bootstrap_complete", False))
+    ):
+        repair_generation = resolve_bootstrap_repair_generation(
+            state_root,
+            active_generation,
+        )
+        if repair_generation is not None:
+            loaded = load_generation_model(
+                state_root,
+                repair_generation,
+                device=device,
+                dtype=torch.float32,
+            )
+            print(json.dumps({
+                "event": "bootstrap-repair-resume",
+                "active_generation": active_generation,
+                "repair_generation": repair_generation,
+                "prior_total_steps": int(loaded.manifest.get("steps", 0)),
+            }), flush=True)
     parent = loaded.generation
     model = loaded.model
     config = loaded.config
-    requested_scope = normalize_skill(scope)
-    training_data_scope = canonical_training_scope(scope)
     prior_total_steps = max(0, int(loaded.manifest.get("steps", 0)))
     prior_bootstrap_target = max(0, int(loaded.manifest.get("bootstrap_target_steps", 0)))
     effective_bootstrap_target = max(prior_bootstrap_target, max(0, int(bootstrap_target_steps)))
     prior_full_backbone = bool(loaded.manifest.get("full_backbone_trained", False))
+    prior_generation_ready = bool(loaded.manifest.get("generation_ready", False))
+    prior_bootstrap_complete = bool(
+        loaded.manifest.get("bootstrap_complete", False)
+        and prior_full_backbone
+        and prior_generation_ready
+    )
     bootstrap_backbone_required = bool(
         training_data_scope == "english-core"
         and effective_bootstrap_target > 0
-        and not prior_full_backbone
+        and not prior_bootstrap_complete
     )
     optimizer_scope = "all" if bootstrap_backbone_required else training_data_scope
     scope_filter = (
@@ -1595,7 +1715,6 @@ def train_candidate(
         device=device.type,
     )
     validation_loss = evaluate_loss(model, anchors or sequences[:32], device)
-    prior_generation_ready = bool(loaded.manifest.get("generation_ready", False))
     requires_generation_readiness = (
         effective_bootstrap_target > 0 or prior_generation_ready
     )
@@ -1615,18 +1734,13 @@ def train_candidate(
     passed_evaluation = loss_passed and (
         generation_ready if requires_generation_readiness else True
     )
-    generation = _next_generation(parent)
+    generation = _next_generation(state_root, parent)
     total_steps = prior_total_steps + steps
     full_backbone_trained = prior_full_backbone or bool(
         optimizer_scope == "all"
         and training_data_scope == "english-core"
         and effective_bootstrap_target > 0
         and total_steps >= effective_bootstrap_target
-    )
-    prior_bootstrap_complete = bool(
-        loaded.manifest.get("bootstrap_complete", False)
-        and prior_full_backbone
-        and prior_generation_ready
     )
     bootstrap_complete = prior_bootstrap_complete or bool(
         effective_bootstrap_target > 0
@@ -1640,7 +1754,11 @@ def train_candidate(
         phase="saving-generation",
         message="Evaluation passed; publishing the new internal-model generation"
         if passed_evaluation else
-        "Evaluation detected a regression; saving the candidate without promotion",
+        (
+            "Generation canaries did not pass; saving the repair candidate for continuation"
+            if loss_passed else
+            "Held-out loss regressed; saving the candidate without promotion"
+        ),
         generation=generation,
         parent_generation=parent,
         requested_scope=requested_scope,
@@ -1694,6 +1812,8 @@ def train_candidate(
         ),
         "generation": generation,
         "parent_generation": parent,
+        "active_generation_at_start": active_generation,
+        "resumed_from_repair_generation": parent != active_generation,
         "candidate_path": str(path),
         "requested_training_target": requested_scope,
         "training_scope": optimizer_scope,
@@ -1736,15 +1856,22 @@ def train_candidate(
         )
     metrics["english_foundation_established"] = english_established
     atomic_write_text(path / "metrics.json", json.dumps(metrics, indent=2) + "\n")
+    needs_bootstrap_repair = bool(effective_bootstrap_target > 0 and not promoted)
     write_progress(
         progress_file,
-        phase=("complete" if promoted else ("candidate-ready" if passed_evaluation else "rejected")),
+        phase=(
+            "complete" if promoted else
+            ("candidate-ready" if passed_evaluation else
+             ("repair-required" if needs_bootstrap_repair else "rejected"))
+        ),
         message=(
             "Bootstrap training completed and the new generation is active"
             if promoted and bootstrap_complete else
             ("Training completed and the new generation is active" if promoted else
              ("Training completed; promotion is deferred" if passed_evaluation else
-              "Training completed, but the candidate failed regression checks"))
+              ("Bootstrap canaries did not pass; the saved candidate will be continued by repair"
+               if loss_passed and needs_bootstrap_repair else
+               "Training completed, but the candidate failed held-out loss checks")))
         ),
         generation=generation,
         parent_generation=parent,
@@ -1767,6 +1894,7 @@ def train_candidate(
         eta_seconds=0.0,
         promoted=promoted,
         passed_evaluation=passed_evaluation,
+        resumable=needs_bootstrap_repair and loss_passed,
     )
     return metrics
 

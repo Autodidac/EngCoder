@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.30)
 
 project(
     ThreadSpire
-    VERSION 0.5.7
+    VERSION 0.5.8
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 

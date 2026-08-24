@@ -326,6 +326,78 @@ def main() -> int:
         assert curriculum["english_foundation"]["full_backbone_trained"] is True
         assert curriculum["english_foundation"]["generation_ready"] is True
 
+        repair_root = temporary / "bootstrap-repair"
+        model.initialize_model(repair_root, config, force=True)
+        repair_progress = repair_root / "state" / "internal-model-progress.json"
+        repair_original_readiness = model.evaluate_generation_readiness
+        repair_original_loss = model.evaluate_loss
+        try:
+            model.evaluate_generation_readiness = lambda *_args, **_kwargs: (
+                model.GenerationReadiness(
+                    False,
+                    0.0,
+                    ({
+                        "name": "repair-smoke",
+                        "passed": False,
+                        "structural_quality": True,
+                        "reason": "forced repair continuation",
+                        "output": "partial but structurally valid English",
+                    },),
+                )
+            )
+            losses = iter((5.0, 4.0, 4.0, 3.0))
+            model.evaluate_loss = lambda *_args, **_kwargs: next(losses)
+            first_repair = model.train_candidate(
+                repair_root,
+                [source_root / "resources" / "bootstrap.jsonl"],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "english-foundation",
+                1,
+                3.0e-4,
+                1,
+                1,
+                1,
+                repair_root / "control",
+                False,
+                progress_file=repair_progress,
+                bootstrap_target_steps=1,
+                honor_inference_priority=False,
+            )
+            assert first_repair["status"] == "rejected"
+            assert first_repair["generation"] == "g000001"
+            assert model.resolve_bootstrap_repair_generation(
+                repair_root, "g000000"
+            ) == "g000001"
+            assert json.loads(repair_progress.read_text(encoding="utf-8"))["phase"] == "repair-required"
+
+            continued_repair = model.train_candidate(
+                repair_root,
+                [source_root / "resources" / "bootstrap.jsonl"],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "english-foundation",
+                1,
+                3.0e-4,
+                1,
+                1,
+                1,
+                repair_root / "control",
+                False,
+                progress_file=repair_progress,
+                bootstrap_target_steps=1,
+                honor_inference_priority=False,
+            )
+            assert continued_repair["parent_generation"] == "g000001"
+            assert continued_repair["generation"] == "g000002"
+            assert continued_repair["active_generation_at_start"] == "g000000"
+            assert continued_repair["resumed_from_repair_generation"] is True
+            assert continued_repair["training_scope"] == "all"
+            assert continued_repair["total_steps"] == 2
+            assert model.status_payload(repair_root)["generation"] == "g000000"
+        finally:
+            model.evaluate_generation_readiness = repair_original_readiness
+            model.evaluate_loss = repair_original_loss
+
+
         try:
             model.promote_generation(
                 temporary,

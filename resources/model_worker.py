@@ -1026,7 +1026,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "ThreadSpire/0.5.7"
+    server_version = "ThreadSpire/0.5.8"
 
     @property
     def state(self) -> ServerState:
@@ -2239,7 +2239,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "ThreadSpire", "version": "0.5.7"},
+                    "clientInfo": {"name": "ThreadSpire", "version": "0.5.8"},
                 },
             },
         )
@@ -2466,6 +2466,13 @@ def train_internal(arguments: argparse.Namespace) -> int:
     if arguments.metrics_output is not None:
         atomic_write_text(arguments.metrics_output, json.dumps(metrics, indent=2) + "\n")
     print(json.dumps(metrics, indent=2), flush=True)
+    if arguments.foreground_bootstrap and not (
+        bool(metrics.get("promoted_bool", False))
+        and bool(metrics.get("bootstrap_complete", False))
+    ):
+        # A rejected shadow candidate is a recoverable training outcome, but it
+        # is not a successful foreground bootstrap and the host must not start.
+        return 3
     return int(metrics.get("exit_code", 0))
 
 
