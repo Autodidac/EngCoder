@@ -44,6 +44,7 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
+BOOTSTRAP_POLICY = "full-backbone-english-v1"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
@@ -67,10 +68,12 @@ def update_english_foundation_state(
     promoted: bool,
     bootstrap_target_steps: int,
     bootstrap_complete: bool,
+    full_backbone_trained: bool,
+    generation_ready: bool,
     total_steps: int,
     validation_loss: float,
 ) -> bool:
-    """Persist the gate state from the active English generation only."""
+    """Persist the honest usability gate from the active English generation."""
 
     path = state_root / "state" / "curriculum-state.json"
     existing: dict[str, Any] = {}
@@ -93,11 +96,13 @@ def update_english_foundation_state(
         accepted_active_english
         and bootstrap_target_steps > 0
         and bootstrap_complete
+        and full_backbone_trained
+        and generation_ready
     )
     foundation_established = prior_established or established_now
 
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "updated_unix_ms": int(time.time() * 1000),
         "english_foundation": {
             "evaluation_passed": evaluation_ready,
@@ -111,6 +116,10 @@ def update_english_foundation_state(
             "last_candidate_evaluation_passed": evaluation_passed,
             "bootstrap_target_steps": max(0, int(bootstrap_target_steps)),
             "bootstrap_complete": bool(bootstrap_complete),
+            "full_backbone_trained": bool(full_backbone_trained),
+            "generation_ready": bool(generation_ready),
+            "bootstrap_policy": BOOTSTRAP_POLICY,
+            "optimizer_scope": "all" if full_backbone_trained else "english-core",
             "total_steps": max(0, int(total_steps)),
             "validation_loss": (
                 float(validation_loss) if math.isfinite(validation_loss) else None
@@ -614,6 +623,10 @@ def save_generation(
     promote: bool,
     bootstrap_target_steps: int = 0,
     bootstrap_complete: bool = False,
+    training_data_scope: str = "all",
+    full_backbone_trained: bool = False,
+    generation_ready: bool = False,
+    bootstrap_policy: str = BOOTSTRAP_POLICY,
 ) -> Path:
     root = internal_root(state_root)
     destination = root / "generations" / generation
@@ -644,8 +657,12 @@ def save_generation(
         "tokens_seen": tokens_seen,
         "validation_loss": validation_loss,
         "training_scope": training_scope,
+        "training_data_scope": training_data_scope,
         "bootstrap_target_steps": max(0, int(bootstrap_target_steps)),
         "bootstrap_complete": bool(bootstrap_complete),
+        "full_backbone_trained": bool(full_backbone_trained),
+        "generation_ready": bool(generation_ready),
+        "bootstrap_policy": bootstrap_policy,
         "skills": config.skills,
         "external_base_weights": False,
     }
@@ -799,6 +816,8 @@ def assess_generation_quality(text: str) -> GenerationQuality:
         return GenerationQuality(False, "repeated alphanumeric character run")
     if re.search(r"([^\w\s])\1{15,}", stripped):
         return GenerationQuality(False, "repeated punctuation run")
+    if re.search(r"([A-Za-z]{2,5})(?:\1){2,}", stripped, re.IGNORECASE):
+        return GenerationQuality(False, "repeated character-fragment loop")
 
     code_like = _looks_like_code(stripped)
     words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", stripped.lower())
@@ -833,6 +852,14 @@ def assess_generation_quality(text: str) -> GenerationQuality:
     visible = [character for character in stripped if not character.isspace()]
     if len(visible) >= 24 and not code_like:
         alphanumeric_ratio = sum(character.isalnum() for character in visible) / len(visible)
+        letters = "".join(
+            character.lower() for character in visible if character.isalpha()
+        )
+        if len(letters) >= 24:
+            bigrams = Counter(zip(letters, letters[1:]))
+            dominant_ratio = max(bigrams.values(), default=0) / max(1, len(letters) - 1)
+            if dominant_ratio >= 0.20:
+                return GenerationQuality(False, "one character pair dominates the draft")
         if alphanumeric_ratio < 0.18:
             return GenerationQuality(False, "generated text is mostly punctuation")
 
@@ -905,6 +932,95 @@ def generate_tokens(
     tail = decoder.decode(b"", final=True)
     if tail:
         yield tail, -1
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationReadiness:
+    passed: bool
+    score: float
+    samples: tuple[dict[str, Any], ...]
+
+
+def evaluate_generation_readiness(
+    model: ThreadSpireModel,
+    config: ModelConfig,
+    generation: str,
+    manifest: dict[str, Any],
+    device: torch.device,
+) -> GenerationReadiness:
+    """Run deterministic held-out prompts before declaring a model usable."""
+
+    loaded = LoadedInternalModel(
+        model=model,
+        config=config,
+        generation=generation,
+        manifest=manifest,
+        device=device,
+    )
+    canaries = (
+        (
+            "lowercase",
+            [
+                {
+                    "role": "system",
+                    "content": "Return only the requested transformed text.",
+                },
+                {
+                    "role": "user",
+                    "content": "Convert this to lowercase: THREAD AND CHECKPOINT",
+                },
+            ],
+            ("thread", "checkpoint"),
+        ),
+        (
+            "grammar",
+            [
+                {
+                    "role": "system",
+                    "content": "Correct the English and return only the sentence.",
+                },
+                {"role": "user", "content": "The application don't respond."},
+            ],
+            ("application", "respond"),
+        ),
+        (
+            "definition",
+            [
+                {"role": "system", "content": "Answer in precise, plain English."},
+                {
+                    "role": "user",
+                    "content": "Describe throughput without an analogy.",
+                },
+            ],
+            ("throughput", "time"),
+        ),
+    )
+    samples: list[dict[str, Any]] = []
+    passed_count = 0
+    for name, messages, required_terms in canaries:
+        output = "".join(
+            piece
+            for piece, _ in generate_tokens(
+                loaded, messages, "fast", 64, 0.0, top_p=1.0
+            )
+        ).strip()
+        quality = assess_generation_quality(output)
+        semantic_match = all(term in output.lower() for term in required_terms)
+        sample_passed = quality.accepted and semantic_match
+        passed_count += int(sample_passed)
+        samples.append({
+            "name": name,
+            "passed": sample_passed,
+            "structural_quality": quality.accepted,
+            "reason": quality.reason,
+            "output": output,
+        })
+    structurally_sound = all(bool(sample["structural_quality"]) for sample in samples)
+    return GenerationReadiness(
+        passed=structurally_sound and passed_count >= 2,
+        score=passed_count / len(canaries),
+        samples=tuple(samples),
+    )
 
 
 def _record_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
@@ -1211,14 +1327,21 @@ def train_candidate(
     model = loaded.model
     config = loaded.config
     requested_scope = normalize_skill(scope)
-    normalized_scope = canonical_training_scope(scope)
+    training_data_scope = canonical_training_scope(scope)
     prior_total_steps = max(0, int(loaded.manifest.get("steps", 0)))
     prior_bootstrap_target = max(0, int(loaded.manifest.get("bootstrap_target_steps", 0)))
     effective_bootstrap_target = max(prior_bootstrap_target, max(0, int(bootstrap_target_steps)))
+    prior_full_backbone = bool(loaded.manifest.get("full_backbone_trained", False))
+    bootstrap_backbone_required = bool(
+        training_data_scope == "english-core"
+        and effective_bootstrap_target > 0
+        and not prior_full_backbone
+    )
+    optimizer_scope = "all" if bootstrap_backbone_required else training_data_scope
     scope_filter = (
         None
-        if normalized_scope in {"all", "core", "bootstrap", "general"}
-        else normalized_scope
+        if training_data_scope in {"all", "core", "bootstrap", "general"}
+        else training_data_scope
     )
     sequences = load_training_sequences(
         data_paths,
@@ -1232,7 +1355,7 @@ def train_candidate(
     )
     if not sequences:
         raise RuntimeError("no verified internal-model training examples were available")
-    parameters = configure_training_scope(model, normalized_scope)
+    parameters = configure_training_scope(model, optimizer_scope)
     optimizer = torch.optim.AdamW(parameters, lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1)
     use_amp = device.type == "cuda"
     amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
@@ -1247,6 +1370,8 @@ def train_candidate(
         bootstrap_target_steps=effective_bootstrap_target,
         training_examples=len(sequences),
         anchor_examples=len(anchors),
+        training_data_scope=training_data_scope,
+        optimizer_scope=optimizer_scope,
     )
     previous_loss = evaluate_loss(model, anchors or sequences[:32], device)
     model.train()
@@ -1257,14 +1382,14 @@ def train_candidate(
     order = list(range(len(sequences)))
     random.shuffle(order)
     cursor = 0
-    checkpoint_path = internal_root(state_root) / "checkpoints" / f"{parent}-{normalized_scope}" / "latest.pt"
+    checkpoint_path = internal_root(state_root) / "checkpoints" / f"{parent}-{optimizer_scope}" / "latest.pt"
     restored_gradients = False
     if checkpoint_path.is_file():
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if (
             checkpoint.get("format") == FORMAT_VERSION
             and checkpoint.get("parent") == parent
-            and checkpoint.get("scope") == normalized_scope
+            and checkpoint.get("scope") == optimizer_scope
             and int(checkpoint.get("accumulation_steps", accumulation_steps)) == accumulation_steps
         ):
             model.load_state_dict(checkpoint["model"], strict=True)
@@ -1296,7 +1421,7 @@ def train_candidate(
                         dtype=parameter.dtype,
                     ).clone()
                     restored_gradients = True
-            print(json.dumps({"event": "resumed", "steps": steps, "tokens_seen": tokens_seen, "scope": normalized_scope}), flush=True)
+            print(json.dumps({"event": "resumed", "steps": steps, "tokens_seen": tokens_seen, "scope": optimizer_scope}), flush=True)
     if not restored_gradients:
         optimizer.zero_grad(set_to_none=True)
     resumed_step = steps
@@ -1310,7 +1435,8 @@ def train_candidate(
         ),
         generation=parent,
         requested_scope=requested_scope,
-        scope=normalized_scope,
+        scope=optimizer_scope,
+        training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
         prior_total_steps=prior_total_steps,
@@ -1337,7 +1463,7 @@ def train_candidate(
                     model,
                     optimizer,
                     parent=parent,
-                    scope=normalized_scope,
+                    scope=optimizer_scope,
                     steps=steps,
                     tokens_seen=tokens_seen,
                     order=order,
@@ -1350,7 +1476,8 @@ def train_candidate(
                     message="Training checkpointed and yielded to foreground inference",
                     generation=parent,
                     requested_scope=requested_scope,
-                    scope=normalized_scope,
+                    scope=optimizer_scope,
+                    training_data_scope=training_data_scope,
                     step=steps,
                     maximum_steps=maximum_steps,
                     prior_total_steps=prior_total_steps,
@@ -1389,7 +1516,8 @@ def train_candidate(
             if steps == 1 or steps % 10 == 0:
                 print(json.dumps({
                     "event": "training-progress",
-                    "scope": normalized_scope,
+                    "scope": optimizer_scope,
+                    "training_data_scope": training_data_scope,
                     "step": steps,
                     "maximum_steps": maximum_steps,
                     "loss": loss_value,
@@ -1406,7 +1534,8 @@ def train_candidate(
                     message=f"Bootstrap training step {steps:,} of {maximum_steps:,}",
                     generation=parent,
                     requested_scope=requested_scope,
-                    scope=normalized_scope,
+                    scope=optimizer_scope,
+                    training_data_scope=training_data_scope,
                     step=steps,
                     maximum_steps=maximum_steps,
                     prior_total_steps=prior_total_steps,
@@ -1427,7 +1556,7 @@ def train_candidate(
                     model,
                     optimizer,
                     parent=parent,
-                    scope=normalized_scope,
+                    scope=optimizer_scope,
                     steps=steps,
                     tokens_seen=tokens_seen,
                     order=order,
@@ -1452,7 +1581,8 @@ def train_candidate(
         message="Training finished; evaluating the shadow generation",
         generation=parent,
         requested_scope=requested_scope,
-        scope=normalized_scope,
+        scope=optimizer_scope,
+        training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
         prior_total_steps=prior_total_steps,
@@ -1465,19 +1595,45 @@ def train_candidate(
         device=device.type,
     )
     validation_loss = evaluate_loss(model, anchors or sequences[:32], device)
-    improvement = previous_loss - validation_loss if math.isfinite(previous_loss) else 1.0
-    bootstrap_incomplete = (
-        effective_bootstrap_target > 0 and prior_total_steps < effective_bootstrap_target
+    prior_generation_ready = bool(loaded.manifest.get("generation_ready", False))
+    requires_generation_readiness = (
+        effective_bootstrap_target > 0 or prior_generation_ready
     )
-    passed_evaluation = math.isfinite(validation_loss) and (
-        str(loaded.manifest.get("status", "")).startswith("initialized")
-        or bootstrap_incomplete
+    candidate_readiness = (
+        evaluate_generation_readiness(
+            model, config, parent, loaded.manifest, device
+        )
+        if requires_generation_readiness else
+        GenerationReadiness(False, 0.0, ())
+    )
+    generation_ready = bool(candidate_readiness.passed)
+    improvement = previous_loss - validation_loss if math.isfinite(previous_loss) else 1.0
+    loss_passed = math.isfinite(validation_loss) and (
+        not math.isfinite(previous_loss)
         or validation_loss <= previous_loss + 1.0e-6
+    )
+    passed_evaluation = loss_passed and (
+        generation_ready if requires_generation_readiness else True
     )
     generation = _next_generation(parent)
     total_steps = prior_total_steps + steps
-    bootstrap_complete = bool(loaded.manifest.get("bootstrap_complete", False)) or (
-        effective_bootstrap_target > 0 and total_steps >= effective_bootstrap_target
+    full_backbone_trained = prior_full_backbone or bool(
+        optimizer_scope == "all"
+        and training_data_scope == "english-core"
+        and effective_bootstrap_target > 0
+        and total_steps >= effective_bootstrap_target
+    )
+    prior_bootstrap_complete = bool(
+        loaded.manifest.get("bootstrap_complete", False)
+        and prior_full_backbone
+        and prior_generation_ready
+    )
+    bootstrap_complete = prior_bootstrap_complete or bool(
+        effective_bootstrap_target > 0
+        and total_steps >= effective_bootstrap_target
+        and full_backbone_trained
+        and generation_ready
+        and passed_evaluation
     )
     write_progress(
         progress_file,
@@ -1488,12 +1644,16 @@ def train_candidate(
         generation=generation,
         parent_generation=parent,
         requested_scope=requested_scope,
-        scope=normalized_scope,
+        scope=optimizer_scope,
+        training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
         total_steps=total_steps,
         bootstrap_target_steps=effective_bootstrap_target,
         bootstrap_complete=bootstrap_complete,
+        full_backbone_trained=full_backbone_trained,
+        generation_ready=generation_ready,
+        generation_readiness_score=candidate_readiness.score,
         tokens_seen=tokens_seen,
         previous_loss=previous_loss,
         validation_loss=validation_loss,
@@ -1517,10 +1677,14 @@ def train_candidate(
         steps=total_steps,
         tokens_seen=tokens_seen,
         validation_loss=validation_loss,
-        training_scope=normalized_scope,
+        training_scope=optimizer_scope,
+        training_data_scope=training_data_scope,
         promote=promoted,
         bootstrap_target_steps=effective_bootstrap_target,
         bootstrap_complete=bootstrap_complete,
+        full_backbone_trained=full_backbone_trained,
+        generation_ready=generation_ready,
+        bootstrap_policy=BOOTSTRAP_POLICY,
     )
     checkpoint_path.unlink(missing_ok=True)
     metrics = {
@@ -1532,7 +1696,8 @@ def train_candidate(
         "parent_generation": parent,
         "candidate_path": str(path),
         "requested_training_target": requested_scope,
-        "training_scope": normalized_scope,
+        "training_scope": optimizer_scope,
+        "training_data_scope": training_data_scope,
         "steps": steps,
         "tokens_seen": tokens_seen,
         "previous_loss": previous_loss,
@@ -1540,6 +1705,7 @@ def train_candidate(
         "loss_improvement": improvement,
         "validation_score": 1.0 / (1.0 + max(validation_loss, 0.0)) if math.isfinite(validation_loss) else 0.0,
         "regression_score": max(0.0, validation_loss - previous_loss) if math.isfinite(previous_loss) else 0.0,
+        "loss_gate_passed": loss_passed,
         "passed_evaluation": 1.0 if passed_evaluation else 0.0,
         "passed_evaluation_bool": passed_evaluation,
         "promoted": 1.0 if promoted else 0.0,
@@ -1548,9 +1714,14 @@ def train_candidate(
         "total_steps": total_steps,
         "bootstrap_target_steps": effective_bootstrap_target,
         "bootstrap_complete": bootstrap_complete,
+        "full_backbone_trained": full_backbone_trained,
+        "generation_ready": generation_ready,
+        "generation_readiness_score": candidate_readiness.score,
+        "generation_readiness_samples": list(candidate_readiness.samples),
+        "bootstrap_policy": BOOTSTRAP_POLICY,
     }
     english_established = False
-    if normalized_scope == "english-core":
+    if training_data_scope == "english-core":
         english_established = update_english_foundation_state(
             state_root,
             generation=generation,
@@ -1558,6 +1729,8 @@ def train_candidate(
             promoted=promoted,
             bootstrap_target_steps=effective_bootstrap_target,
             bootstrap_complete=bootstrap_complete,
+            full_backbone_trained=full_backbone_trained,
+            generation_ready=generation_ready,
             total_steps=total_steps,
             validation_loss=validation_loss,
         )
@@ -1576,12 +1749,16 @@ def train_candidate(
         generation=generation,
         parent_generation=parent,
         requested_scope=requested_scope,
-        scope=normalized_scope,
+        scope=optimizer_scope,
+        training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
         total_steps=total_steps,
         bootstrap_target_steps=effective_bootstrap_target,
         bootstrap_complete=bootstrap_complete,
+        full_backbone_trained=full_backbone_trained,
+        generation_ready=generation_ready,
+        generation_readiness_score=candidate_readiness.score,
         tokens_seen=tokens_seen,
         previous_loss=previous_loss,
         validation_loss=validation_loss,
@@ -1639,7 +1816,10 @@ def promote_generation(
         "origin": "random-initialized-local-model",
     }
     atomic_write_text(active_manifest_path(state_root), json.dumps(pointer, indent=2) + "\n")
-    if canonical_training_scope(str(manifest.get("training_scope", ""))) == "english-core":
+    curriculum_scope = canonical_training_scope(str(
+        manifest.get("training_data_scope", manifest.get("training_scope", ""))
+    ))
+    if curriculum_scope == "english-core":
         try:
             promoted_validation_loss = float(manifest.get("validation_loss", float("inf")))
         except (TypeError, ValueError):
@@ -1651,6 +1831,8 @@ def promote_generation(
             promoted=True,
             bootstrap_target_steps=int(manifest.get("bootstrap_target_steps", 0)),
             bootstrap_complete=bool(manifest.get("bootstrap_complete", False)),
+            full_backbone_trained=bool(manifest.get("full_backbone_trained", False)),
+            generation_ready=bool(manifest.get("generation_ready", False)),
             total_steps=int(manifest.get("steps", 0)),
             validation_loss=promoted_validation_loss,
         )
@@ -1702,9 +1884,15 @@ def status_payload(state_root: Path) -> dict[str, Any]:
     try:
         path = resolve_active_generation(state_root)
         manifest = generation_manifest(path)
+        ready = bool(
+            manifest.get("status") == "trained"
+            and manifest.get("bootstrap_complete", False)
+            and manifest.get("full_backbone_trained", False)
+            and manifest.get("generation_ready", False)
+        )
         return {
             "initialized": True,
-            "ready": manifest.get("status") == "trained",
+            "ready": ready,
             "path": str(path),
             **manifest,
         }

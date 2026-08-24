@@ -35,11 +35,25 @@ def main() -> int:
             expert_hidden=32,
         )
         model.initialize_model(temporary, config, force=True)
+        original_readiness = model.evaluate_generation_readiness
+        model.evaluate_generation_readiness = lambda *_args, **_kwargs: (
+            model.GenerationReadiness(
+                True,
+                1.0,
+                ({
+                    "name": "server-smoke",
+                    "passed": True,
+                    "structural_quality": True,
+                    "reason": "deterministic server smoke stub",
+                    "output": "thread and checkpoint",
+                },),
+            )
+        )
         trained = model.train_candidate(
             temporary,
             [source_root / "resources" / "bootstrap.jsonl"],
             [source_root / "resources" / "bootstrap_anchors.jsonl"],
-            "all",
+            "english-foundation",
             2,
             3.0e-4,
             1,
@@ -47,8 +61,13 @@ def main() -> int:
             1,
             temporary / "control",
             False,
+            bootstrap_target_steps=2,
+            honor_inference_priority=False,
         )
+        model.evaluate_generation_readiness = original_readiness
         assert trained["promoted_bool"] is True
+        assert trained["training_scope"] == "all"
+        assert model.status_payload(temporary)["ready"] is True
 
         ready = temporary / "state" / "server.ready"
         ready.parent.mkdir(parents=True, exist_ok=True)

@@ -452,9 +452,14 @@ class ServerState:
                 return self._internal_model
             self._clear_internal_locked()
             loaded = internal.load_active_model(self.state_root)
-            if loaded.manifest.get("status") != "trained":
+            if not (
+                loaded.manifest.get("status") == "trained"
+                and loaded.manifest.get("bootstrap_complete", False)
+                and loaded.manifest.get("full_backbone_trained", False)
+                and loaded.manifest.get("generation_ready", False)
+            ):
                 raise RuntimeError(
-                    "ThreadSpire internal weights exist but have not passed bootstrap training yet"
+                    "ThreadSpire internal weights have not passed full-backbone bootstrap and generation readiness"
                 )
             self._internal_model = loaded
             self._internal_generation = loaded.generation
@@ -1021,7 +1026,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "ThreadSpire/0.5.6"
+    server_version = "ThreadSpire/0.5.7"
 
     @property
     def state(self) -> ServerState:
@@ -1129,6 +1134,12 @@ def serve(arguments: argparse.Namespace) -> int:
     control_dir = arguments.state_root / "control"
     control_dir.mkdir(parents=True, exist_ok=True)
     (control_dir / "inference.server").unlink(missing_ok=True)
+    status = internal.status_payload(arguments.state_root)
+    if not bool(status.get("ready", False)):
+        raise RuntimeError(
+            "refusing to serve an internal generation that has not passed "
+            "full-backbone bootstrap and generation readiness"
+        )
     server = ThreadingHTTPServer(("127.0.0.1", arguments.port), RequestHandler)
     server.daemon_threads = True
     state = ServerState(arguments.state_root, arguments.max_loaded_models)
@@ -2228,7 +2239,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "ThreadSpire", "version": "0.5.6"},
+                    "clientInfo": {"name": "ThreadSpire", "version": "0.5.7"},
                 },
             },
         )

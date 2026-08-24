@@ -41,6 +41,13 @@ def main() -> int:
         ).accepted
         assert not model.assess_generation_quality("wing " * 80).accepted
         assert not model.assess_generation_quality("C" + "+" * 80).accepted
+        assert not model.assess_generation_quality(
+            "Rrerorere at at an at at t an athe an at perorororrorrorore "
+            "an an at rrrorororongerororon a"
+        ).accepted
+        assert not model.assess_generation_quality(
+            "ND aterererere aterererererrerrere at atererorereroresterererrererest"
+        ).accepted
         repeated = model.ByteTokenizer.encode_text("abcdefghabcdefgh")
         blocked = model.blocked_no_repeat_tokens(repeated, 8, 512)
         assert model.ByteTokenizer.encode_text("a")[0] in blocked
@@ -254,13 +261,27 @@ def main() -> int:
         )
         assert promoted["status"] == "promoted"
         status = model.status_payload(temporary)
-        assert status["ready"] is True
+        assert status["ready"] is False
         assert status["external_base_weights"] is False
         assert status["generation"] == "g000001"
 
         bootstrap_root = temporary / "bootstrap-target"
         model.initialize_model(bootstrap_root, config, force=True)
         progress_path = bootstrap_root / "state" / "internal-model-progress.json"
+        original_readiness = model.evaluate_generation_readiness
+        model.evaluate_generation_readiness = lambda *_args, **_kwargs: (
+            model.GenerationReadiness(
+                True,
+                1.0,
+                ({
+                    "name": "smoke",
+                    "passed": True,
+                    "structural_quality": True,
+                    "reason": "deterministic smoke stub",
+                    "output": "thread and checkpoint",
+                },),
+            )
+        )
         bootstrap = model.train_candidate(
             bootstrap_root,
             [str(source_root / "resources" / "bootstrap.jsonl")],
@@ -277,8 +298,13 @@ def main() -> int:
             bootstrap_target_steps=2,
             honor_inference_priority=False,
         )
+        model.evaluate_generation_readiness = original_readiness
         assert bootstrap["status"] == "promoted"
         assert bootstrap["bootstrap_complete"] is True
+        assert bootstrap["training_scope"] == "all"
+        assert bootstrap["training_data_scope"] == "english-core"
+        assert bootstrap["full_backbone_trained"] is True
+        assert bootstrap["generation_ready"] is True
         bootstrap_status = model.status_payload(bootstrap_root)
         assert bootstrap_status["ready"] is True
         assert bootstrap_status["bootstrap_target_steps"] == 2
@@ -286,14 +312,19 @@ def main() -> int:
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         assert progress["phase"] == "complete"
         assert progress["requested_scope"] == "english-foundation"
-        assert progress["scope"] == "english-core"
+        assert progress["scope"] == "all"
+        assert progress["training_data_scope"] == "english-core"
         assert progress["bootstrap_complete"] is True
+        assert progress["full_backbone_trained"] is True
+        assert progress["generation_ready"] is True
         assert progress["heartbeat_unix_ms"] > 0
         curriculum = json.loads(
             (bootstrap_root / "state" / "curriculum-state.json").read_text(encoding="utf-8")
         )
         assert curriculum["english_foundation"]["evaluation_passed"] is True
         assert curriculum["english_foundation"]["established"] is True
+        assert curriculum["english_foundation"]["full_backbone_trained"] is True
+        assert curriculum["english_foundation"]["generation_ready"] is True
 
         try:
             model.promote_generation(

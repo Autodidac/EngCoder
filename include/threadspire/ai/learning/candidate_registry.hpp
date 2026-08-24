@@ -38,6 +38,7 @@ struct CandidateRecord final {
     std::filesystem::path log_path;
     double validation_score{0.0};
     double regression_score{1.0};
+    std::uint64_t training_episode_count{0};
     std::string message;
     std::int64_t created_unix_ms{0};
     std::int64_t updated_unix_ms{0};

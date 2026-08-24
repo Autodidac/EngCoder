@@ -680,7 +680,9 @@ void draw_dark_text(
            << L" • " << state.parameter_count << L" parameters"
            << L" • " << state.tokens_seen << L" verified target tokens"
            << L" • bootstrap " << state.steps << L"/" << target
-           << (state.bootstrap_complete ? L" complete" : L" incomplete")
+           << (state.bootstrap_complete ? L" usable" : L" incomplete")
+           << L" • backbone " << (state.full_backbone_trained ? L"trained" : L"pending")
+           << L" • generation canaries " << (state.generation_ready ? L"passed" : L"pending")
            << L" • external base weights: none";
     return stream.str();
 }
@@ -1114,9 +1116,9 @@ MainWindow::MainWindow(const HINSTANCE instance)
         .anchor_dataset = paths_.bootstrap_anchors,
         .base_model = std::move(base_model),
     };
-    // The private model learns from each newly accepted, independently verified
-    // episode. External foundation models retain a larger LoRA microbatch.
-    settings.policy.lora_microbatch = internal_base ? 1U : 4U;
+    // Coalesce independently verified evidence into meaningful candidates.
+    // This prevents one candidate launch per accepted episode.
+    settings.policy.lora_microbatch = internal_base ? 8U : 4U;
     learning_service_ = std::make_unique<learning::ContinualLearningService>(std::move(settings));
     active_log_ = paths_.logs / "model-server.log";
     interactive_model_verified_ = std::filesystem::is_regular_file(
@@ -2943,7 +2945,7 @@ void MainWindow::handle_command(const int identifier) {
             set_status(L"Automatic verified-example generation disabled and saved");
         } else {
             next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                std::chrono::steady_clock::now() + std::chrono::seconds(30);
         }
         update_learning_report();
         break;
@@ -3035,7 +3037,7 @@ void MainWindow::handle_command(const int identifier) {
             piggyback_operation_.cancel();
         } else if (checked(id::learning_auto)) {
             next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                std::chrono::steady_clock::now() + std::chrono::seconds(30);
         }
         update_learning_report();
         break;
@@ -3054,7 +3056,7 @@ void MainWindow::handle_command(const int identifier) {
         } else {
             set_status(L"Automatic verified-example generation enabled for the selected target");
             next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                std::chrono::steady_clock::now() + std::chrono::seconds(30);
         }
         update_learning_report();
         break;
@@ -4233,14 +4235,9 @@ void MainWindow::handle_training_target_change() {
     persist_training_configuration();
 
     if (training_target_ != previous) {
-        if (piggyback_operation_.running()) {
-            piggyback_operation_.cancel();
-        }
-        next_piggyback_at_ =
-            std::chrono::steady_clock::now() + std::chrono::seconds(1);
         set_status(widen(
             "Training target changed to " + training_target_ +
-            ". The next example pass uses it; any current example pass is stopping safely."));
+            ". The current pass keeps its captured target; the next scheduled pass uses the new selection."));
     }
     update_learning_report();
 }
@@ -4275,6 +4272,17 @@ void MainWindow::generate_piggyback(
         }
         return;
     }
+    const auto pipeline = learning_service_->pipeline_snapshot();
+    if (pipeline.active_job.has_value() || pipeline.queued_updates > 0U) {
+        if (!automatic) {
+            set_status(
+                L"Weight training is already active or queued. The example pass "
+                L"will wait so the current checkpoint can finish without disruption.");
+        }
+        next_piggyback_at_ =
+            std::chrono::steady_clock::now() + std::chrono::minutes(2);
+        return;
+    }
 
     const auto target_skill = selected_training_skill();
     const auto dataset = trusted_only
@@ -4305,7 +4313,7 @@ void MainWindow::generate_piggyback(
                 set_status(L"No external teacher model is available. Start a capable local LLM, mark it as a teacher, and discover it first.");
             }
             next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                std::chrono::steady_clock::now() + std::chrono::minutes(2);
             return;
         }
 
@@ -4394,6 +4402,8 @@ void MainWindow::generate_piggyback(
         .minimum_verifier_score = 0.86,
     };
 
+    // The idle lease serializes evidence generation with new weight jobs. The
+    // pipeline guard above ensures acquiring it cannot preempt an existing job.
     learning_service_->set_interactive_busy(true);
     const auto started = piggyback_operation_.start(
         [this, request](const std::stop_token token) {
@@ -4401,7 +4411,6 @@ void MainWindow::generate_piggyback(
                 learning::ContinualLearningService* service;
                 ~BusyReset() { service->set_interactive_busy(false); }
             } reset{learning_service_.get()};
-
             auto result = learning::run_piggyback_foundry(
                 request,
                 *learning_service_,
@@ -4434,7 +4443,9 @@ void MainWindow::generate_piggyback(
         learning_service_->set_interactive_busy(false);
     }
     next_piggyback_at_ =
-        std::chrono::steady_clock::now() + std::chrono::minutes(10);
+        std::chrono::steady_clock::now() + (started
+            ? std::chrono::minutes(10)
+            : std::chrono::minutes(2));
 }
 
 void MainWindow::create_internal_model(
@@ -5135,6 +5146,12 @@ void MainWindow::update_internal_model_lifecycle_ui() {
         if (progress.tokens_seen > 0U) {
             detail << L" • " << progress.tokens_seen << L" verified target tokens";
         }
+        if (progress.full_backbone_trained) {
+            detail << L" • full backbone trained";
+        }
+        if (progress.generation_ready) {
+            detail << L" • generation canaries passed";
+        }
         if (progress.elapsed_seconds > 0.0) {
             detail << L" • elapsed " << format_duration(progress.elapsed_seconds);
         }
@@ -5393,7 +5410,7 @@ void MainWindow::update_chat_result() {
         }
     }
     next_piggyback_at_ =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        std::chrono::steady_clock::now() + std::chrono::minutes(2);
 
     std::wostringstream status;
     status << L"Reply complete";
@@ -5445,7 +5462,7 @@ void MainWindow::update_discovery_result() {
         !learning_service_->paused() &&
         has_available_teacher(runtime_model_snapshot())) {
         next_piggyback_at_ =
-            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
     }
 
     std::wostringstream text;
@@ -5544,13 +5561,12 @@ void MainWindow::update_piggyback_result() {
     const auto trainable_evidence =
         result->progress.trusted_seeded + result->progress.verified;
     if (result->succeeded && trainable_evidence > 0U) {
-        // The stored evidence queues its skill update immediately. The next
-        // teacher pass waits until that queue has drained, then continues.
-        next_piggyback_at_ = now + std::chrono::seconds(5);
+        // Let the coalesced weight candidate drain before another teacher pass.
+        next_piggyback_at_ = now + std::chrono::minutes(10);
     } else if (result->succeeded) {
-        next_piggyback_at_ = now + std::chrono::seconds(30);
+        next_piggyback_at_ = now + std::chrono::minutes(2);
     } else {
-        next_piggyback_at_ = now + std::chrono::minutes(1);
+        next_piggyback_at_ = now + std::chrono::minutes(5);
     }
     set_status(result->succeeded
         ? (trusted_only

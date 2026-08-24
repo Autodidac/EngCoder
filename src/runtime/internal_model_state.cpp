@@ -148,10 +148,13 @@ InternalModelState inspect_internal_model_state(const app::AppPaths& paths) noex
         state.steps = size_or(manifest->find("steps"));
         state.bootstrap_target_steps = size_or(manifest->find("bootstrap_target_steps"));
         state.trained = state.status == "trained";
-        const auto target = default_bootstrap_target(state);
+        state.full_backbone_trained = core::json::bool_or(
+            manifest->find("full_backbone_trained"), false);
+        state.generation_ready = core::json::bool_or(
+            manifest->find("generation_ready"), false);
         state.bootstrap_complete =
-            core::json::bool_or(manifest->find("bootstrap_complete"), false) ||
-            (state.trained && target > 0U && state.steps >= target);
+            core::json::bool_or(manifest->find("bootstrap_complete"), false) &&
+            state.trained && state.full_backbone_trained && state.generation_ready;
         return state;
     } catch (const std::exception& exception) {
         state.error = exception.what();
@@ -199,6 +202,10 @@ InternalModelProgress read_internal_model_progress(const app::AppPaths& paths) n
         progress.resumable = core::json::bool_or(value->find("resumable"), false);
         progress.bootstrap_complete = core::json::bool_or(
             value->find("bootstrap_complete"), false);
+        progress.full_backbone_trained = core::json::bool_or(
+            value->find("full_backbone_trained"), false);
+        progress.generation_ready = core::json::bool_or(
+            value->find("generation_ready"), false);
 
         const auto explicit_percent = core::json::number_or(value->find("percent"), -1.0);
         if (progress.bootstrap_target_steps > 0U) {

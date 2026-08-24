@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.7
+
+- Replaced the expert-only English bootstrap with a full shared-backbone update while retaining English-only training and held-out data.
+- Added deterministic generation canaries and made readiness require trained status, full-backbone completion, held-out loss, and usable generated text.
+- Refuses to start or serve an internal generation that has not passed the complete readiness gate; structurally corrupt short drafts are rejected more aggressively.
+- Added a recoverable v5 lineage migration that quarantines partial-backbone models, candidates, jobs, expert registries, and stale control state while preserving verified episode memory and user configuration.
+- Training-target/package selection now affects only the next pass and never cancels or immediately retriggers the pass already in flight.
+- Coalesces verified evidence into eight-episode internal candidates, prioritizes exact candidate resumes, and preserves evidence collected while a candidate trains.
+- Serializes teacher-data generation with new weight jobs without preempting an active job, and replaces five-second churn loops with bounded idle cadences.
+- Added CPU lifecycle, streaming-server, migration, corruption, and native source-contract regression coverage.
+
 ## 0.5.6
 
 - Fixed the automatic-recovery crash `AttributeError: 'str' object has no attribute 'is_file'` by preserving `pathlib.Path` values through the curriculum boundary.

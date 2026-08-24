@@ -308,12 +308,26 @@ void ContinualLearningService::request_skill_update(std::string skill) {
 void ContinualLearningService::queue_request(LearningRequest request) {
     {
         std::lock_guard lock(mutex_);
-        const auto duplicate = std::ranges::any_of(queue_, [&request](const LearningRequest& queued) {
-            return queued.skill == request.skill && queued.kind == request.kind &&
-                   queued.candidate_id == request.candidate_id;
-        });
-        if (!duplicate) {
-            queue_.push_back(std::move(request));
+        if (request.candidate_id.has_value()) {
+            std::erase_if(queue_, [&request](const LearningRequest& pending) {
+                return pending.skill == request.skill &&
+                       !pending.candidate_id.has_value();
+            });
+            const auto duplicate = std::ranges::any_of(
+                queue_, [&request](const LearningRequest& pending) {
+                    return pending.candidate_id == request.candidate_id;
+                });
+            if (!duplicate) {
+                queue_.push_front(std::move(request));
+            }
+        } else {
+            const auto skill_already_queued = std::ranges::any_of(
+                queue_, [&request](const LearningRequest& pending) {
+                    return pending.skill == request.skill;
+                });
+            if (!skill_already_queued) {
+                queue_.push_back(std::move(request));
+            }
         }
     }
     condition_.notify_all();
@@ -488,11 +502,11 @@ void ContinualLearningService::recover_interrupted_candidates() {
     if (!settings_.resume_interrupted_candidates) {
         return;
     }
-    for (const auto& candidate : interrupted) {
-        queue_.push_back(LearningRequest{
-            .skill = candidate.skill,
-            .candidate_id = candidate.id,
-            .kind = candidate.kind,
+    for (auto candidate = interrupted.rbegin(); candidate != interrupted.rend(); ++candidate) {
+        queue_request(LearningRequest{
+            .skill = candidate->skill,
+            .candidate_id = candidate->id,
+            .kind = candidate->kind,
         });
     }
 }
@@ -629,6 +643,7 @@ bool ContinualLearningService::run_internal_update(
                 {},
                 {});
         }
+        candidate.training_episode_count = active_module.episodes_since_update;
         const auto root = candidate_root(settings, candidate.id);
         candidate.artifact_path = settings.state_root / "models" / "internal";
         candidate.job_directory = root / "job";
@@ -875,7 +890,11 @@ bool ContinualLearningService::run_internal_update(
             current->promoted_candidate_id = candidate.id;
             ++current->generation;
             ++current->lora_generations;
-            current->episodes_since_update = 0;
+            current->episodes_since_update =
+                current->episodes_since_update > candidate.training_episode_count
+                ? current->episodes_since_update -
+                    static_cast<std::size_t>(candidate.training_episode_count)
+                : 0U;
             current->validation_score = candidate.validation_score;
             current->regression_score = candidate.regression_score;
             current->updated_unix_ms = memory::now_unix_ms();
@@ -948,6 +967,7 @@ bool ContinualLearningService::run_lora_update(
                 {},
                 {});
         }
+        candidate.training_episode_count = active_module.episodes_since_update;
         const auto root = candidate_root(settings, candidate.id);
         candidate.artifact_path = root / "adapter";
         candidate.job_directory = root / "job";
@@ -1135,7 +1155,11 @@ bool ContinualLearningService::run_lora_update(
             current->previous_module_path = current->module_path;
             current->adapter_path = candidate.artifact_path;
             current->state = ExpertState::lora_active;
-            current->episodes_since_update = 0;
+            current->episodes_since_update =
+                current->episodes_since_update > candidate.training_episode_count
+                ? current->episodes_since_update -
+                    static_cast<std::size_t>(candidate.training_episode_count)
+                : 0U;
             ++current->lora_generations;
             ++current->generation;
             current->validation_score = candidate.validation_score;
@@ -1209,6 +1233,7 @@ bool ContinualLearningService::run_consolidation(
                 {},
                 {});
         }
+        candidate.training_episode_count = active_module.episodes_since_update;
         const auto root = candidate_root(settings, candidate.id);
         candidate.artifact_path = root / "skill-module";
         candidate.job_directory = root / "job";

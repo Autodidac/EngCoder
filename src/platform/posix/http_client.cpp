@@ -246,7 +246,7 @@ struct ParsedUrl final {
     if (url.port != "80") {
         stream << ':' << url.port;
     }
-    stream << "\r\nUser-Agent: ThreadSpire/0.5.6\r\n"
+    stream << "\r\nUser-Agent: ThreadSpire/0.5.7\r\n"
            << "Connection: close\r\n";
 
     bool has_content_type = false;

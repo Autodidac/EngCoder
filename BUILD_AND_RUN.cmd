@@ -1,6 +1,4 @@
 @echo off
-call "%~dp0tools\APPLY_ENGLISH_FOUNDATION_MIGRATION.cmd"
-if errorlevel 1 exit /b %errorlevel%
 setlocal EnableExtensions
 pushd "%~dp0"
 
@@ -18,6 +16,9 @@ if not errorlevel 1 (
     taskkill /F /IM ThreadSpire.exe /T ^>nul 2^>^&1
 )
 :existing_closed
+
+call "%~dp0tools\APPLY_ENGLISH_FOUNDATION_MIGRATION.cmd"
+if errorlevel 1 goto :failed
 
 call build.cmd %BUILD_ARGUMENT%
 if errorlevel 1 goto :failed

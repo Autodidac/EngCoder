@@ -134,6 +134,9 @@ void CandidateRegistry::load() {
             candidate.log_path = ini.get_string("paths", "log", "");
             candidate.validation_score = ini.get_number("metrics", "validation_score", 0.0);
             candidate.regression_score = ini.get_number("metrics", "regression_score", 1.0);
+            candidate.training_episode_count = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(
+                    0, ini.get_integer("metrics", "training_episode_count", 0)));
             candidate.message = ini.get_string("candidate", "message", "");
             candidate.created_unix_ms = ini.get_integer("time", "created_unix_ms", 0);
             candidate.updated_unix_ms = ini.get_integer("time", "updated_unix_ms", 0);
@@ -165,6 +168,7 @@ CandidateRecord CandidateRegistry::create(
         .log_path = log_path,
         .validation_score = 0.0,
         .regression_score = 1.0,
+        .training_episode_count = 0,
         .message = "candidate staged beside the active skill",
         .created_unix_ms = memory::now_unix_ms(),
         .updated_unix_ms = memory::now_unix_ms(),
@@ -197,7 +201,8 @@ void CandidateRegistry::save(const CandidateRecord& candidate) const {
                << "log=" << quoted(candidate.log_path) << "\n\n"
                << "[metrics]\n"
                << "validation_score=" << candidate.validation_score << '\n'
-               << "regression_score=" << candidate.regression_score << "\n\n"
+               << "regression_score=" << candidate.regression_score << '\n'
+               << "training_episode_count=" << candidate.training_episode_count << "\n\n"
                << "[time]\n"
                << "created_unix_ms=" << candidate.created_unix_ms << '\n'
                << "updated_unix_ms=" << candidate.updated_unix_ms << '\n';

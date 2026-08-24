@@ -855,11 +855,12 @@ void test_windows_ui_source_contract() {
                 ui.find("Foreground inference active. Background learning is paused.") != std::string::npos,
             "automatic learning must start from an available teacher and yield to foreground requests");
     require(ui.find("!models::is_internal_model(model)") != std::string::npos &&
-                ui.find("settings.policy.lora_microbatch = internal_base ? 1U : 4U") != std::string::npos &&
+                ui.find("settings.policy.lora_microbatch = internal_base ? 8U : 4U") != std::string::npos &&
                 ui.find("pipeline_snapshot()") != std::string::npos &&
                 ui.find("ACTIVE WEIGHT UPDATE") != std::string::npos &&
-                ui.find("std::chrono::seconds(5)") != std::string::npos,
-            "the internal model must never teach itself and each independently verified episode must feed a visible immediate weight-update loop");
+                ui.find("The current pass keeps its captured target") != std::string::npos &&
+                ui.find("std::chrono::minutes(10)") != std::string::npos,
+            "the internal model must never teach itself; evidence must coalesce without package-selection cancellation or rapid retrigger loops");
     require(ui.find("No route is available until a model in the selected AI source responds.") != std::string::npos &&
                 ui.find("details are shown in the conversation") != std::string::npos,
             "connection and generation failures must be actionable in the visible workspace");
@@ -1007,8 +1008,11 @@ void test_worker_and_resource_contract() {
     const auto curriculum_guard = read_text_file(source / "resources/curriculum_guard.py");
     require(internal_model.find("threadspire.internal-progress.v1") != std::string::npos &&
                 internal_model.find("bootstrap_complete") != std::string::npos &&
+                internal_model.find("full_backbone_trained") != std::string::npos &&
+                internal_model.find("evaluate_generation_readiness") != std::string::npos &&
+                internal_model.find("optimizer_scope = \"all\"") != std::string::npos &&
                 internal_model.find("honor_inference_priority") != std::string::npos,
-            "internal training must persist completion metadata and report exact resumable progress");
+            "internal training must use the full backbone, pass generation canaries, persist completion metadata, and report exact resumable progress");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&
@@ -1027,8 +1031,10 @@ void test_worker_and_resource_contract() {
                 continual.find("promote-internal") != std::string::npos &&
                 continual.find("activate-internal") != std::string::npos &&
                 continual.find("internal_generation_path") != std::string::npos &&
-                continual.find("promotion_mutex_") != std::string::npos,
-            "internal learning must train shadow generations, compare-and-swap promotion, and support atomic rollback");
+                continual.find("promotion_mutex_") != std::string::npos &&
+                continual.find("std::erase_if(queue_") != std::string::npos &&
+                continual.find("training_episode_count") != std::string::npos,
+            "internal learning must coalesce resumable shadow generations, preserve newly collected evidence, compare-and-swap promotion, and support atomic rollback");
 
     const auto completion = read_text_file(
         source / "src/backend/completion_client.cpp");
