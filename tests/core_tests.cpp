@@ -755,7 +755,7 @@ void test_internal_model_lifecycle_state_and_progress() {
         progress << "{\n"
                  << "  \"phase\": \"training\",\n"
                  << "  \"message\": \"resuming\",\n"
-                 << "  \"bootstrap_policy\": \"independent-conversation-v5\",\n"
+                 << "  \"bootstrap_policy\": \"verified-hybrid-conversation-v6\",\n"
                  << "  \"heartbeat_unix_ms\": " << now_ms << ",\n"
                  << "  \"step\": 6,\n"
                  << "  \"maximum_steps\": 1196,\n"
@@ -1033,7 +1033,9 @@ void test_windows_ui_source_contract() {
                 ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
                 ui.find("never prevents Chat from using another connected AI") != std::string::npos &&
                 ui.find("const auto unavailable_internal") != std::string::npos &&
-                ui.find("Built-in AI is not installed, so Chat kept using the ready AI") != std::string::npos &&
+                ui.find("Built-in AI is still learning and cannot answer yet, so Chat kept using the ready AI") != std::string::npos &&
+                ui.find("Built-in AI has no saved model yet") != std::string::npos &&
+                ui.find("Built-in AI is not installed, so Chat kept using the ready AI") == std::string::npos &&
                 ui.find("update_inference_source(id::chat_source)") != std::string::npos &&
                 ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
                 ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
@@ -1170,10 +1172,13 @@ void test_worker_and_resource_contract() {
                 internal_model.find("bootstrap_complete") != std::string::npos &&
                 internal_model.find("full_backbone_trained") != std::string::npos &&
                 internal_model.find("evaluate_generation_readiness") != std::string::npos &&
+                internal_model.find("def verified_local_response") != std::string::npos &&
                 internal_model.find("optimizer_scope = \"all\"") != std::string::npos &&
                 internal_model.find("honor_inference_priority") != std::string::npos &&
                 internal_model.find("bounded_bootstrap_learning_rate") != std::string::npos &&
-                internal_model.find("return min(scheduled, previous_ceiling)") != std::string::npos,
+                internal_model.find("return min(scheduled, previous_ceiling)") != std::string::npos &&
+                internal_model.find("bootstrap-host-already-ready") != std::string::npos &&
+                internal_model.find("if maximum_steps > 0 and checkpoint_path.is_file():") != std::string::npos,
             "internal training must use the full backbone, never raise the rate on an extended repair target, pass generation canaries, persist completion metadata, and report exact resumable progress");
     require(internal_model.find("filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]") != std::string::npos &&
                 internal_model.find("token_id in {EOS_ID, SEPARATOR_ID}") != std::string::npos,
@@ -1229,10 +1234,19 @@ void test_worker_and_resource_contract() {
 
     const auto completion = read_text_file(
         source / "src/backend/completion_client.cpp");
+    const auto streaming_heartbeat = worker.find("heartbeat,");
+    const auto streaming_dataset = worker.find(
+        "trusted_dataset=state.state_root / \"data\" / \"bootstrap.jsonl\"",
+        streaming_heartbeat);
     require(completion.find("result.finish_reason == \"low_confidence\"") != std::string::npos &&
                 completion.find("repetitive or structurally corrupt") != std::string::npos &&
                 worker.find("assess_generation_quality(last_content, trusted_dataset, messages)") != std::string::npos &&
-                internal_model.find("independent-conversation-v5") != std::string::npos &&
+                worker.find("trusted_dataset=trusted_dataset") != std::string::npos &&
+                streaming_heartbeat != std::string::npos &&
+                streaming_dataset != std::string::npos &&
+                streaming_dataset - streaming_heartbeat < 256U &&
+                internal_model.find("verified-hybrid-conversation-v6") != std::string::npos &&
+                internal_model.find("trusted_dataset=trusted_dataset") != std::string::npos &&
                 internal_model.find("vague-question-repair") != std::string::npos &&
                 internal_model.find("grounded-summary") != std::string::npos &&
                 internal_model.find("safe-replacement-reasoning") != std::string::npos &&

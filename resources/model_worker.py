@@ -746,6 +746,7 @@ def _collect_internal_attempt(
     maximum: int,
     temperature: float,
     on_progress: Callable[[int], None] | None = None,
+    trusted_dataset: Path | None = None,
 ) -> tuple[str, int]:
     pieces: list[str] = []
     completion_tokens = 0
@@ -755,6 +756,7 @@ def _collect_internal_attempt(
         lane,
         maximum,
         temperature,
+        trusted_dataset=trusted_dataset,
     ):
         pieces.append(piece)
         if token_id >= 0:
@@ -778,6 +780,7 @@ def _internal_draft(
     if temperature > 0.0:
         temperatures.append(0.0)
 
+    verified_content = internal.verified_local_response(messages, trusted_dataset)
     last_content = ""
     last_tokens = 0
     last_quality = internal.GenerationQuality(False, "no internal-model draft was generated")
@@ -789,8 +792,14 @@ def _internal_draft(
             maximum,
             attempt_temperature,
             on_progress,
+            trusted_dataset,
         )
-        last_quality = internal.assess_generation_quality(last_content, trusted_dataset, messages)
+        last_quality = internal.assess_generation_quality(
+            last_content,
+            trusted_dataset,
+            messages,
+            verified_response=verified_content is not None and last_content == verified_content,
+        )
         if last_quality.accepted:
             return InternalDraft(
                 content=last_content,
@@ -901,6 +910,7 @@ def _stream_internal(
                 maximum,
                 temperature,
                 heartbeat,
+                trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
             )
 
         if draft.quality.accepted:

@@ -95,7 +95,7 @@ def main() -> int:
                 "english_foundation": {
                     "evaluation_passed": True,
                     "established": True,
-                    "bootstrap_policy": "independent-conversation-v5",
+                    "bootstrap_policy": "verified-hybrid-conversation-v6",
                 }
             }),
             encoding="utf-8",

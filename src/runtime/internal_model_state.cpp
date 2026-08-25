@@ -17,7 +17,7 @@ import threadspire.core;
 namespace threadspire::ai::runtime {
 namespace {
 
-constexpr std::string_view current_bootstrap_policy = "independent-conversation-v5";
+constexpr std::string_view current_bootstrap_policy = "verified-hybrid-conversation-v6";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);

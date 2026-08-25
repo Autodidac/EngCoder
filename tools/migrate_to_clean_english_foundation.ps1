@@ -44,7 +44,7 @@ foreach($f in @(Get-ChildItem -LiteralPath $DataRoot -File -Recurse -Force -Erro
   $dest=Join-Path $quarantine $r; New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest)|Out-Null
   Move-Item -Force -LiteralPath $f.FullName -Destination $dest; $moved.Add($r)
 }
-$guard=[ordered]@{schema_version=2;migration='full-backbone-english-v6';bootstrap_policy='independent-conversation-v5';migrated_at_utc=(Get-Date).ToUniversalTime().ToString('o');selected_target='english-foundation';training_data_scope='english-core';optimizer_scope='all';english_foundation_established=$false;full_backbone_trained=$false;generation_ready=$false;clean_generation_required=$true;legacy_weights_reused=$false;legacy_quarantine=$quarantine;app_data_root=$DataRoot}
+$guard=[ordered]@{schema_version=2;migration='verified-hybrid-english-v7';bootstrap_policy='verified-hybrid-conversation-v6';migrated_at_utc=(Get-Date).ToUniversalTime().ToString('o');selected_target='english-foundation';training_data_scope='english-core';optimizer_scope='all';english_foundation_established=$false;full_backbone_trained=$false;generation_ready=$false;clean_generation_required=$true;legacy_weights_reused=$false;legacy_quarantine=$quarantine;app_data_root=$DataRoot}
 JsonAtomic (Join-Path $state 'english-foundation-guard.json') $guard
 JsonAtomic $marker ([ordered]@{schema_version=2;completed_at_utc=(Get-Date).ToUniversalTime().ToString('o');moved_file_count=$moved.Count;quarantine=$quarantine;next_generation='fresh random weights; English data trains the full backbone and must pass generation canaries'})
 $report=Join-Path $state 'MODEL_STORAGE.txt'

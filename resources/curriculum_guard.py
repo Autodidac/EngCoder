@@ -18,7 +18,7 @@ from typing import Any
 
 ENGLISH_TARGET = "english-foundation"
 ENGLISH_INTERNAL_SCOPE = "english-core"
-BOOTSTRAP_POLICY = "independent-conversation-v5"
+BOOTSTRAP_POLICY = "verified-hybrid-conversation-v6"
 _INTERNAL_TRAIN_COMMAND = "train-internal"
 
 _CPP_LABELS = {

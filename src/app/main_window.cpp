@@ -4192,8 +4192,21 @@ void MainWindow::update_inference_source(const int source_identifier) {
 
     refresh_model_selectors();
     const auto snapshot = runtime_model_snapshot();
+    const auto internal_state = runtime::inspect_internal_model_state(paths_);
+    const auto unavailable_internal_message = [&]() -> std::wstring {
+        if (!internal_state.exists) {
+            return L"Built-in AI has no saved model yet, so Chat kept using the ready AI.";
+        }
+        if (!internal_state.manifest_valid) {
+            return L"Built-in AI setup needs repair, so Chat kept using the ready AI.";
+        }
+        if (!internal_state.bootstrap_complete) {
+            return L"Built-in AI is still learning and cannot answer yet, so Chat kept using the ready AI.";
+        }
+        return L"Built-in AI could not start, so Chat kept using the ready AI.";
+    }();
     set_status(unavailable_internal
-        ? L"Built-in AI is not installed, so Chat kept using the ready AI."
+        ? unavailable_internal_message
         : runtime_summary(snapshot, backend_server_.running()));
 }
 

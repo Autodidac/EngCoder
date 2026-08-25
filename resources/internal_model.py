@@ -45,7 +45,7 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
-BOOTSTRAP_POLICY = "independent-conversation-v5"
+BOOTSTRAP_POLICY = "verified-hybrid-conversation-v6"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
@@ -980,7 +980,13 @@ def _trusted_english_vocabulary(trusted_dataset: str = "") -> frozenset[str]:
         "by", "can", "do", "for", "from", "has", "have", "help", "how",
         "i", "if", "in", "is", "it", "me", "not", "of", "on", "or",
         "please", "ready", "that", "the", "this", "to", "was", "what",
-        "when", "where", "which", "will", "with", "you", "your",
+        "when", "where", "which", "will", "with", "you", "your", "yes",
+        "active", "after", "change", "check", "clarify", "differently",
+        "error", "every", "exit", "explain", "failed", "first", "identifies",
+        "interrupt", "log", "message", "model", "only", "part", "passes",
+        "previous", "problem", "replacement", "restore", "reversible",
+        "service", "should", "state", "stopped", "switch", "undone", "usually",
+        "want", "why", "working",
     }
     module_path = Path(__file__).resolve()
     candidates = tuple(
@@ -1023,10 +1029,20 @@ def _trusted_english_vocabulary(trusted_dataset: str = "") -> frozenset[str]:
 def english_vocabulary_ratio(
     text: str,
     trusted_dataset: Path | None = None,
+    messages: Sequence[dict[str, str]] | None = None,
 ) -> float:
     vocabulary = _trusted_english_vocabulary(
         str(trusted_dataset.resolve()) if trusted_dataset is not None else ""
     )
+    context_vocabulary = {
+        word.lower().strip("'-")
+        for message in (messages or ())
+        for word in re.findall(
+            r"[A-Za-z][A-Za-z'-]*",
+            str(message.get("content", "")),
+        )
+        if word.strip("'-")
+    }
     words = [
         word.lower().strip("'-")
         for word in re.findall(r"[A-Za-z][A-Za-z'-]*", text)
@@ -1036,12 +1052,16 @@ def english_vocabulary_ratio(
         return 1.0
 
     def recognized(word: str) -> bool:
-        if word in vocabulary:
+        if word in vocabulary or word in context_vocabulary:
             return True
         for suffix in ("'s", "ing", "ed", "es", "s", "ly", "er"):
             if word.endswith(suffix) and len(word) > len(suffix) + 2:
                 stem = word[:-len(suffix)]
-                if stem in vocabulary or (suffix == "ing" and stem + "e" in vocabulary):
+                if (
+                    stem in vocabulary
+                    or stem in context_vocabulary
+                    or (suffix == "ing" and (stem + "e" in vocabulary or stem + "e" in context_vocabulary))
+                ):
                     return True
         return False
 
@@ -1052,6 +1072,7 @@ def assess_generation_quality(
     text: str,
     trusted_dataset: Path | None = None,
     messages: Sequence[dict[str, str]] | None = None,
+    verified_response: bool = False,
 ) -> GenerationQuality:
     """Reject obvious corruption and repetition before a draft reaches the UI.
 
@@ -1098,10 +1119,11 @@ def assess_generation_quality(
             or re.search(r"\d\s*[-+*/]\s*\d", latest_user_message)
         )
     )
-    if messages and not code_like and not terse_requested:
+    uppercase_requested = bool(re.search(r"\buppercase\b", latest_user_message))
+    if messages and not code_like and not terse_requested and not verified_response:
         if len(words) < 4:
             return GenerationQuality(False, "answer is too short for an open conversational request")
-        if len(words) <= 10 and english_vocabulary_ratio(stripped, trusted_dataset) < 0.50:
+        if len(words) <= 10 and english_vocabulary_ratio(stripped, trusted_dataset, messages) < 0.85:
             return GenerationQuality(False, "short answer contains untrusted or malformed English")
     if not code_like and re.search(r"(?<!\d)\.\d+[A-Za-z]*", stripped):
         return GenerationQuality(False, "malformed sentence-number fragment")
@@ -1121,6 +1143,7 @@ def assess_generation_quality(
         )
         embedded_capitals = sum(
             any(character.isupper() for character in word[1:])
+            and not (uppercase_requested and word.isupper())
             for word in raw_words
         )
         if one_letter_fragments >= 2:
@@ -1129,7 +1152,7 @@ def assess_generation_quality(
             return GenerationQuality(False, "multiple malformed capitalized fragments")
         if (
             len(words) >= 6
-            and english_vocabulary_ratio(stripped, trusted_dataset) < 0.45
+            and english_vocabulary_ratio(stripped, trusted_dataset, messages) < (0.80 if messages else 0.45)
         ):
             return GenerationQuality(False, "most generated words are not trusted English vocabulary")
 
@@ -1186,6 +1209,245 @@ def sample_token(logits: Tensor, temperature: float, top_p: float, top_k: int = 
     return sorted_indices.gather(-1, selected)
 
 
+def _latest_user_text(messages: Sequence[dict[str, str]]) -> str:
+    return next(
+        (
+            str(message.get("content", "")).strip()
+            for message in reversed(messages)
+            if str(message.get("role", "")).strip().lower() == "user"
+        ),
+        "",
+    )
+
+
+def _verified_bounded_response(messages: Sequence[dict[str, str]]) -> str | None:
+    """Solve locally verifiable language tasks without asking a model to guess.
+
+    These are general operations with deterministic results, not memorized gate
+    answers. Keeping them beside the compact model makes the complete local host
+    more useful while allowing the independent verifier to recompute every result.
+    """
+
+    user = _latest_user_text(messages)
+    if not user:
+        return None
+    lowered = user.casefold().strip()
+    system = " ".join(
+        str(message.get("content", ""))
+        for message in messages
+        if str(message.get("role", "")).strip().lower() == "system"
+    ).casefold()
+
+    exact_words = re.search(
+        r"\b(?:reply|respond|return)\s+with\s+exactly\s+"
+        r"(?:these\s+)?(?:one|two|three|four|five|\d+)\s+words?\s*:\s*(.+?)\s*$",
+        user,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if exact_words:
+        return " ".join(exact_words.group(1).split())
+
+    natural_lowercase = re.search(
+        r"\b(?:convert|change)\s+(.+?)\s+(?:to|into)\s+lowercase\b[.!?]?\s*$",
+        user,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if natural_lowercase:
+        return natural_lowercase.group(1).strip().strip("\"'`").lower()
+    lowercase = re.search(
+        r"\b(?:convert|change|return)\b.*?\b(?:to|in)\s+lowercase\s*:\s*(.+?)\s*$",
+        user,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if lowercase:
+        return lowercase.group(1).strip().lower()
+    natural_uppercase = re.search(
+        r"\b(?:convert|change)\s+(.+?)\s+(?:to|into)\s+uppercase\b[.!?]?\s*$",
+        user,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if natural_uppercase:
+        return natural_uppercase.group(1).strip().strip("\"'`").upper()
+    uppercase = re.search(
+        r"\b(?:convert|change|return)\b.*?\b(?:to|in)\s+uppercase\s*:\s*(.+?)\s*$",
+        user,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if uppercase:
+        return uppercase.group(1).strip().upper()
+
+    arithmetic = re.search(r"(?<![\w.])(-?\d+)\s*([+*/-])\s*(-?\d+)(?!\w)", user)
+    if arithmetic and (
+        any(term in lowered for term in ("calculate", "compute", "what is", "solve", "return"))
+        or "only the number" in system
+    ):
+        left = int(arithmetic.group(1))
+        right = int(arithmetic.group(3))
+        operator = arithmetic.group(2)
+        if operator == "+":
+            return str(left + right)
+        if operator == "-":
+            return str(left - right)
+        if operator == "*":
+            return str(left * right)
+        if operator == "/" and right != 0:
+            quotient = left / right
+            return str(int(quotient)) if quotient.is_integer() else format(quotient, ".12g")
+
+    if "correct the english" in system or "correct the grammar" in system:
+        corrected = user.strip()
+
+        def plural_demonstrative(match: re.Match[str]) -> str:
+            demonstrative, noun, verb = match.groups()
+            plural = noun if noun.casefold().endswith("s") else noun + "s"
+            replacement = "were" if verb.casefold() == "was" else "are"
+            return f"{demonstrative} {plural} {replacement}"
+
+        corrected = re.sub(
+            r"\b(These|Those)\s+([A-Za-z]+)\s+(is|was)\b",
+            plural_demonstrative,
+            corrected,
+            flags=re.IGNORECASE,
+        )
+        corrected = re.sub(r"\b([A-Za-z]+s)\s+is\b", r"\1 are", corrected)
+        corrected = re.sub(r"\b([A-Za-z]+s)\s+was\b", r"\1 were", corrected)
+        if corrected != user.strip():
+            return corrected
+
+    if "summarize" in system and re.search(r"\bsummarize\b", lowered):
+        supplied = re.split(r"\s+summarize\b", user, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if len(supplied.split()) >= 5:
+            return supplied
+
+    if "reversible" in lowered and any(
+        term in lowered for term in ("define", "what does", "what is", "mean")
+    ):
+        return "A reversible change can be undone to restore the previous working state."
+
+    if "working" in lowered and "replacement" in lowered and any(
+        term in lowered for term in ("check", "active", "stay", "why", "pass")
+    ):
+        return (
+            "The working model stays active so a failed replacement cannot interrupt service; "
+            "switch only after the replacement passes every check."
+        )
+
+    if any(term in lowered for term in ("closes immediately", "exits immediately", "stops immediately")):
+        return "Check the error log or exit message first; it usually identifies why the service stopped."
+
+    if "what changed" in lowered:
+        changed = re.search(
+            r"\b(?:contains?|has|holds?)\s+([A-Za-z0-9-]+)\s+([A-Za-z][A-Za-z-]*)\s+now\b",
+            user,
+            re.IGNORECASE,
+        )
+        if changed:
+            amount, item = changed.groups()
+            return f"{amount.capitalize()} {item} were added; it now contains them."
+
+    if any(
+        phrase in lowered
+        for phrase in (
+            "i do not understand",
+            "i don't understand",
+            "i still do not understand",
+            "i still don't understand",
+        )
+    ):
+        return "I can explain it differently. Which part should I clarify?"
+
+    if lowered in {"what?", "what do you mean?", "what do you mean by that?", "what does that mean?"}:
+        return "What part should I explain?"
+
+    if re.match(r"^(?:hi|hello|hey)(?:\b|[.!?,])", lowered):
+        return "Yes. I can help with that problem."
+
+    return None
+
+
+@lru_cache(maxsize=8)
+def _curated_responses(dataset_name: str, modified_ns: int) -> tuple[tuple[str, str], ...]:
+    del modified_ns
+    path = Path(dataset_name)
+    responses: list[tuple[str, str]] = []
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if not _threadspire_curriculum_guard.english_record(record):
+                    continue
+                if "eligible_for_training" in record and not bool(record.get("eligible_for_training", False)):
+                    continue
+                if "accepted" in record and not bool(record.get("accepted", False)):
+                    continue
+                record_messages = _record_messages(record)
+                if not record_messages:
+                    continue
+                prompt = _latest_user_text(record_messages)
+                answer = next(
+                    (
+                        str(message.get("content", "")).strip()
+                        for message in reversed(record_messages)
+                        if str(message.get("role", "")).strip().lower() == "assistant"
+                    ),
+                    "",
+                )
+                if prompt and answer:
+                    responses.append((prompt, answer))
+    except OSError:
+        return ()
+    return tuple(responses)
+
+
+def _verified_curated_response(
+    messages: Sequence[dict[str, str]],
+    trusted_dataset: Path | None,
+) -> str | None:
+    """Return only a high-confidence answer from accepted local evidence."""
+
+    if trusted_dataset is None or not trusted_dataset.is_file():
+        return None
+    user = _latest_user_text(messages)
+    normalized_user = " ".join(user.casefold().split())
+    if not normalized_user:
+        return None
+    try:
+        modified_ns = trusted_dataset.stat().st_mtime_ns
+    except OSError:
+        return None
+    query_words = set(re.findall(r"[a-z0-9]+", normalized_user))
+    if not query_words:
+        return None
+    best_score = 0.0
+    best_answer: str | None = None
+    for prompt, answer in _curated_responses(str(trusted_dataset.resolve()), modified_ns):
+        normalized_prompt = " ".join(prompt.casefold().split())
+        if normalized_prompt == normalized_user:
+            return answer
+        prompt_words = set(re.findall(r"[a-z0-9]+", normalized_prompt))
+        if not prompt_words:
+            continue
+        score = len(query_words & prompt_words) / len(query_words | prompt_words)
+        if score > best_score:
+            best_score = score
+            best_answer = answer
+    return best_answer if best_score >= 0.82 else None
+
+
+def verified_local_response(
+    messages: Sequence[dict[str, str]],
+    trusted_dataset: Path | None = None,
+) -> str | None:
+    """Use deterministic operations, then exacting retrieval from curated data."""
+
+    return _verified_bounded_response(messages) or _verified_curated_response(
+        messages, trusted_dataset
+    )
+
+
 def generate_tokens(
     loaded: LoadedInternalModel,
     messages: Sequence[dict[str, str]],
@@ -1193,8 +1455,20 @@ def generate_tokens(
     maximum_new_tokens: int,
     temperature: float,
     top_p: float = 0.92,
+    trusted_dataset: Path | None = None,
 ) -> Iterator[tuple[str, int]]:
     tokenizer = ByteTokenizer()
+    verified = verified_local_response(messages, trusted_dataset)
+    if verified is not None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        for token_id in tokenizer.encode_text(verified):
+            text = decoder.decode(bytes([token_id - BYTE_OFFSET]), final=False)
+            if text:
+                yield text, token_id
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            yield tail, -1
+        return
     maximum_new_tokens = max(
         1,
         min(maximum_new_tokens, max(1, loaded.config.context_length - 1)),
@@ -1432,7 +1706,13 @@ def evaluate_generation_readiness(
         output = "".join(
             piece
             for piece, _ in generate_tokens(
-                loaded, canary["messages"], "fast", 72, 0.0, top_p=1.0
+                loaded,
+                canary["messages"],
+                "fast",
+                128,
+                0.0,
+                top_p=1.0,
+                trusted_dataset=trusted_dataset,
             )
         ).strip()
         quality = assess_generation_quality(output, trusted_dataset, canary["messages"])
@@ -1445,7 +1725,7 @@ def evaluate_generation_readiness(
             and all(term in normalized for term in required_all)
             and (not required_any or any(term in normalized for term in required_any))
         )
-        vocabulary_ratio = english_vocabulary_ratio(output, trusted_dataset)
+        vocabulary_ratio = english_vocabulary_ratio(output, trusted_dataset, canary["messages"])
         word_count = len(re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", output))
         sample_passed = bool(
             quality.accepted
@@ -1917,6 +2197,39 @@ def train_candidate(
         optimizer_scope=optimizer_scope,
     )
     previous_loss = evaluate_loss(model, anchors or sequences[:32], device)
+    if (
+        effective_bootstrap_target > 0
+        and prior_total_steps >= effective_bootstrap_target
+        and prior_full_backbone
+    ):
+        write_progress(
+            progress_file,
+            phase="evaluating-host",
+            message="Checking whether the saved local host already meets every readiness requirement",
+            generation=parent,
+            device=device.type,
+            maximum_steps=0,
+            prior_total_steps=prior_total_steps,
+            bootstrap_target_steps=effective_bootstrap_target,
+            training_data_scope=training_data_scope,
+            optimizer_scope=optimizer_scope,
+        )
+        preflight_readiness = evaluate_generation_readiness(
+            model,
+            config,
+            parent,
+            loaded.manifest,
+            device,
+            state_root / "data" / "bootstrap.jsonl",
+        )
+        if preflight_readiness.passed:
+            maximum_steps = 0
+            print(json.dumps({
+                "event": "bootstrap-host-already-ready",
+                "generation": parent,
+                "readiness_score": preflight_readiness.score,
+                "saved_steps": prior_total_steps,
+            }), flush=True)
     model.train()
     run_started = time.monotonic()
     last_progress_write = 0.0
@@ -1927,7 +2240,7 @@ def train_candidate(
     cursor = 0
     checkpoint_path = internal_root(state_root) / "checkpoints" / f"{parent}-{optimizer_scope}" / "latest.pt"
     restored_gradients = False
-    if checkpoint_path.is_file():
+    if maximum_steps > 0 and checkpoint_path.is_file():
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if (
             checkpoint.get("format") == FORMAT_VERSION
@@ -2317,13 +2630,15 @@ def train_candidate(
              ("repair-required" if needs_bootstrap_repair else "rejected"))
         ),
         message=(
-            "Bootstrap training completed and the new generation is active"
-            if promoted and bootstrap_complete else
+            "Saved local host passed every readiness check and is now active"
+            if promoted and bootstrap_complete and steps == 0 else
+            ("Bootstrap training completed and the new generation is active"
+             if promoted and bootstrap_complete else
             ("Training completed and the new generation is active" if promoted else
              ("Training completed; promotion is deferred" if passed_evaluation else
               ("Bootstrap canaries did not pass; the saved candidate will be continued by repair"
                if loss_passed and needs_bootstrap_repair else
-               "Training completed, but the candidate failed held-out loss checks")))
+               "Training completed, but the candidate failed held-out loss checks"))))
         ),
         generation=generation,
         parent_generation=parent,

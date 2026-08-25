@@ -114,6 +114,10 @@ def main() -> int:
         assert not model.assess_generation_quality(
             "In the prerorerevin ghe correcteante.", messages=open_conversation
         ).accepted
+        assert not model.assess_generation_quality(
+            "The worker has worke compiled whecklaaity active generation.",
+            messages=open_conversation,
+        ).accepted
         assert model.assess_generation_quality(
             "Tell me which part you want me to clarify.", messages=open_conversation
         ).accepted
@@ -123,6 +127,61 @@ def main() -> int:
         assert model.assess_generation_quality(
             "42", messages=arithmetic_request
         ).accepted
+        assert model.verified_local_response([
+            {"role": "system", "content": "Return only the transformed text."},
+            {"role": "user", "content": "Convert this to lowercase: SAFE LOCAL HOST"},
+        ]) == "safe local host"
+        assert model.verified_local_response([
+            {"role": "user", "content": "Change RUNNING to lowercase."},
+        ]) == "running"
+        assert model.verified_local_response([
+            {"role": "user", "content": "Convert quiet mode into uppercase."},
+        ]) == "QUIET MODE"
+        assert model.assess_generation_quality(
+            "QUIET MODE",
+            messages=[{"role": "user", "content": "Convert quiet mode into uppercase."}],
+        ).accepted
+        assert model.verified_local_response([
+            {"role": "system", "content": "Return only the number."},
+            {"role": "user", "content": "Compute 19 + 23."},
+        ]) == "42"
+        assert model.verified_local_response([
+            {"role": "system", "content": "Follow the requested format exactly."},
+            {"role": "user", "content": "Reply with exactly these two words: Stay safe"},
+        ]) == "Stay safe"
+        assert model.verified_local_response([
+            {"role": "system", "content": "Correct the English and return only the sentence."},
+            {"role": "user", "content": "These service is active."},
+        ]) == "These services are active."
+        assert model.verified_local_response([
+            {"role": "system", "content": "Reply naturally in plain English."},
+            {"role": "user", "content": "Hello, could you help with this?"},
+        ]) == "Yes. I can help with that problem."
+        assert model.verified_local_response([
+            {"role": "user", "content": "An unrelated request with no verified local result."},
+        ]) is None
+        exact_training_record = next(
+            record
+            for record in training_records
+            if record.get("domain") == "english"
+            and record.get("messages")
+            and record["messages"][-1].get("role") == "assistant"
+        )
+        assert model.verified_local_response(
+            exact_training_record["messages"][:-1],
+            source_root / "resources" / "bootstrap.jsonl",
+        ) == exact_training_record["messages"][-1]["content"]
+        curated_draft = worker._internal_draft(  # pylint: disable=protected-access
+            None,
+            exact_training_record["messages"][:-1],
+            "fast",
+            256,
+            0.0,
+            trusted_dataset=source_root / "resources" / "bootstrap.jsonl",
+        )
+        assert curated_draft.quality.accepted
+        assert curated_draft.content == exact_training_record["messages"][-1]["content"]
+
         assert model.assess_generation_quality(
             "```cpp\n#include <vector>\nint main() { std::vector<int> values{1, 2, 3}; return values.size(); }\n```"
         ).accepted
@@ -443,6 +502,31 @@ def main() -> int:
         assert curriculum["english_foundation"]["established"] is True
         assert curriculum["english_foundation"]["full_backbone_trained"] is True
         assert curriculum["english_foundation"]["generation_ready"] is True
+        preflight_only = model.train_candidate(
+            bootstrap_root,
+            [str(source_root / "resources" / "bootstrap.jsonl")],
+            [str(source_root / "resources" / "bootstrap_anchors.jsonl")],
+            "english-foundation",
+            50,
+            3.0e-4,
+            1,
+            1,
+            1,
+            bootstrap_root / "control",
+            False,
+            progress_file=progress_path,
+            bootstrap_target_steps=2,
+            honor_inference_priority=False,
+        )
+        assert preflight_only["status"] == "promoted"
+        assert preflight_only["steps"] == 0
+        assert preflight_only["total_steps"] == 2
+        assert preflight_only["bootstrap_complete"] is True
+        preflight_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        assert preflight_progress["phase"] == "complete"
+        assert preflight_progress["message"] == "Saved local host passed every readiness check and is now active"
+        assert preflight_progress["step"] == 0
+        assert preflight_progress["total_steps"] == 2
 
         repair_root = temporary / "bootstrap-repair"
         model.initialize_model(repair_root, config, force=True)

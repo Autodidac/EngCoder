@@ -146,11 +146,13 @@ The **Learning** page exposes the actual pipeline rather than only the evidence 
 
 The Micro model is intentionally small and begins undertrained. ThreadSpire therefore applies exact byte n-gram blocking during generation and a conservative structural gate before an internal draft reaches the UI. A repetitive or structurally corrupt draft is retried once with greedy decoding. If it still fails, the draft is discarded as `low_confidence`; Automatic source mode can move the request to another eligible connected local model.
 
+Before neural drafting, the local host performs only independently recomputable operations such as case conversion, bounded arithmetic, exact-format copying, and grounded extraction. It may also return an accepted curated answer when the local prompt match is exact or high-confidence. These results still pass the same live gate; unmatched malformed neural text remains `low_confidence`.
+
 This gate blocks obvious loops and corruption. It does not prove factual correctness. A connected mature local LLM remains the stronger interactive source and teacher while the private internal generation accumulates verified training.
 
 ## Bootstrap corpus
 
-`resources/bootstrap.jsonl` contains 3,632 unique training records spanning:
+`resources/bootstrap.jsonl` contains 4,239 unique training records spanning:
 
 - English conversation and instruction following
 - ordinary profanity without irrelevant refusal
