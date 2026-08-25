@@ -222,6 +222,7 @@ struct LearningSettings final {
     bool require_cuda{true};
     bool automatic_consolidation{true};
     bool resume_interrupted_candidates{true};
+    bool initial_interactive_priority{false};
     resource::ResourcePolicy resource_policy{};
 };
 
@@ -274,6 +275,7 @@ public:
 
     [[nodiscard]] bool paused() const noexcept;
     [[nodiscard]] bool interactive_busy() const noexcept;
+    [[nodiscard]] std::uint32_t interactive_lease_count() const noexcept;
     [[nodiscard]] std::vector<LearningJobStatus> statuses() const;
     [[nodiscard]] LearningPipelineSnapshot pipeline_snapshot() const;
     [[nodiscard]] std::vector<ExpertModule> expert_snapshot() const;

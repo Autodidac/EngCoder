@@ -334,7 +334,8 @@ ContinualLearningService::ContinualLearningService(LearningSettings settings)
       expert_registry_(settings_.state_root / "experts" / "registry"),
       candidate_registry_(settings_.state_root / "candidates" / "registry"),
       persistent_queue_(settings_.state_root / "jobs" / "training-state.json"),
-      resource_governor_(settings_.resource_policy) {
+      resource_governor_(settings_.resource_policy),
+      interactive_leases_(settings_.initial_interactive_priority ? 1U : 0U) {
     std::filesystem::create_directories(settings_.state_root / "jobs");
     std::filesystem::create_directories(settings_.state_root / "control");
     expert_registry_.load();
@@ -348,6 +349,7 @@ ContinualLearningService::ContinualLearningService(LearningSettings settings)
     }
     recover_persisted_requests();
     recover_interrupted_candidates();
+    persistent_queue_.set_interactive_busy(interactive_busy());
     publish_control_files();
     worker_ = std::jthread([this](const std::stop_token stop_token) {
         worker_loop(stop_token);
@@ -605,6 +607,10 @@ bool ContinualLearningService::interactive_busy() const noexcept {
     return interactive_leases_.load(std::memory_order_acquire) != 0U;
 }
 
+std::uint32_t ContinualLearningService::interactive_lease_count() const noexcept {
+    return interactive_leases_.load(std::memory_order_acquire);
+}
+
 std::vector<LearningJobStatus> ContinualLearningService::statuses() const {
     std::lock_guard lock(mutex_);
     return statuses_;
@@ -813,7 +819,6 @@ void ContinualLearningService::process_request(
         std::lock_guard lock(mutex_);
         if (const auto* candidate = candidate_registry_.find(*request.candidate_id);
             candidate != nullptr) {
-            status.id = candidate->id;
             status.candidate_id = candidate->id;
             status.log_path = candidate->log_path;
             status.progress_path = candidate->job_directory / "progress.json";
@@ -952,7 +957,6 @@ bool ContinualLearningService::run_internal_update(
         commit_candidate(candidate);
     }
 
-    status.id = candidate.id;
     status.candidate_id = candidate.id;
     status.log_path = candidate.log_path;
     status.progress_path = candidate.job_directory / "progress.json";
@@ -1313,7 +1317,6 @@ bool ContinualLearningService::run_lora_update(
         commit_candidate(candidate);
     }
 
-    status.id = candidate.id;
     status.candidate_id = candidate.id;
     status.log_path = candidate.log_path;
     std::filesystem::create_directories(candidate.job_directory);
@@ -1586,7 +1589,6 @@ bool ContinualLearningService::run_consolidation(
         commit_candidate(candidate);
     }
 
-    status.id = candidate.id;
     status.candidate_id = candidate.id;
     status.log_path = candidate.log_path;
     std::filesystem::create_directories(candidate.job_directory);

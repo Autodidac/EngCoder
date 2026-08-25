@@ -221,8 +221,14 @@ void test_interactive_priority_uses_nested_leases() {
         .learning_rate = 1.0e-4,
         .require_cuda = true,
         .automatic_consolidation = true,
+        .initial_interactive_priority = true,
     };
     threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+    require(service.interactive_busy() && service.interactive_lease_count() == 1U,
+            "startup priority must exist before the recovered worker can begin");
+    service.set_interactive_busy(false);
+    require(!service.interactive_busy(),
+            "startup priority must release exactly once after a model becomes ready");
     service.set_interactive_busy(true);
     service.set_interactive_busy(true);
     require(service.interactive_busy(),
@@ -1030,9 +1036,18 @@ void test_windows_ui_source_contract() {
     require(ui.find("English foundation — recommended first") != std::string::npos &&
                 ui.find("training-target.txt") != std::string::npos &&
                 ui.find("Automatic mode never changes the selected target") != std::string::npos &&
-                ui.find("Import trusted JSONL") != std::string::npos &&
+                ui.find("Add verified file") != std::string::npos &&
                 ui.find("choose_training_dataset") != std::string::npos,
             "the training interface must default to English, persist target selection, and expose understandable custom JSONL import");
+    require(ui.find("Training Library —") != std::string::npos &&
+                ui.find("append_training_library_file") != std::string::npos &&
+                ui.find("Approved result") != std::string::npos &&
+                ui.find("Held-out check") != std::string::npos &&
+                ui.find("Held out from training; used only to check the candidate") != std::string::npos &&
+                ui.find("No prompt or answer below is shortened") != std::string::npos &&
+                ui.find("id::learning_library_filter") != std::string::npos &&
+                ui.find("width >= scaled(980, dpi_)") != std::string::npos,
+            "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");
     require(ui.find("TCS_OWNERDRAWFIXED") != std::string::npos &&
                 ui.find("TCS_FIXEDWIDTH") != std::string::npos &&
                 ui.find("CBS_OWNERDRAWFIXED") != std::string::npos &&
@@ -1139,13 +1154,24 @@ void test_worker_and_resource_contract() {
                 internal_model.find("optimizer_scope = \"all\"") != std::string::npos &&
                 internal_model.find("honor_inference_priority") != std::string::npos,
             "internal training must use the full backbone, pass generation canaries, persist completion metadata, and report exact resumable progress");
+    require(internal_model.find("filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]") != std::string::npos &&
+                internal_model.find("token_id in {EOS_ID, SEPARATOR_ID}") != std::string::npos,
+            "generation must honor the supervised end-of-answer separator instead of forcing correct answers to continue as garbage");
+    require(lifecycle_ui.find("automatic_bootstrap_targets{24000U, 36000U, 50000U}") != std::string::npos &&
+                lifecycle_ui.find("adaptive_bootstrap_target") != std::string::npos &&
+                lifecycle_ui.find("saved_learning_steps(progress) >= automatic_bootstrap_targets.back()") != std::string::npos &&
+                lifecycle_ui.find("training copy is not used") != std::string::npos &&
+                lifecycle_ui.find("this training copy cannot answer until every check passes") != std::string::npos,
+            "automatic bootstrap must advance through 24k, 36k, and 50k stages, visibly quarantine unproven work, and stop boundedly at the final cap");
     require(internal_model.find("resolve_bootstrap_repair_generation") != std::string::npos &&
                 internal_model.find("resumed_from_repair_generation") != std::string::npos &&
                 internal_model.find("_next_generation(state_root, parent)") != std::string::npos &&
                 worker.find("A rejected shadow candidate is a recoverable training outcome") != std::string::npos &&
                 lifecycle_ui.find("an explicit repair retry must continue from the saved candidate") != std::string::npos &&
-                lifecycle_ui.find("create_internal_model(true, true)") != std::string::npos,
-            "automatic and manual bootstrap repair must continue the strongest rejected lineage and never start an unready host");
+                lifecycle_ui.find("create_internal_model(true, true)") != std::string::npos &&
+                lifecycle_ui.find("bootstrap_priority_lease_") != std::string::npos &&
+                lifecycle_ui.find("interactive_lease_count() > reserved_bootstrap_lease") != std::string::npos,
+            "automatic and manual bootstrap repair must continue the strongest rejected lineage, reserve startup priority before recovered jobs run, and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&
@@ -1171,8 +1197,11 @@ void test_worker_and_resource_contract() {
                 continual.find("transition_durable_phase") != std::string::npos &&
                 continual.find("promotion_mutex_") != std::string::npos &&
                 continual.find("std::erase_if(queue_") != std::string::npos &&
-                continual.find("training_episode_count") != std::string::npos,
-            "internal learning must coalesce resumable shadow generations, preserve newly collected evidence, compare-and-swap promotion, and support atomic rollback");
+                continual.find("training_episode_count") != std::string::npos &&
+                continual.find("status.candidate_id = candidate.id") != std::string::npos &&
+                continual.find("status.id = candidate.id") == std::string::npos &&
+                continual.find("status.id = candidate->id") == std::string::npos,
+            "internal learning must keep a stable serialized job ID, coalesce resumable shadow generations, preserve new evidence, compare-and-swap promotion, and support atomic rollback");
 
     const auto completion = read_text_file(
         source / "src/backend/completion_client.cpp");

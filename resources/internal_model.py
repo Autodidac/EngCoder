@@ -1146,18 +1146,19 @@ def generate_tokens(
         past = result["past_key_values"]
         logits = result["logits"][:, -1, :]
         for _ in range(maximum_new_tokens):
-            # During free-form generation only UTF-8 byte tokens and EOS are
-            # legal.  Structural chat tokens are training delimiters, not text.
+            # UTF-8 bytes are visible text. EOS and the supervised separator are
+            # both learned end-of-answer markers and must remain legal stop tokens.
             filtered_logits = logits.clone()
             filtered_logits[:, :BYTE_OFFSET] = float("-inf")
             filtered_logits[:, EOS_ID] = logits[:, EOS_ID]
+            filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]
             for blocked_token in blocked_no_repeat_tokens(generated_tokens):
                 filtered_logits[:, blocked_token] = float("-inf")
             if len(generated_tokens) >= 6 and len(set(generated_tokens[-6:])) == 1:
                 filtered_logits[:, generated_tokens[-1]] = float("-inf")
             next_token = sample_token(filtered_logits, temperature, top_p)
             token_id = int(next_token.item())
-            if token_id == EOS_ID:
+            if token_id in {EOS_ID, SEPARATOR_ID}:
                 break
             if BYTE_OFFSET <= token_id < VOCAB_SIZE:
                 generated_tokens.append(token_id)

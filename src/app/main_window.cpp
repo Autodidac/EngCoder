@@ -17,6 +17,7 @@ module;
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -44,6 +45,7 @@ constexpr COLORREF text_color = RGB(236, 239, 244);
 constexpr COLORREF muted_text_color = RGB(171, 177, 190);
 constexpr COLORREF disabled_text_color = RGB(112, 118, 130);
 constexpr DWORD immersive_dark_mode_attribute = 20U;
+constexpr std::array<std::size_t, 3> automatic_bootstrap_targets{24000U, 36000U, 50000U};
 
 namespace id {
 constexpr int tabs = 100;
@@ -183,6 +185,12 @@ constexpr int learning_dataset_browse = 616;
 constexpr int learning_dataset_import = 617;
 constexpr int learning_dataset_template = 618;
 constexpr int learning_stop = 619;
+constexpr int learning_activity_header = 620;
+constexpr int learning_library_header = 621;
+constexpr int learning_library_filter = 622;
+constexpr int learning_library_source = 623;
+constexpr int learning_library_refresh = 624;
+constexpr int learning_library = 625;
 
 constexpr int horizon_repository_label = 700;
 constexpr int horizon_repository = 701;
@@ -221,7 +229,7 @@ constexpr std::array training_targets{
     TrainingTargetOption{L"C++23 core", "cpp23-core"},
     TrainingTargetOption{L"C++23 debugging", "cpp23-debugging"},
     TrainingTargetOption{L"C++23 generation", "cpp23-generation"},
-    TrainingTargetOption{L"Custom skill ID", "custom"},
+    TrainingTargetOption{L"Custom topic name", "custom"},
 };
 
 constexpr int custom_training_target_index =
@@ -773,6 +781,34 @@ void draw_dark_text(
     return std::nullopt;
 }
 
+[[nodiscard]] bool terminal_learning_phase(const std::string_view phase) noexcept {
+    return phase == "repair-required" || phase == "rejected" || phase == "failed";
+}
+
+[[nodiscard]] std::size_t saved_learning_steps(
+    const runtime::InternalModelProgress& progress) noexcept {
+    return progress.total_steps > 0U
+        ? progress.total_steps
+        : progress.prior_total_steps + progress.step;
+}
+
+[[nodiscard]] std::size_t adaptive_bootstrap_target(
+    const AppPaths& paths,
+    const runtime::InternalModelState& state) noexcept {
+    const auto configured = runtime::default_bootstrap_target(state);
+    const auto progress = runtime::read_internal_model_progress(paths);
+    if (!progress.available || !terminal_learning_phase(progress.phase)) {
+        return configured;
+    }
+    const auto completed = saved_learning_steps(progress);
+    for (const auto target : automatic_bootstrap_targets) {
+        if (completed < target) {
+            return std::max(configured, target);
+        }
+    }
+    return automatic_bootstrap_targets.back();
+}
+
 [[nodiscard]] bool automatic_learning_limit_reached(
     const AppPaths& paths,
     const runtime::InternalModelState& state) noexcept {
@@ -780,20 +816,9 @@ void draw_dark_text(
         return false;
     }
     const auto progress = runtime::read_internal_model_progress(paths);
-    if (!progress.available) {
-        return false;
-    }
-    const auto target = progress.bootstrap_target_steps > 0U
-        ? progress.bootstrap_target_steps
-        : runtime::default_bootstrap_target(state);
-    const auto completed = progress.total_steps > 0U
-        ? progress.total_steps
-        : progress.prior_total_steps + progress.step;
-    const auto terminal = progress.phase == "repair-required" ||
-        progress.phase == "rejected" || progress.phase == "failed";
-    return terminal && target > 0U && completed >= target;
+    return progress.available && terminal_learning_phase(progress.phase) &&
+        saved_learning_steps(progress) >= automatic_bootstrap_targets.back();
 }
-
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
     const auto state = runtime::inspect_internal_model_state(paths);
     if (!state.exists) {
@@ -826,7 +851,7 @@ void draw_dark_text(
     } else {
         stream << completed << L"/" << target;
     }
-    stream << L" • progress is saved automatically";
+    stream << L" • saved automatically • not used for answers until every check passes";
     return stream.str();
 }
 [[nodiscard]] std::wstring format_duration(const double seconds) {
@@ -1163,6 +1188,244 @@ LRESULT CALLBACK page_host_subclass(
     return result;
 }
 
+struct TrainingLibraryRecord final {
+    std::string category;
+    std::string identifier;
+    std::string topic;
+    std::string tags;
+    std::string provenance;
+    std::string verification;
+    std::string prompt;
+    std::string answer;
+    std::string fingerprint;
+};
+
+[[nodiscard]] std::string lower_ascii(std::string value) {
+    std::ranges::transform(value, value.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+[[nodiscard]] std::string json_tags(const core::json::Value& record) {
+    const auto* value = record.find("tags");
+    const auto* tags = value == nullptr ? nullptr : value->as_array();
+    if (tags == nullptr) {
+        return {};
+    }
+    std::string result;
+    for (const auto& tag : *tags) {
+        const auto text = core::json::string_or(&tag);
+        if (text.empty()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += text;
+    }
+    return result;
+}
+
+void append_training_library_file(
+    const std::filesystem::path& path,
+    const std::string_view category,
+    std::vector<TrainingLibraryRecord>& records,
+    std::size_t& unreadable_records) {
+    if (!std::filesystem::is_regular_file(path)) {
+        return;
+    }
+    std::ifstream stream(path, std::ios::binary);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::string error;
+        auto document = core::json::try_parse(line, error);
+        if (!document.has_value() || !document->is_object()) {
+            ++unreadable_records;
+            continue;
+        }
+
+        const auto held_out = category == "Held-out check";
+        const auto approved_result = category == "Approved result";
+        if (!held_out && !approved_result &&
+            document->find("accepted") != nullptr &&
+            !core::json::bool_or(document->find("accepted"), false)) {
+            continue;
+        }
+        if (approved_result) {
+            const auto independently_checked =
+                core::json::bool_or(document->find("human_accepted"), false) ||
+                core::json::bool_or(document->find("deterministic_verified"), false) ||
+                core::json::bool_or(document->find("reference_verified"), false);
+            if (!core::json::bool_or(document->find("eligible_for_training"), false) ||
+                !independently_checked ||
+                core::json::bool_or(document->find("human_rejected"), false)) {
+                continue;
+            }
+        }
+
+        TrainingLibraryRecord record;
+        record.category = std::string(category);
+        record.identifier = core::json::string_or(document->find("id"), "unnamed-record");
+        record.topic = core::json::string_or(
+            document->find("skill"),
+            core::json::string_or(document->find("domain"), "general"));
+        record.tags = json_tags(*document);
+        record.provenance = core::json::string_or(
+            document->find("provenance"),
+            held_out ? "bundled independent validation" : "bundled curated curriculum");
+
+        if (approved_result) {
+            record.prompt = core::json::string_or(document->find("prompt"));
+            record.answer = core::json::string_or(document->find("response"));
+            record.verification = core::json::string_or(document->find("verification_notes"));
+            if (record.verification.empty()) {
+                if (core::json::bool_or(document->find("human_accepted"), false)) {
+                    record.verification = "Approved by the user";
+                } else if (core::json::bool_or(document->find("reference_verified"), false)) {
+                    record.verification = "Matched a trusted reference";
+                } else {
+                    record.verification = "Passed an independent deterministic check";
+                }
+            }
+            record.fingerprint = core::json::string_or(document->find("content_hash"));
+        } else {
+            const auto* messages_value = document->find("messages");
+            const auto* messages = messages_value == nullptr ? nullptr : messages_value->as_array();
+            if (messages != nullptr) {
+                for (const auto& message : *messages) {
+                    const auto role = lower_ascii(core::json::string_or(message.find("role"), "user"));
+                    const auto content = core::json::string_or(message.find("content"));
+                    if (content.empty()) {
+                        continue;
+                    }
+                    if (role == "assistant") {
+                        if (!record.answer.empty()) {
+                            record.answer += "\n";
+                        }
+                        record.answer += content;
+                    } else {
+                        if (!record.prompt.empty()) {
+                            record.prompt += "\n";
+                        }
+                        record.prompt += role == "system" ? "Instruction: " : "User: ";
+                        record.prompt += content;
+                    }
+                }
+            }
+            record.verification = held_out
+                ? "Held out from training; used only to check the candidate"
+                : "Accepted curated example";
+        }
+        if (record.prompt.empty() || record.answer.empty()) {
+            ++unreadable_records;
+            continue;
+        }
+        if (record.fingerprint.empty()) {
+            record.fingerprint = record.prompt + '\n' + record.answer;
+        }
+        records.push_back(std::move(record));
+    }
+}
+
+[[nodiscard]] std::wstring training_library_text(
+    const AppPaths& paths,
+    const std::string_view search_text,
+    const int source_filter,
+    std::wstring& summary) {
+    std::vector<TrainingLibraryRecord> records;
+    std::size_t unreadable_records = 0;
+    append_training_library_file(
+        paths.bootstrap_dataset,
+        "Training example",
+        records,
+        unreadable_records);
+    append_training_library_file(
+        paths.memory / "episodes.jsonl",
+        "Approved result",
+        records,
+        unreadable_records);
+    append_training_library_file(
+        paths.bootstrap_anchors,
+        "Held-out check",
+        records,
+        unreadable_records);
+
+    std::map<std::string, std::size_t, std::less<>> duplicate_counts;
+    std::size_t training_count = 0;
+    std::size_t approved_count = 0;
+    std::size_t held_out_count = 0;
+    for (const auto& record : records) {
+        ++duplicate_counts[record.fingerprint];
+        training_count += record.category == "Training example" ? 1U : 0U;
+        approved_count += record.category == "Approved result" ? 1U : 0U;
+        held_out_count += record.category == "Held-out check" ? 1U : 0U;
+    }
+
+    const auto query = lower_ascii(std::string(search_text));
+    std::vector<const TrainingLibraryRecord*> visible;
+    visible.reserve(records.size());
+    for (const auto& record : records) {
+        const auto source_matches = source_filter <= 0 ||
+            (source_filter == 1 && record.category == "Training example") ||
+            (source_filter == 2 && record.category == "Approved result") ||
+            (source_filter == 3 && record.category == "Held-out check");
+        if (!source_matches) {
+            continue;
+        }
+        if (!query.empty()) {
+            const auto searchable = lower_ascii(
+                record.category + '\n' + record.identifier + '\n' + record.topic + '\n' +
+                record.tags + '\n' + record.provenance + '\n' + record.verification + '\n' +
+                record.prompt + '\n' + record.answer);
+            if (searchable.find(query) == std::string::npos) {
+                continue;
+            }
+        }
+        visible.push_back(&record);
+    }
+
+    std::wostringstream summary_stream;
+    summary_stream << L"Training Library — " << visible.size() << L" shown of " << records.size()
+                   << L" records • " << training_count << L" training • " << approved_count
+                   << L" approved results • " << held_out_count << L" held-out checks";
+    if (unreadable_records > 0U) {
+        summary_stream << L" • " << unreadable_records << L" unreadable";
+    }
+    summary = summary_stream.str();
+
+    std::wostringstream output;
+    output << L"WHAT THREADSPIRE LEARNS FROM\r\n"
+           << L"Training examples and approved results can update weights. Held-out checks never train the model; they only decide whether a candidate is safe to use. No prompt or answer below is shortened.\r\n\r\n";
+    if (visible.empty()) {
+        output << L"No records match this view.";
+        return output.str();
+    }
+    std::size_t index = 0;
+    for (const auto* record : visible) {
+        ++index;
+        const auto duplicates = duplicate_counts[record->fingerprint];
+        output << L"[" << index << L"] " << widen(record->category) << L"\r\n"
+               << L"Name: " << widen(record->identifier) << L"\r\n"
+               << L"Topic: " << widen(record->topic) << L"\r\n";
+        if (!record->tags.empty()) {
+            output << L"Tags: " << widen(record->tags) << L"\r\n";
+        }
+        output << L"Source: " << widen(record->provenance) << L"\r\n"
+               << L"Checks: " << widen(record->verification) << L"\r\n";
+        if (duplicates > 1U) {
+            output << L"Duplicate copies: " << duplicates
+                   << L" (training uses one copy)\r\n";
+        }
+        output << L"\r\nPROMPT\r\n" << widen(record->prompt)
+               << L"\r\n\r\nEXPECTED ANSWER\r\n" << widen(record->answer)
+               << L"\r\n\r\n------------------------------------------------------------\r\n\r\n";
+    }
+    return output.str();
+}
 [[nodiscard]] double coding_score(const models::ModelProfile& model) noexcept {
     return model.quality * 0.55 + model.reliability * 0.25 +
            std::min(1.0, model.tokens_per_second / 100.0) * 0.10 +
@@ -1300,6 +1563,9 @@ MainWindow::MainWindow(const HINSTANCE instance)
         .anchor_dataset = paths_.bootstrap_anchors,
         .base_model = std::move(base_model),
     };
+    const auto initial_internal_state = runtime::inspect_internal_model_state(paths_);
+    bootstrap_priority_lease_ = !initial_internal_state.bootstrap_complete;
+    settings.initial_interactive_priority = bootstrap_priority_lease_;
     // Coalesce independently verified evidence into meaningful candidates.
     // This prevents one candidate launch per accepted episode.
     settings.policy.lora_microbatch = internal_base ? 8U : 4U;
@@ -2120,19 +2386,19 @@ void MainWindow::create_models_page() {
 void MainWindow::create_learning_page() {
     const auto parent = control(id::page_learning);
     create_control(
-        L"STATIC", L"Training — choose the target first; automatic mode never changes it",
+        L"STATIC", L"Learning — automatic by default; every accepted example is visible below",
         WS_CHILD | WS_VISIBLE, 0, id::learning_header, parent);
     create_control(
-        L"BUTTON", L"Pause all background weight training",
+        L"BUTTON", L"Pause background learning",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::learning_pause, parent);
     create_control(
-        L"BUTTON", L"Automatic verified examples while idle",
+        L"BUTTON", L"Learn automatically while the app is idle",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::learning_auto, parent);
     set_checked(id::learning_auto, automatic_training_enabled_);
     create_control(
-        L"BUTTON", L"Stop current pass",
+        L"BUTTON", L"Stop current learning pass",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_stop, parent);
 
@@ -2152,7 +2418,7 @@ void MainWindow::create_learning_page() {
     }
 
     create_control(
-        L"STATIC", L"Custom skill ID",
+        L"STATIC", L"Custom topic name",
         WS_CHILD | WS_VISIBLE, 0, id::learning_custom_skill_label, parent);
     create_control(
         L"EDIT", widen(custom_training_skill_).c_str(),
@@ -2160,23 +2426,23 @@ void MainWindow::create_learning_page() {
         0, id::learning_custom_skill, parent);
 
     create_control(
-        L"STATIC", L"Teacher examples per batch",
+        L"STATIC", L"New examples to check",
         WS_CHILD | WS_VISIBLE, 0, id::learning_count_label, parent);
     create_control(
         L"EDIT", L"8",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         0, id::learning_piggyback_count, parent);
     create_control(
-        L"BUTTON", L"Generate verified examples",
+        L"BUTTON", L"Find more examples now",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_piggyback, parent);
     create_control(
-        L"BUTTON", L"Queue/retry selected weight update",
+        L"BUTTON", L"Improve selected topic now",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_build_custom, parent);
 
     create_control(
-        L"STATIC", L"Custom training JSONL",
+        L"STATIC", L"My examples file",
         WS_CHILD | WS_VISIBLE, 0, id::learning_dataset_label, parent);
     create_control(
         L"EDIT", custom_training_dataset_.wstring().c_str(),
@@ -2187,11 +2453,11 @@ void MainWindow::create_learning_page() {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_dataset_browse, parent);
     create_control(
-        L"BUTTON", L"Import trusted JSONL",
+        L"BUTTON", L"Add verified file",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_dataset_import, parent);
     create_control(
-        L"BUTTON", L"Open JSONL template",
+        L"BUTTON", L"Open example template",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_dataset_template, parent);
 
@@ -2214,12 +2480,59 @@ void MainWindow::create_learning_page() {
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
         0, id::learning_jobs, parent);
+    create_control(
+        L"STATIC", L"Current learning activity",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_activity_header, parent);
+    create_control(
+        L"STATIC", L"Training Library — loading accepted examples…",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_library_header, parent);
+    const auto library_filter = create_control(
+        L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        0, id::learning_library_filter, parent);
+    static_cast<void>(::SendMessageW(
+        library_filter,
+        EM_SETCUEBANNER,
+        TRUE,
+        reinterpret_cast<LPARAM>(L"Search prompts, answers, topics, tags, or sources")));
+    const auto library_source = create_control(
+        L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, id::learning_library_source, parent);
+    for (const auto* option : {
+             L"Everything",
+             L"Training examples",
+             L"Approved results",
+             L"Held-out checks"}) {
+        static_cast<void>(::SendMessageW(
+            library_source,
+            CB_ADDSTRING,
+            0,
+            reinterpret_cast<LPARAM>(option)));
+    }
+    static_cast<void>(::SendMessageW(library_source, CB_SETCURSEL, 0, 0));
+    create_control(
+        L"BUTTON", L"Apply / refresh view",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_library_refresh, parent);
+    const auto library = create_control(
+        L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL |
+        ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        0, id::learning_library, parent);
+    static_cast<void>(::SendMessageW(
+        library,
+        EM_SETLIMITTEXT,
+        static_cast<WPARAM>(16U * 1024U * 1024U),
+        0));
 
     select_training_skill(training_target_);
     set_control_text(
         id::learning_piggyback_status,
         widen("Selected target: " + selected_training_skill() +
               " • automatic mode will remain on this target"));
+    update_training_library();
+
 }
 
 void MainWindow::create_skills_page() {
@@ -3075,13 +3388,108 @@ void MainWindow::layout_controls() {
         width,
         policy_height);
     learning_y += policy_height + gap;
-    move_control(
-        control(id::learning_jobs),
-        0,
-        learning_y,
-        width,
-        std::max(1, height - learning_y));
 
+    const auto library_source_width = scaled(170, dpi_);
+    const auto library_refresh_width = scaled(175, dpi_);
+    if (width >= scaled(980, dpi_)) {
+        const auto activity_width = std::max(scaled(320, dpi_), (width - gap) * 34 / 100);
+        const auto library_x = activity_width + gap;
+        const auto library_width = std::max(1, width - library_x);
+        move_control(
+            control(id::learning_activity_header),
+            0,
+            learning_y,
+            activity_width,
+            row);
+        move_control(
+            control(id::learning_library_header),
+            library_x,
+            learning_y,
+            library_width,
+            row);
+        const auto content_y = learning_y + row + gap;
+        move_control(
+            control(id::learning_jobs),
+            0,
+            content_y,
+            activity_width,
+            std::max(1, height - content_y));
+        const auto filter_width = std::max(
+            1,
+            library_width - library_source_width - library_refresh_width - gap * 2);
+        move_control(
+            control(id::learning_library_filter),
+            library_x,
+            content_y,
+            filter_width,
+            row);
+        move_control(
+            control(id::learning_library_source),
+            library_x + filter_width + gap,
+            content_y,
+            library_source_width,
+            row + scaled(160, dpi_));
+        move_control(
+            control(id::learning_library_refresh),
+            library_x + filter_width + library_source_width + gap * 2,
+            content_y,
+            library_refresh_width,
+            row);
+        const auto library_y = content_y + row + gap;
+        move_control(
+            control(id::learning_library),
+            library_x,
+            library_y,
+            library_width,
+            std::max(1, height - library_y));
+    } else {
+        move_control(control(id::learning_activity_header), 0, learning_y, width, row);
+        const auto activity_y = learning_y + row + gap;
+        const auto remaining = std::max(1, height - activity_y);
+        const auto activity_height = std::max(row * 3, remaining / 3);
+        move_control(
+            control(id::learning_jobs),
+            0,
+            activity_y,
+            width,
+            activity_height);
+        const auto library_header_y = activity_y + activity_height + gap;
+        move_control(
+            control(id::learning_library_header),
+            0,
+            library_header_y,
+            width,
+            row);
+        const auto filter_y = library_header_y + row + gap;
+        const auto filter_width = std::max(
+            1,
+            width - library_source_width - library_refresh_width - gap * 2);
+        move_control(
+            control(id::learning_library_filter),
+            0,
+            filter_y,
+            filter_width,
+            row);
+        move_control(
+            control(id::learning_library_source),
+            filter_width + gap,
+            filter_y,
+            library_source_width,
+            row + scaled(160, dpi_));
+        move_control(
+            control(id::learning_library_refresh),
+            filter_width + library_source_width + gap * 2,
+            filter_y,
+            library_refresh_width,
+            row);
+        const auto library_y = filter_y + row + gap;
+        move_control(
+            control(id::learning_library),
+            0,
+            library_y,
+            width,
+            std::max(1, height - library_y));
+    }
     move_control(control(id::skills_bootstrap), 0, 0, scaled(180, dpi_), row);
     move_control(
         control(id::skills_refresh),
@@ -3403,6 +3811,10 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::learning_dataset_template:
         open_path(paths_.custom_training_template);
+        break;
+    case id::learning_library_refresh:
+        update_training_library();
+        set_status(L"Training Library refreshed");
         break;
     case id::learning_stop:
         stop_training_pass();
@@ -3850,7 +4262,7 @@ std::wstring MainWindow::runtime_summary(
             ? progress.bootstrap_target_steps
             : runtime::default_bootstrap_target(internal_state);
         std::wostringstream value;
-        value << L"NOT READY — learning automatically";
+        value << L"NOT READY — learning automatically; training copy is not used";
         if (target > 0U) {
             value << L" (" << completed << L"/" << target << L")";
         }
@@ -3860,7 +4272,7 @@ std::wstring MainWindow::runtime_summary(
     } else if (!automatic_lifecycle_enabled_) {
         built_in_status = L"NOT READY — automatic setup paused";
     } else if (automatic_learning_limit_reached(paths_, internal_state)) {
-        built_in_status = L"NOT READY — quality limit reached; no unapproved model was used";
+        built_in_status = L"NOT READY — failed quality checks; rejected copy was never used";
     } else if (!runtime::backend_files_present(paths_)) {
         built_in_status = L"NOT INSTALLED — required files are missing";
     } else if (!internal_state.exists) {
@@ -5108,6 +5520,9 @@ void MainWindow::create_internal_model(
             ? "large-local"
             : (lowered_name.find("standard") != std::string::npos ? "standard" : "micro");
     }
+    if (automatic) {
+        bootstrap_target = adaptive_bootstrap_target(paths_, state);
+    }
 
     if (bootstrap && state.bootstrap_complete) {
         if (!backend_server_.running()) {
@@ -5816,6 +6231,12 @@ void MainWindow::handle_lifecycle_completion() {
 void MainWindow::drive_automatic_lifecycle() {
     handle_lifecycle_completion();
 
+    const auto state = runtime::inspect_internal_model_state(paths_);
+    if (bootstrap_priority_lease_ && state.bootstrap_complete) {
+        learning_service_->set_interactive_busy(false);
+        bootstrap_priority_lease_ = false;
+    }
+
     if (backend_operation_.running()) {
         if (automatic_lifecycle_enabled_ &&
             lifecycle_action_ == LifecycleAction::bootstrap_model) {
@@ -5842,9 +6263,10 @@ void MainWindow::drive_automatic_lifecycle() {
 
     // Setup yields to anything the user is doing. Installing files, teaching the
     // local model, and starting its helper never interrupt an active task.
+    const auto reserved_bootstrap_lease = bootstrap_priority_lease_ ? 1U : 0U;
     if (chat_operation_.running() || media_operation_.running() ||
         long_horizon_operation_.running() || piggyback_operation_.running() ||
-        learning_service_->interactive_busy()) {
+        learning_service_->interactive_lease_count() > reserved_bootstrap_lease) {
         return;
     }
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
@@ -5865,7 +6287,6 @@ void MainWindow::drive_automatic_lifecycle() {
         return;
     }
 
-    const auto state = runtime::inspect_internal_model_state(paths_);
     if (!state.manifest_valid || !state.bootstrap_complete) {
         if (automatic_learning_limit_reached(paths_, state)) {
             lifecycle_last_error_ =
@@ -5941,6 +6362,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
         if (progress.eta_seconds.has_value()) {
             detail << L" • about " << format_duration(*progress.eta_seconds) << L" remaining";
         }
+        detail << L" • this training copy cannot answer until every check passes";
         if (progress.stale) {
             detail << L" • progress is delayed; the saved work remains safe";
         }
@@ -6460,6 +6882,27 @@ void MainWindow::update_skill_report() {
     set_control_text(id::skills_report, report.str());
 }
 
+void MainWindow::update_training_library() {
+    const auto query = trim_line_endings(narrow(control_text(id::learning_library_filter)));
+    const auto selected = static_cast<int>(::SendMessageW(
+        control(id::learning_library_source),
+        CB_GETCURSEL,
+        0,
+        0));
+    try {
+        std::wstring summary;
+        auto text = training_library_text(paths_, query, std::max(0, selected), summary);
+        set_control_text(id::learning_library_header, std::move(summary));
+        set_control_text(id::learning_library, std::move(text));
+    } catch (const std::exception& error) {
+        set_control_text(
+            id::learning_library_header,
+            L"Training Library — could not read the accepted examples");
+        set_control_text(
+            id::learning_library,
+            widen("ThreadSpire could not build this view: " + std::string(error.what())));
+    }
+}
 void MainWindow::update_learning_report() {
     const auto statuses = learning_service_->statuses();
     const auto candidates = learning_service_->candidate_snapshot();

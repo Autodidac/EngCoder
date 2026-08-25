@@ -107,6 +107,7 @@ private:
     void update_mcp_result();
     void update_piggyback_result();
     void update_learning_report();
+    void update_training_library();
     void update_skill_report();
     void update_media_result();
     void update_storage_report(bool force = false);
@@ -222,6 +223,7 @@ private:
     LifecycleAction lifecycle_action_{LifecycleAction::none};
     bool automatic_lifecycle_enabled_{true};
     bool automatic_training_enabled_{true};
+    bool bootstrap_priority_lease_{false};
     bool backend_verified_{false};
     bool backend_repair_required_{false};
     std::size_t lifecycle_failures_{0};
