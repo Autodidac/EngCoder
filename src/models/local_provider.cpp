@@ -1,8 +1,5 @@
-#include "threadspire/ai/models/local_provider.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -10,6 +7,10 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+
+module threadspire.models;
+import threadspire.core;
+import threadspire.platform;
 
 namespace threadspire::ai::models {
 namespace {

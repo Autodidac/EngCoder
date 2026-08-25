@@ -5,101 +5,104 @@
 Requirements:
 
 - Windows 10 or newer
-- Visual Studio 2022 or 2026
-- Desktop development with C++
+- Visual Studio 2022 with **Desktop development with C++**
 - Windows 10/11 SDK
-- CMake 3.30+
-- 64-bit Python 3.12 recommended for the ML runtime
+- CMake 3.30 or newer
 - Git for repository-agent work
 
-From PowerShell in the repository root, build, validate, and launch:
+Python, PyTorch, Transformers, PEFT, and media engines are not base build or runtime dependencies.
+
+Run a clean Visual Studio 2022 release build and its tests from the repository root:
 
 ```powershell
-.\BUILD_AND_RUN.cmd clean
+cmake --fresh --preset windows-vs2022
+cmake --build --preset windows-vs2022-release --clean-first -- /m:1
+ctest --preset windows-vs2022-release
 ```
 
-`BUILD_AND_RUN.cmd` calls the lower-level `build.cmd`, detects the installed Visual Studio generator, configures CMake, builds Release with `/W4 /WX /permissive-`, runs CTest, closes an older running ThreadSpire instance, and launches the validated executable. Use `.\build.cmd clean` when a build-only workflow is required.
-
-Visual Studio 2022 output:
+The executable is written to:
 
 ```text
 out\build\windows-vs2022\bin\Release\ThreadSpire.exe
 ```
 
-Visual Studio 2026 output:
-
-```text
-out\build\windows-vs2026\bin\Release\ThreadSpire.exe
-```
-
-PowerShell does not search the current directory automatically; use the `./` or `.\` prefix.
-
-## Private ML runtime
-
-The GUI creates, installs, verifies, and repairs its private virtual environment automatically at launch. Manual Local AI controls are collapsed by default behind **Show advanced recovery controls**; they are not required setup steps. The internal model requires:
-
-- CUDA-enabled PyTorch
-- safetensors
-
-The optional external-model LoRA workflow additionally uses:
-
-- Transformers
-- PEFT
-- bitsandbytes
-- datasets
-- Accelerate
-- sentencepiece
-
-The installer currently installs the complete set so every retained tab works. Existing compatible Python/PyTorch environments can be selected on **Local AI**.
-
-Materialized backend files:
-
-```text
-%LOCALAPPDATA%\ThreadSpire\backend\model_worker.py
-%LOCALAPPDATA%\ThreadSpire\backend\internal_model.py
-```
-
-Internal weights:
-
-```text
-%LOCALAPPDATA%\ThreadSpire\models\internal
-```
-
-No PowerShell controller is used at runtime. C++ launches and supervises the worker with Windows process APIs and a Job Object. The lifecycle controller resumes exact model/optimizer/data/RNG checkpoints, publishes an atomic progress heartbeat, retries failed stages, and restarts the model host after an unexpected exit.
-
-## Manual CMake
-
-Visual Studio 2022:
+Install the base into a clean staging directory, then enforce the 100 MiB ceiling:
 
 ```powershell
-cmake --preset windows-vs2022
-cmake --build --preset windows-vs2022-release --parallel
-ctest --preset windows-vs2022-release
+cmake --install out\build\windows-vs2022 --config Release --prefix out\install\windows-vs2022
+cmake -DTHREADSPIRE_BASE_ROOT=out\install\windows-vs2022 -P tools\check_base_footprint.cmake
 ```
 
-Visual Studio 2026:
+Models and optional packs are excluded from the base budget. The installed base currently contains only `ThreadSpire.exe`; it does not materialize Python scripts or install a private runtime.
+
+## C++23 modules
+
+CMake 3.30 `FILE_SET CXX_MODULES` publishes these named modules:
+
+- `threadspire.core`
+- `threadspire.platform`
+- `threadspire.storage`
+- `threadspire.models`
+- `threadspire.providers`
+- `threadspire.tasks`
+- `threadspire.scheduler`
+- `threadspire.learning`
+- `threadspire.media`
+- `threadspire.mcp`
+- `threadspire.ui`
+
+Implementation units and native tests consume the interfaces with `import`. Windows SDK and third-party headers stay in global module fragments or platform implementation units.
+
+## Capability packs
+
+Heavy functionality is installed explicitly from **Connections**. Each pack is staged and verified before an atomic commit; cancellation or failure restores the prior pack. Installing a pack never starts training, selects a model, starts a host, or interrupts a task.
+
+Supported pack classes are:
+
+- compact native inference
+- internal PyTorch training
+- optional Transformers/PEFT fine-tuning (dependent on the training pack)
+- optional image engine
+- optional audio engine
+
+A pack source must contain its declared files and `pack.json`. Python is needed only inside packs that declare it. Internal training payloads include `model_worker.py`, `internal_model.py`, and `curriculum_guard.py`; these files are source assets for pack assembly and are not embedded in the base executable.
+
+## Validation
+
+The CTest suite covers module consumption, unified routing and multimodal providers, cancellation and artifacts, transactional pack rollback, model-selection isolation, durable training resume/coalescing, atomic candidate-host promotion, storage accounting/cleanup, reset-path validation, the English Gate, and the base footprint.
+
+Optional Python validation for pack maintainers:
 
 ```powershell
-cmake --preset windows-vs2026
-cmake --build --preset windows-vs2026-release --parallel
-ctest --preset windows-vs2026-release
+python -m py_compile resources\model_worker.py resources\internal_model.py resources\curriculum_guard.py
+python tests\curriculum_guard_smoke.py --source-root .
+python tests\internal_model_smoke.py --source-root .
 ```
+
+The internal-model smoke test requires a compatible PyTorch environment and uses temporary state; it does not modify the selected application model.
+
+## Guarded legacy-state reset
+
+A release reset is permitted only after the replacement release build, CTest, smoke tests, and footprint check all pass. Validate first:
+
+```powershell
+.\tools\reset_threadspire_appdata.ps1 `
+  -Target "$env:LOCALAPPDATA\ThreadSpire" `
+  -ReplacementVersion 0.6.0 `
+  -ValidateOnly
+```
+
+The destructive invocation accepts only the exact resolved `%LOCALAPPDATA%\ThreadSpire` directory, rejects reparse roots and escaped links, stops only ThreadSpire-owned processes, writes a dated size/version/deletion manifest beside the directory, and performs a no-follow deletion. It must never be pointed at a source checkout.
 
 ## Linux core validation
 
 ```bash
-cmake --preset linux-ninja
+cmake --fresh --preset linux-ninja
 cmake --build --preset linux-release --parallel
 ctest --preset linux-release
-python3 -m py_compile \
-    resources/model_worker.py \
-    resources/internal_model.py \
-    tools/generate_bootstrap_data.py \
-    tests/internal_model_smoke.py
-python3 tests/internal_model_smoke.py --source-root .
 ```
 
-Linux does not build the Win32 GUI. It validates the platform-neutral C++23 core, POSIX process/HTTP adapters, Python syntax, and a CPU-only random-model train/preempt/resume/promote cycle.
+Linux validates the platform-neutral module library and POSIX adapters. The Win32 GUI target is Windows-only.
 
 ## Regenerating bootstrap data
 
@@ -111,12 +114,4 @@ python3 tools/generate_bootstrap_data.py \
     --anchor-count 320
 ```
 
-The generator deduplicates normalized messages and removes held-out anchors from the training file.
-
-## Clean rebuild after embedded-resource changes
-
-```powershell
-.\build.cmd clean
-```
-
-A clean configure is required after changing CMake, the resource template, manifest, worker, internal model, model registry, or embedded datasets.
+The generator keeps provenance, deduplicates normalized messages, and excludes deterministic held-out anchors from the training file. Generated or teacher-authored text remains untrusted until an independent verifier admits it.

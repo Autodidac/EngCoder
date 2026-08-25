@@ -1,14 +1,15 @@
-#include "threadspire/ai/backend/agent_orchestrator.hpp"
-
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/mcp/client.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <chrono>
 #include <future>
 #include <ranges>
 #include <sstream>
 #include <utility>
+
+module threadspire.providers;
+import threadspire.core;
+import threadspire.mcp;
 
 namespace threadspire::ai::backend {
 namespace {

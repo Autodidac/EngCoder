@@ -1,7 +1,5 @@
-#include "threadspire/ai/models/model_registry.hpp"
-
-#include "threadspire/ai/core/ini.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
@@ -9,6 +7,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+module threadspire.models;
+import threadspire.core;
 
 namespace threadspire::ai::models {
 namespace {

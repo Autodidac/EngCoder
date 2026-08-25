@@ -1,5 +1,5 @@
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -8,6 +8,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+module threadspire.core;
 
 namespace threadspire::ai::core::json {
 namespace {

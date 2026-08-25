@@ -1,15 +1,16 @@
-#include "threadspire/ai/backend/completion_client.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/models/local_server_hub.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <chrono>
 #include <map>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+module threadspire.providers;
+import threadspire.core;
+import threadspire.models;
+import threadspire.platform;
 
 namespace threadspire::ai::backend {
 namespace {

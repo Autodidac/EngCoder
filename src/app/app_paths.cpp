@@ -1,14 +1,14 @@
-#include "threadspire/ai/app/app_paths.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include "resource.h"
-
-#include <Windows.h>
 #include <ShlObj.h>
-
+#include <Windows.h>
 #include <cstddef>
 #include <fstream>
 #include <stdexcept>
 #include <system_error>
+
+module threadspire.platform;
 
 namespace threadspire::ai::app {
 namespace {
@@ -87,11 +87,17 @@ AppPaths make_app_paths() {
     AppPaths paths;
     paths.executable = executable_path();
     paths.root = local_app_data() / "ThreadSpire";
-    paths.runtime = paths.root / "runtime";
+    paths.packs = paths.root / "packs";
+    paths.outputs = paths.root / "outputs";
+    paths.cache = paths.root / "cache";
+    paths.candidates = paths.root / "candidates";
+    paths.checkpoints = paths.root / "models" / "internal" / "checkpoints";
+    const auto training_pack = paths.packs / "internal-pytorch-training";
+    paths.runtime = training_pack / "runtime";
     paths.python = paths.runtime / "Scripts" / "python.exe";
-    paths.worker = paths.root / "backend" / "model_worker.py";
-    paths.internal_model_module = paths.root / "backend" / "internal_model.py";
-    paths.curriculum_guard_module = paths.root / "backend" / "curriculum_guard.py";
+    paths.worker = training_pack / "backend" / "model_worker.py";
+    paths.internal_model_module = training_pack / "backend" / "internal_model.py";
+    paths.curriculum_guard_module = training_pack / "backend" / "curriculum_guard.py";
     paths.model_registry = paths.root / "config" / "models.ini";
     paths.local_server_registry = paths.root / "config" / "local-servers.ini";
     paths.mcp_registry = paths.root / "config" / "mcp.ini";
@@ -108,8 +114,13 @@ AppPaths make_app_paths() {
     return paths;
 }
 
-void materialize_embedded_resources(const AppPaths& paths) {
+void initialize_base_resources(const AppPaths& paths) {
     std::filesystem::create_directories(paths.root);
+    std::filesystem::create_directories(paths.packs);
+    std::filesystem::create_directories(paths.outputs);
+    std::filesystem::create_directories(paths.cache);
+    std::filesystem::create_directories(paths.candidates);
+    std::filesystem::create_directories(paths.checkpoints);
     std::filesystem::create_directories(paths.jobs);
     std::filesystem::create_directories(paths.logs);
     std::filesystem::create_directories(paths.experts);
@@ -123,9 +134,6 @@ void materialize_embedded_resources(const AppPaths& paths) {
         stale_marker_error.clear();
     }
 
-    write_resource(IDR_MODEL_WORKER, paths.worker, true);
-    write_resource(IDR_INTERNAL_MODEL, paths.internal_model_module, true);
-    write_resource(IDR_CURRICULUM_GUARD, paths.curriculum_guard_module, true);
     write_resource(IDR_DEFAULT_MODELS, paths.model_registry, false);
     write_resource(IDR_SEED_DATA, paths.data / "seed.jsonl", false);
     write_resource(IDR_ANCHOR_DATA, paths.data / "anchors.jsonl", false);

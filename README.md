@@ -2,7 +2,7 @@
 
 ThreadSpire is a local task workbench: describe one outcome, choose a capability, and run it through a compatible local model or tool harness. Text, code help, repository work, MCP tools, image generation, and speech generation share one **Task** interface. Connections, verified learning, detailed runs, and storage are supporting surfaces rather than separate competing products.
 
-ThreadSpire can also run and continuously improve a **locally initialized internal language model**. Learning is isolated from package/model selection: the selected training target changes only when the user changes it, foreground work preempts and checkpoints training, and automatic repair resumes the strongest quality-gated candidate.
+ThreadSpire can also run and continuously improve a **locally initialized internal language model** through an explicitly installed capability pack. The native base application does not require Python or PyTorch. Installing or selecting a pack never starts training, changes the selected model, or interrupts an active task.
 
 The internal model does not load Qwen, Llama, OpenAI, LM Studio, Ollama, or Hugging Face model weights. Its transformer weights are created from random initialization on the user's machine, trained by the private PyTorch worker, evaluated as shadow generations, and promoted only when the candidate passes the configured gates.
 
@@ -12,9 +12,11 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 
 - One C++23 Win32 GUI: `ThreadSpire.exe`
 - Dark native Windows interface, including a dark title bar and dark controls
-- Automatic install, verification, exact-resume bootstrap, host startup, crash recovery, and bounded retry
+- Eleven named C++23 modules built through CMake `FILE_SET CXX_MODULES`
+- Native base executable with no Python/PyTorch runtime dependency and a 100 MiB installed-size ceiling
+- Explicit transactional capability packs for compact native inference, internal PyTorch training, Transformers/PEFT, image, and audio engines
 - Live phase, overall progress, verified-token count, elapsed time, measured ETA, heartbeat, and exact failure reporting
-- Custom decoder-only transformer implemented in `resources/internal_model.py`
+- Optional custom decoder-only transformer supplied by the internal-training pack
 - Deterministic UTF-8 byte tokenizer owned by ThreadSpire
 - Per-layer modular skill experts for:
   - English core
@@ -36,7 +38,7 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 - Optional external-model LoRA and FFN-delta tools retained under the advanced skill workflow
 - One capability-aware Task surface for chat, code, repositories, MCP tools, OpenAI-compatible image generation, and speech generation
 - Compiler/test-backed repository trajectories with bounded history and rollback
-- Live application-data size, file count, growth delta, category totals, generation/run counts, and largest-file reporting
+- Six live storage cards, growth deltas, largest-file/directory reporting, pack-size projections, quotas, and safe cleanup
 
 ## Internal model profiles
 
@@ -55,8 +57,9 @@ Requirements:
 - Windows 10 or newer
 - Visual Studio 2022 or 2026 with **Desktop development with C++**
 - CMake 3.30 or newer
-- 64-bit Python 3.12 recommended for the private PyTorch runtime
 - Git for repository-agent work
+
+Python is not required to build, install, or run the base workbench. It is required only by capability packs that explicitly declare it.
 
 From PowerShell in the extracted project directory, build, validate, and launch in one command:
 
@@ -72,15 +75,15 @@ Application state is stored under:
 %LOCALAPPDATA%\ThreadSpire
 ```
 
-## Automatic internal-model lifecycle
+## Capability packs and internal-model lifecycle
 
-Launch the application. No manual setup sequence is required. **Automatic setup and recovery** is enabled by default and performs the private-runtime installation, dependency verification, model initialization, exact checkpoint resume, bootstrap evaluation/promotion, and internal-host startup. If a stage fails, it reports the concrete reason and retries with bounded backoff. If the host later exits, it is restarted automatically.
+Launch starts the native workbench only. **Connections** lists optional capability packs with projected download and installed sizes. Installation is an explicit transaction: files are staged, verified, committed atomically, and rolled back on cancellation or failure. Pack installation does not verify/start an engine, initialize a model, enqueue training, or modify source selection.
 
-When bootstrap is incomplete, ThreadSpire opens directly on **Connections**. The page shows the current phase, overall bootstrap progress, verified target tokens, elapsed time, measured ETA, and worker heartbeat. A training worker that stops reporting for 15 minutes is terminated and resumed from its exact checkpoint. The ETA is derived from measured completed steps rather than a fabricated fixed duration.
+After the internal PyTorch training pack is installed, the user may explicitly verify it and initialize, resume, or train the internal model. Training is a durable serialized queue with `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, and `recoverable-failed` states. Duplicate jobs coalesce and interrupted work resumes from an atomic checkpoint. Foreground inference owns priority.
 
-Existing partial generations are preserved. Micro bootstrap now targets 24,000 cumulative steps by default (36,000 for Standard and 50,000 for Large) instead of stopping at the first undertrained checkpoint. On upgrade, the bundled corpus and held-out anchors refresh while user-imported data and learned episodes remain intact. Repair selects the strongest loss-gated descendant, decays its learning rate across cumulative progress, checkpoints exact state, and keeps the active generation untouched until held-out loss and the stricter generation canaries both pass.
+Micro bootstrap targets 24,000 cumulative steps by default, Standard targets 36,000, and Large targets 50,000. Each target stops boundedly at its cap with diagnostics. Curated seeds retain provenance, normalized records are deduplicated, validation is deterministic and disjoint, and an independent verifier—not the teacher model—controls admission and promotion.
 
-The manual controls are collapsed by default behind **Show advanced recovery controls** and remain available only for deliberate recovery and diagnostics. **Stop** disables automatic recovery so the host does not immediately restart against the user's instruction.
+A shadow candidate is served by its own isolated host. The working host and `active.json` remain untouched until checksum, health, inference-canary, deterministic-validation, and regression checks all pass and a compare-and-swap promotion commits the candidate.
 
 The internal artifacts are stored at:
 
@@ -133,7 +136,7 @@ The active generation is never trained in place. Training starts from the active
 
 Foreground inference has priority. Training checkpoints and yields when an inference lease appears, then resumes from the exact saved optimizer/data/RNG state.
 
-For the ThreadSpire internal model, each newly admitted independently verified episode is enough to queue a scoped shadow-weight update. Multiple examples for the same skill coalesce behind the active job instead of launching duplicate trainers. The automatic teacher loop waits for that queue to drain, then continues while the machine is idle.
+For the ThreadSpire internal model, each newly admitted independently verified episode can queue a scoped shadow-weight update when learning is enabled. Multiple examples for the same skill coalesce behind the active job instead of launching duplicate trainers. Package selection remains isolated from this queue.
 
 The **Learning** page exposes the actual pipeline rather than only the evidence collector: pending evidence per skill, queued weight updates, the active candidate, trainer phase and step, loss, verified-token count, elapsed time, measured ETA, progress-file path, and the live trainer-log tail.
 
@@ -175,14 +178,9 @@ Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `r
 
 ## Storage limits
 
-The main **Task** page now keeps three live cards in view: **Training Data**, **Active Model**, and **PyTorch / CUDA Runtime — Not Training Data**. The detailed **Storage & Logs** page refreshes in the background every five seconds and reports exact bytes and file counts without blocking the UI. Automatic retention applies only to recoverable ThreadSpire-owned artifacts:
+The main **Task** page keeps six live cards in view: **Current Model**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), and **Free Disk**. **Storage & Logs** adds largest files/directories, projected pack download/install sizes, and category quotas.
 
-- active/internal repair history retains the active lineage and recent candidates (normally four protected/current generations)
-- repository trajectories retain at most 20 runs or 2 GiB
-- generated images and generated audio each retain at most 100 recent files or 2 GiB
-- append-only backend logs rotate at 16 MiB and retain one previous file
-
-The private Python/PyTorch runtime is shown separately because it is large but normally stable; it is not repeatedly copied for each model generation.
+Cleanup is restricted to no-follow ThreadSpire-owned logs, unpromoted candidates, checkpoints, outputs, and caches. Active model lineage and paths outside the application root are protected. The base installed tree excludes models and optional packs and must remain at or below 100 MiB; large PyTorch dependencies belong in an explicit pack and are reported separately.
 
 ## Validation
 

@@ -1,21 +1,17 @@
-#include "threadspire/ai/app/main_window.hpp"
-
-#include "threadspire/ai/runtime/backend_manager.hpp"
-#include "threadspire/ai/runtime/internal_model_state.hpp"
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
+#include <Windows.h>
 #include <CommCtrl.h>
 #include <Dwmapi.h>
-#include <Shellapi.h>
 #include <ShObjIdl.h>
+#include <Shellapi.h>
 #include <Uxtheme.h>
-
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cctype>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -26,6 +22,10 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+
+module threadspire.ui;
+import threadspire.core;
+import threadspire.scheduler;
 
 namespace threadspire::ai::app {
 namespace {
@@ -88,7 +88,10 @@ constexpr int chat_source = 327;
 constexpr int chat_open_output = 328;
 constexpr int chat_training_data_size = 329;
 constexpr int chat_active_model_size = 330;
-constexpr int chat_runtime_size = 331;
+constexpr int chat_installed_packs_size = 331;
+constexpr int chat_outputs_cache_size = 332;
+constexpr int chat_total_usage_size = 333;
+constexpr int chat_free_disk_size = 334;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -676,10 +679,10 @@ void draw_dark_text(
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
     const auto state = runtime::inspect_internal_model_state(paths);
     if (!state.exists) {
-        return L"Not created yet. Automatic setup will initialize it locally.";
+        return L"Not created yet. Install and verify a training pack, then select Create or Create + bootstrap.";
     }
     if (!state.manifest_valid) {
-        return L"Internal model needs automatic repair: " + widen(state.error);
+        return L"Internal model needs explicit repair: " + widen(state.error);
     }
 
     const auto target = runtime::default_bootstrap_target(state);
@@ -1045,7 +1048,7 @@ MainWindow::MainWindow(const HINSTANCE instance)
       model_registry_(models::ModelRegistry::defaults()),
       mcp_client_(std::make_shared<mcp::Client>()),
       backend_server_(paths_) {
-    materialize_embedded_resources(paths_);
+    initialize_base_resources(paths_);
     model_registry_ = models::ModelRegistry::load(paths_.model_registry);
     auto migrated_runtime_labels = false;
     for (auto& model : model_registry_.models()) {
@@ -1061,11 +1064,8 @@ MainWindow::MainWindow(const HINSTANCE instance)
         } catch (...) {
         }
     }
+    // The internal Python executable can only come from the explicit training pack.
     selected_python_ = paths_.python;
-    const auto selected = read_text(paths_.root / "python-runtime.txt");
-    if (!selected.empty() && std::filesystem::is_regular_file(std::filesystem::path(selected))) {
-        selected_python_ = std::filesystem::path(selected);
-    }
 
     preferred_model_id_ = read_text(paths_.root / "config" / "preferred-model.txt");
     preferred_model_id_ = trim_line_endings(std::move(preferred_model_id_));
@@ -1161,12 +1161,12 @@ MainWindow::MainWindow(const HINSTANCE instance)
     active_log_ = paths_.logs / "model-server.log";
     interactive_model_verified_ = std::filesystem::is_regular_file(
         paths_.root / "inference-verified.flag");
-    const auto lifecycle_setting = trim_line_endings(read_text(
-        paths_.root / "config" / "automatic-lifecycle.txt"));
-    automatic_lifecycle_enabled_ = lifecycle_setting != "off";
+    // Capability-pack installation and model lifecycle are always explicit.
+    // Legacy automatic-lifecycle preferences are intentionally ignored.
+    automatic_lifecycle_enabled_ = false;
     const auto training_setting = trim_line_endings(read_text(
         paths_.root / "config" / "automatic-training.txt"));
-    automatic_training_enabled_ = training_setting != "off";
+    automatic_training_enabled_ = training_setting == "on";
     lifecycle_retry_at_ = std::chrono::steady_clock::now();
     next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 }
@@ -1515,10 +1515,7 @@ void MainWindow::create_controls() {
         selected_tab = page == page_ ? tab_index : selected_tab;
         ++tab_index;
     }
-    if (automatic_lifecycle_enabled_ && !internal_model_ready(paths_)) {
-        page_ = Page::models;
-        selected_tab = 1;
-    }
+
     static_cast<void>(TabCtrl_SetCurSel(tabs, selected_tab));
     create_control(
         L"STATIC", L"Discovering local AI…",
@@ -1636,9 +1633,21 @@ void MainWindow::create_chat_page() {
         WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
         0, id::chat_active_model_size, parent);
     create_control(
-        L"STATIC", L"PYTORCH / CUDA RUNTIME\r\nMeasuring…",
+        L"STATIC", L"INSTALLED PACKS\r\nMeasuring…",
         WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_runtime_size, parent);
+        0, id::chat_installed_packs_size, parent);
+    create_control(
+        L"STATIC", L"OUTPUTS / CACHE\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_outputs_cache_size, parent);
+    create_control(
+        L"STATIC", L"TOTAL USAGE\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_total_usage_size, parent);
+    create_control(
+        L"STATIC", L"FREE DISK\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
+        0, id::chat_free_disk_size, parent);
 
     create_control(
         L"STATIC", L"Repository",
@@ -1877,13 +1886,12 @@ void MainWindow::create_models_page() {
         0, id::models_mcp_status, parent);
 
     create_control(
-        L"STATIC", L"ThreadSpire internal AI — automatic local setup, exact resume, and host recovery",
+        L"STATIC", L"ThreadSpire capability packs and internal AI — explicit, transactional, on demand",
         WS_CHILD | WS_VISIBLE, 0, id::models_backend_header, parent);
     create_control(
-        L"BUTTON", L"Automatic setup and recovery — no setup buttons required",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        L"STATIC", L"Installing a pack never starts training, changes the selected model, or interrupts a task.",
+        WS_CHILD | WS_VISIBLE,
         0, id::models_automation_toggle, parent);
-    set_checked(id::models_automation_toggle, automatic_lifecycle_enabled_);
     const auto progress = create_control(
         PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
         0, id::models_progress, parent);
@@ -1900,10 +1908,10 @@ void MainWindow::create_models_page() {
         0,
         static_cast<LPARAM>(accent_color)));
     create_control(
-        L"STATIC", L"Automatic lifecycle is preparing the local runtime…",
+        L"STATIC", L"Install and verify a capability pack explicitly before using its engine.",
         WS_CHILD | WS_VISIBLE, 0, id::models_progress_detail, parent);
     create_control(
-        L"BUTTON", L"Show advanced recovery controls",
+        L"BUTTON", L"Show capability-pack and model controls",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::models_advanced_header, parent);
     set_checked(id::models_advanced_header, false);
@@ -1930,16 +1938,16 @@ void MainWindow::create_models_page() {
         L"STATIC", L"Internal model not created",
         WS_CHILD | WS_VISIBLE, 0, id::models_internal_status, parent);
     create_control(
-        L"STATIC", L"Python executable",
+        L"STATIC", L"Training-pack payload",
         WS_CHILD | WS_VISIBLE, 0, id::models_python_label, parent);
     create_control(
-        L"EDIT", selected_python_.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        L"EDIT", selected_pack_source_.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::models_python, parent);
     create_control(
         L"BUTTON", L"Browse…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_browse, parent);
     create_control(
-        L"BUTTON", L"Install backend", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Install pack", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_install, parent);
     create_control(
         L"BUTTON", L"Verify", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -2267,18 +2275,23 @@ void MainWindow::layout_controls() {
     const auto workspace_storage_y = workspace_status_y + row + gap;
     const auto workspace_storage_height = scaled(52, dpi_);
     const auto workspace_storage_card_width = (width - gap * 2) / 3;
-    move_control(
-        control(id::chat_training_data_size),
-        0, workspace_storage_y, workspace_storage_card_width, workspace_storage_height);
-    move_control(
-        control(id::chat_active_model_size),
-        workspace_storage_card_width + gap, workspace_storage_y,
-        workspace_storage_card_width, workspace_storage_height);
-    move_control(
-        control(id::chat_runtime_size),
-        (workspace_storage_card_width + gap) * 2, workspace_storage_y,
-        width - (workspace_storage_card_width + gap) * 2, workspace_storage_height);
-    const auto workspace_repository_y = workspace_storage_y + workspace_storage_height + gap;
+    const auto workspace_storage_second_y =
+        workspace_storage_y + workspace_storage_height + gap;
+    const auto place_storage_card = [&](const int identifier, const int column, const int y) {
+        const auto x = column * (workspace_storage_card_width + gap);
+        const auto card_width = column == 2
+            ? width - x
+            : workspace_storage_card_width;
+        move_control(control(identifier), x, y, card_width, workspace_storage_height);
+    };
+    place_storage_card(id::chat_active_model_size, 0, workspace_storage_y);
+    place_storage_card(id::chat_training_data_size, 1, workspace_storage_y);
+    place_storage_card(id::chat_installed_packs_size, 2, workspace_storage_y);
+    place_storage_card(id::chat_outputs_cache_size, 0, workspace_storage_second_y);
+    place_storage_card(id::chat_total_usage_size, 1, workspace_storage_second_y);
+    place_storage_card(id::chat_free_disk_size, 2, workspace_storage_second_y);
+    const auto workspace_repository_y =
+        workspace_storage_second_y + workspace_storage_height + gap;
     const auto show_workspace_repository = workspace_coding_mode();
     for (const auto identifier : {
              id::chat_repository_label,
@@ -3116,34 +3129,16 @@ void MainWindow::handle_command(const int identifier) {
     case id::models_mcp_connect:
         connect_mcp();
         break;
-    case id::models_automation_toggle:
-        automatic_lifecycle_enabled_ = checked(id::models_automation_toggle);
-        lifecycle_failures_ = 0U;
-        lifecycle_last_error_.clear();
-        lifecycle_retry_at_ = std::chrono::steady_clock::now();
-        try {
-            write_text(
-                paths_.root / "config" / "automatic-lifecycle.txt",
-                automatic_lifecycle_enabled_ ? "on\n" : "off\n");
-        } catch (...) {
-        }
-        if (!automatic_lifecycle_enabled_) {
-            backend_operation_.cancel();
-            set_status(L"Automatic internal-AI setup and recovery disabled");
-        } else {
-            set_status(L"Automatic internal-AI setup and recovery enabled");
-        }
-        break;
     case id::models_advanced_header:
         set_control_text(
             id::models_advanced_header,
             checked(id::models_advanced_header)
-                ? L"Hide advanced recovery controls"
-                : L"Show advanced recovery controls");
+                ? L"Hide capability-pack and model controls"
+                : L"Show capability-pack and model controls");
         layout_controls();
         set_status(checked(id::models_advanced_header)
-            ? L"Advanced recovery controls shown"
-            : L"Advanced recovery controls hidden; automatic lifecycle remains active");
+            ? L"Capability-pack and model controls shown"
+            : L"Capability-pack controls hidden; running tasks are unchanged");
         break;
     case id::models_internal_create:
         create_internal_model(false);
@@ -3926,7 +3921,30 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
                     learning::ContinualLearningService* service;
                     ~BusyReset() { service->set_interactive_busy(false); }
                 } reset{learning_service_.get()};
-                auto result = backend::MediaClient{}.generate(request, token);
+                backend::UnifiedProviderRouter provider_router;
+                provider_router.register_provider(std::make_shared<backend::MediaTaskProvider>());
+                auto unified = provider_router.execute(
+                    backend::UnifiedTaskRequest{
+                        .modality = request.kind == backend::MediaKind::image
+                            ? backend::WorkModality::image_generation
+                            : backend::WorkModality::audio_generation,
+                        .profile = backend::ExecutionProfile::interactive,
+                        .preferred_provider_id = "native-media",
+                        .prompt = request.prompt,
+                        .model = request.model,
+                        .output_root = request.output_root,
+                    },
+                    token);
+                backend::MediaResult result{
+                    .succeeded = unified.succeeded,
+                    .kind = request.kind,
+                    .model_id = request.model.id,
+                    .error = std::move(unified.error),
+                };
+                if (!unified.artifacts.empty()) {
+                    result.output_path = unified.artifacts.front().path;
+                    result.mime_type = unified.artifacts.front().mime_type;
+                }
                 const auto succeeded = result.succeeded;
                 const auto message = succeeded ? "media generation complete" : result.error;
                 {
@@ -4118,9 +4136,16 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto* memory_store = &learning_service_->memory_store();
     const auto mcp_client = mcp_client_;
 
-    const auto routing_prompt = workspace && workspace_task() == WorkspaceTask::tool
+    const auto tool_request = workspace && workspace_task() == WorkspaceTask::tool;
+    const auto routing_prompt = tool_request
         ? std::string{"Use MCP tools to complete this task: "} + raw_prompt
         : raw_prompt;
+    const auto task_modality = tool_request
+        ? backend::WorkModality::tool_action
+        : backend::WorkModality::interactive_text;
+    const auto execution_profile = coding
+        ? backend::ExecutionProfile::coding_agent
+        : backend::ExecutionProfile::interactive;
     const auto started = chat_operation_.start(
         [this,
          surface,
@@ -4131,35 +4156,48 @@ void MainWindow::send_request(const RequestSurface surface) {
          experts = std::move(experts),
          memory_store,
          mcp_client,
-         response_id](const std::stop_token stop_token) mutable {
+         response_id,
+         task_modality,
+         execution_profile](const std::stop_token stop_token) mutable {
             struct BusyReset final {
                 learning::ContinualLearningService* service;
                 ~BusyReset() { service->set_interactive_busy(false); }
             } reset{learning_service_.get()};
 
-            backend::AgentOrchestrator orchestrator(
+            backend::UnifiedProviderRouter provider_router;
+            provider_router.register_provider(std::make_shared<backend::AgentTaskProvider>(
                 snapshot,
                 std::move(experts),
-                *memory_store);
-            auto result = orchestrator.execute(
+                *memory_store,
                 internal_base_url,
-                execution_prompt,
-                backend::AgentExecutionOptions{
-                    .force_coding_agent = is_coding_surface(surface),
-                    .prefer_minimum_compute = true,
-                    .analysis_prompt = analysis_prompt,
-                    .on_token = [this, response_id](const std::string_view token) {
-                        {
+                mcp_client.get()));
+            auto unified = provider_router.execute(
+                backend::UnifiedTaskRequest{
+                    .modality = task_modality,
+                    .profile = execution_profile,
+                    .preferred_provider_id = "native-agent",
+                    .prompt = std::move(execution_prompt),
+                    .analysis_prompt = std::move(analysis_prompt),
+                    .stream = true,
+                    .on_event = [this, response_id, stop_token](const backend::TaskEvent& event) {
+                        if (event.kind == backend::TaskEventKind::text_delta) {
                             std::lock_guard lock(stream_mutex_);
                             stream_target_control_ = response_id;
-                            pending_stream_text_.append(token);
+                            pending_stream_text_.append(event.text);
                         }
-                        return true;
+                        return !stop_token.stop_requested();
                     },
-                    .should_stop = [stop_token] { return stop_token.stop_requested(); },
-                    .mcp_client = mcp_client.get(),
-                    .maximum_tool_rounds = 4,
-                });
+                },
+                stop_token);
+            backend::AgentResult result{
+                .succeeded = unified.succeeded,
+                .response = std::move(unified.content),
+                .error = std::move(unified.error),
+                .plan = std::move(unified.plan),
+                .models_used = std::move(unified.models_used),
+                .tool_events = std::move(unified.tool_events),
+                .effective_tokens_per_second = unified.effective_tokens_per_second,
+            };
 
             {
                 std::lock_guard lock(result_mutex_);
@@ -4814,24 +4852,16 @@ void MainWindow::generate_piggyback(
             : std::chrono::minutes(2));
 }
 
-void MainWindow::create_internal_model(
-    const bool bootstrap,
-    const bool automatic) {
+void MainWindow::create_internal_model(const bool bootstrap) {
     if (backend_operation_.running()) {
-        if (!automatic) {
-            set_status(L"A model operation is already running");
-        }
+        set_status(L"A model operation is already running");
         return;
     }
 
     auto selected_paths = paths_;
     selected_paths.python = selected_python_;
     if (!runtime::backend_files_present(selected_paths)) {
-        if (automatic) {
-            install_backend(true);
-        } else {
-            set_status(L"The automatic lifecycle must install the private ML runtime first");
-        }
+        set_status(L"Install and verify the Internal PyTorch Training capability pack first");
         return;
     }
 
@@ -4861,7 +4891,7 @@ void MainWindow::create_internal_model(
 
     if (bootstrap && state.bootstrap_complete) {
         if (!backend_server_.running()) {
-            start_backend(automatic);
+            start_backend();
         }
         return;
     }
@@ -4889,7 +4919,7 @@ void MainWindow::create_internal_model(
         bootstrap
             ? (state.manifest_valid
                 ? L"Resuming exact bootstrap training from the existing local checkpoint…"
-                : L"Creating random weights, then bootstrap-training automatically…")
+                : L"Creating random weights, then running the requested bootstrap…")
             : L"Creating random internal weights…");
 
     const auto started = backend_operation_.start(
@@ -4943,7 +4973,7 @@ void MainWindow::create_internal_model(
                     .exit_code = 3,
                     .message =
                         "The training process exited without publishing a ready generation; "
-                        "automatic or manual repair must continue from the saved candidate",
+                        "an explicit repair retry must continue from the saved candidate",
                 };
             }
 
@@ -4958,12 +4988,12 @@ void MainWindow::create_internal_model(
                     : util::OperationState::failed,
                 .exit_code = host_started ? 0 : 1,
                 .message = host_started
-                    ? "Internal model bootstrap completed and its host started automatically"
+                    ? "Internal model bootstrap completed and its host started as requested"
                     : "Bootstrap completed, but the model host did not start: " + message,
             };
         },
         bootstrap
-            ? "resuming automatic internal-model bootstrap training"
+            ? "running the explicitly requested resumable internal-model bootstrap"
             : "creating ThreadSpire's random internal model");
 
     if (started) {
@@ -4973,33 +5003,56 @@ void MainWindow::create_internal_model(
     }
 }
 
-void MainWindow::install_backend(const bool automatic) {
+void MainWindow::install_backend() {
     if (backend_operation_.running()) {
+        set_status(L"Another capability-pack or internal-model operation is already running");
         return;
     }
-    selected_python_ = paths_.python;
-    set_control_text(id::models_python, selected_python_.wstring());
-    learning_service_->set_python_executable(selected_python_);
-    try {
-        write_text(paths_.root / "python-runtime.txt", selected_python_.string());
-    } catch (...) {
+    if (backend_server_.running()) {
+        set_status(L"Stop the internal-model host explicitly before replacing its training pack; it was not interrupted");
+        return;
     }
-    const auto log = paths_.logs / "backend-install.log";
-    set_active_log(log);
+    selected_pack_source_ = std::filesystem::path(control_text(id::models_python)).lexically_normal();
+    if (!std::filesystem::is_directory(selected_pack_source_)) {
+        set_status(L"Choose an existing verified Internal PyTorch Training pack payload folder first");
+        return;
+    }
+    const auto catalog = runtime::CapabilityPackManager::catalog();
+    const auto descriptor = std::ranges::find(
+        catalog, std::string_view{"internal-pytorch-training"},
+        &runtime::CapabilityPackDescriptor::id);
+    if (descriptor == catalog.end()) {
+        set_status(L"The Internal PyTorch Training pack is not present in the native catalog");
+        return;
+    }
+    const runtime::CapabilityPackInstallRequest request{
+        .descriptor = *descriptor,
+        .source_directory = selected_pack_source_,
+    };
+    const auto packs_root = paths_.packs;
     const auto started = backend_operation_.start(
-        [this, log](const std::stop_token token) {
-            return runtime::install_backend(
-                paths_, log, "https://download.pytorch.org/whl/cu128", token);
+        [packs_root, request](const std::stop_token token) {
+            runtime::CapabilityPackManager manager(packs_root);
+            const auto result = manager.install_transactional(request, token);
+            return util::OperationResult{
+                .state = result.succeeded
+                    ? util::OperationState::succeeded
+                    : (result.cancelled
+                        ? util::OperationState::cancelled
+                        : util::OperationState::failed),
+                .exit_code = result.succeeded ? 0 : 1,
+                .message = result.succeeded
+                    ? "Internal PyTorch Training pack installed transactionally; no model or task state changed"
+                    : result.error,
+            };
         },
-        automatic
-            ? "automatically installing or repairing the private PyTorch backend"
-            : "installing ThreadSpire internal-model backend");
+        "installing the explicitly selected capability pack transactionally");
     if (started) {
         lifecycle_action_ = LifecycleAction::install_backend;
+        set_status(L"Installing the selected capability pack; current tasks and model selection are unchanged");
     }
 }
-
-void MainWindow::verify_backend(const bool automatic) {
+void MainWindow::verify_backend() {
     if (backend_operation_.running()) {
         return;
     }
@@ -5011,27 +5064,21 @@ void MainWindow::verify_backend(const bool automatic) {
         [selected_paths, log](const std::stop_token token) {
             return runtime::verify_backend(selected_paths, log, token);
         },
-        automatic
-            ? "automatically verifying the internal-model runtime"
-            : "verifying ThreadSpire internal-model backend");
+        "verifying the explicitly installed ThreadSpire internal-model backend");
     if (started) {
         lifecycle_action_ = LifecycleAction::verify_backend;
     }
 }
 
-void MainWindow::start_backend(const bool automatic) {
+void MainWindow::start_backend() {
     if (backend_operation_.running()) {
         return;
     }
     if (!internal_model_ready(paths_)) {
-        if (automatic) {
-            create_internal_model(true, true);
-        } else {
-            set_status(
-                L"The active generation is not ready. Select Create + bootstrap train to continue "
-                L"from the saved repair candidate, or enable automatic recovery.");
-            show_page(Page::models);
-        }
+        set_status(
+            L"The active generation is not ready. Select Create + bootstrap train to continue "
+            L"from the saved repair candidate.");
+        show_page(Page::models);
         return;
     }
     set_active_log(backend_server_.log_path());
@@ -5045,9 +5092,7 @@ void MainWindow::start_backend(const bool automatic) {
                 .message = std::move(message),
             };
         },
-        automatic
-            ? "automatically starting the internal-model host"
-            : "starting ThreadSpire internal-model host");
+        "starting the explicitly requested ThreadSpire internal-model host");
     if (started) {
         lifecycle_action_ = LifecycleAction::start_host;
     }
@@ -5055,29 +5100,23 @@ void MainWindow::start_backend(const bool automatic) {
 
 void MainWindow::stop_backend() {
     automatic_lifecycle_enabled_ = false;
-    set_checked(id::models_automation_toggle, false);
-    try {
-        write_text(paths_.root / "config" / "automatic-lifecycle.txt", "off\n");
-    } catch (...) {
-    }
     backend_operation_.cancel();
     lifecycle_action_ = LifecycleAction::none;
     backend_server_.stop();
-    set_status(L"Internal-model host stopped; automatic recovery is disabled");
+    set_status(L"Internal-model host stopped; packs, model selection, and training state are unchanged");
     set_control_text(id::models_status, L"Stopped manually");
 }
 
 void MainWindow::browse_python() {
-    const auto selected = choose_python();
+    const auto selected = choose_directory(
+        L"Select a verified Internal PyTorch Training capability-pack payload");
     if (!selected.has_value()) {
         return;
     }
-    selected_python_ = *selected;
-    set_control_text(id::models_python, selected_python_.wstring());
-    learning_service_->set_python_executable(selected_python_);
-    write_text(paths_.root / "python-runtime.txt", selected_python_.string());
+    selected_pack_source_ = selected->lexically_normal();
+    set_control_text(id::models_python, selected_pack_source_.wstring());
+    set_status(L"Capability-pack payload selected; nothing has been installed or started");
 }
-
 void MainWindow::load_models_editor() {
     set_control_text(id::models_editor, widen(read_text(paths_.model_registry)));
 }
@@ -5263,7 +5302,61 @@ void MainWindow::start_long_horizon() {
                 ~BusyReset() { service->set_interactive_busy(false); }
             } reset{learning_service_.get()};
 
-            auto result = long_horizon::run(request, token);
+            backend::UnifiedProviderRouter provider_router;
+            provider_router.register_provider(std::make_shared<backend::RepositoryTaskProvider>(
+                request.state_root,
+                request.backend_base_url,
+                request.repair_model));
+            auto unified = provider_router.execute(
+                backend::UnifiedTaskRequest{
+                    .modality = backend::WorkModality::repository_work,
+                    .profile = backend::ExecutionProfile::long_horizon,
+                    .preferred_provider_id = "native-repository",
+                    .prompt = request.task,
+                    .model = request.repair_model,
+                    .repository = request.repository,
+                    .output_root = request.state_root / "outputs",
+                    .build_command = request.build_command,
+                    .test_command = request.test_command,
+                    .adapter_path = request.adapter_path,
+                    .module_path = request.module_path,
+                    .maximum_iterations = request.maximum_iterations,
+                    .require_clean_worktree = request.require_clean_worktree,
+                    .rollback_on_failure = request.rollback_on_failure,
+                },
+                token);
+            long_horizon::Result result{
+                .operation = {
+                    .state = unified.succeeded
+                        ? util::OperationState::succeeded
+                        : (unified.cancelled
+                            ? util::OperationState::cancelled
+                            : util::OperationState::failed),
+                    .exit_code = unified.succeeded ? 0 : 1,
+                    .message = unified.succeeded
+                        ? "repository task verified"
+                        : unified.error,
+                },
+                .completed = unified.succeeded,
+                .compiler_passed = unified.compiler_passed,
+                .tests_passed = unified.tests_passed,
+                .iterations = unified.iterations,
+                .run_directory = std::move(unified.run_directory),
+                .final_diff = std::move(unified.content),
+            };
+            for (const auto& artifact : unified.artifacts) {
+                if (artifact.kind == backend::ArtifactKind::patch) {
+                    result.final_diff_path = artifact.path;
+                } else if (artifact.kind == backend::ArtifactKind::log) {
+                    result.trajectory_path = artifact.path;
+                }
+            }
+            for (const auto& event : unified.tool_events) {
+                result.events.push_back({
+                    .phase = event,
+                    .exit_code = unified.succeeded ? 0 : 1,
+                });
+            }
             if (result.completed && result.compiler_passed && result.tests_passed) {
                 auto verified_response = result.final_diff;
                 if (verified_response.empty()) {
@@ -5399,18 +5492,22 @@ void MainWindow::handle_lifecycle_completion() {
         lifecycle_failures_ = 0U;
         lifecycle_last_error_.clear();
         lifecycle_retry_at_ = std::chrono::steady_clock::now();
-        if (completed_action == LifecycleAction::install_backend ||
-            completed_action == LifecycleAction::verify_backend) {
+        if (completed_action == LifecycleAction::verify_backend) {
             backend_verified_ = true;
             backend_repair_required_ = false;
+        } else if (completed_action == LifecycleAction::install_backend) {
+            // Installation is isolated: verification, model selection, training,
+            // and host startup remain separate explicit actions.
+            backend_verified_ = false;
+            backend_repair_required_ = false;
+            selected_python_ = paths_.python;
+            learning_service_->set_python_executable(selected_python_);
+            update_storage_report(true);
         }
         return;
     }
 
     if (completed_action == LifecycleAction::verify_backend) {
-        backend_verified_ = false;
-        backend_repair_required_ = true;
-    } else if (completed_action == LifecycleAction::install_backend) {
         backend_verified_ = false;
         backend_repair_required_ = true;
     }
@@ -5466,31 +5563,9 @@ void MainWindow::drive_automatic_lifecycle() {
         }
         return;
     }
-    if (lifecycle_action_ != LifecycleAction::none ||
-        !automatic_lifecycle_enabled_ ||
-        std::chrono::steady_clock::now() < lifecycle_retry_at_) {
-        return;
-    }
-
-    auto selected_paths = paths_;
-    selected_paths.python = selected_python_;
-    if (backend_repair_required_ || !runtime::backend_files_present(selected_paths)) {
-        install_backend(true);
-        return;
-    }
-    if (!backend_verified_) {
-        verify_backend(true);
-        return;
-    }
-
-    const auto state = runtime::inspect_internal_model_state(paths_);
-    if (!state.manifest_valid || !state.bootstrap_complete) {
-        create_internal_model(true, true);
-        return;
-    }
-    if (!backend_server_.running()) {
-        start_backend(true);
-    }
+    // Capability-pack selection and installation are deliberately isolated
+    // from model selection, training, hosting, and active work. Every lifecycle
+    // operation below this point requires an explicit user action.
 }
 
 void MainWindow::update_internal_model_lifecycle_ui() {
@@ -5516,16 +5591,18 @@ void MainWindow::update_internal_model_lifecycle_ui() {
 
     std::wostringstream detail;
     const auto now = std::chrono::steady_clock::now();
-    if (!automatic_lifecycle_enabled_) {
-        detail << L"Automatic setup and recovery is disabled.";
+    if (!backend_operation_.running() &&
+        lifecycle_action_ == LifecycleAction::none &&
+        !state.bootstrap_complete) {
+        detail << L"Capability packs and model operations are explicit.";
         if (!lifecycle_last_error_.empty()) {
             detail << L" Last repair result: " << widen(lifecycle_last_error_) << L".";
         }
-        detail << L" Enable it to resume without manual steps.";
+        detail << L" Select an explicit install, verify, create, train, or start action to continue.";
     } else if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             lifecycle_retry_at_ - now).count();
-        detail << L"Automatic recovery retry in " << std::max<std::int64_t>(0, remaining)
+        detail << L"Recoverable operation can be retried in " << std::max<std::int64_t>(0, remaining)
                << L" s — " << widen(lifecycle_last_error_);
     } else if (lifecycle_action_ == LifecycleAction::bootstrap_model && progress.available) {
         detail << widen(progress.message.empty() ? progress.phase : progress.message);
@@ -5556,18 +5633,18 @@ void MainWindow::update_internal_model_lifecycle_ui() {
             detail << L" • ETA " << format_duration(*progress.eta_seconds);
         }
         if (progress.stale) {
-            detail << L" • heartbeat delayed; automatic watchdog remains active";
+            detail << L" • heartbeat delayed; bounded worker timeout remains active";
         }
     } else if (backend_operation_.running()) {
         const auto operation = backend_operation_.snapshot();
         detail << widen(operation.message);
     } else if (state.bootstrap_complete && backend_server_.running()) {
         detail << L"Ready — bootstrap complete and the internal-model host is running. "
-               << L"Automatic recovery remains armed.";
+               << L"The promoted working model remains active.";
     } else if (!lifecycle_last_error_.empty()) {
-        detail << L"Automatic recovery: " << widen(lifecycle_last_error_);
+        detail << L"Recoverable operation: " << widen(lifecycle_last_error_);
     } else {
-        detail << L"Automatic lifecycle is checking the private runtime and local model state…";
+        detail << L"No lifecycle action is running; installed packs and the selected model are unchanged.";
     }
     set_control_text(id::models_progress_detail, detail.str());
 }
@@ -6209,55 +6286,117 @@ void MainWindow::update_storage_report(const bool force) {
         }
     }
     if (snapshot.has_value()) {
-        std::wostringstream training_card;
-        training_card << L"TRAINING DATA\r\n"
-                      << format_bytes_compact(snapshot->training_data_bytes)
-                      << L" • " << snapshot->training_data_files << L" source files";
-        set_control_text(id::chat_training_data_size, training_card.str());
+        const auto find_card = [&snapshot](const std::string_view key)
+            -> const runtime::StorageCard* {
+            const auto found = std::ranges::find(snapshot->cards, key, &runtime::StorageCard::key);
+            return found == snapshot->cards.end() ? nullptr : &*found;
+        };
+        const auto growth_text = [](const std::intmax_t growth) {
+            if (growth == 0) {
+                return std::wstring{L"no change"};
+            }
+            const auto magnitude = growth < 0
+                ? static_cast<std::uintmax_t>(-(growth + 1)) + 1U
+                : static_cast<std::uintmax_t>(growth);
+            return std::wstring(growth > 0 ? L"+" : L"-") + format_bytes_compact(magnitude);
+        };
+
+        const auto* current_model = find_card("current-model");
+        const auto* accepted_data = find_card("accepted-training-data");
+        const auto* installed_packs = find_card("installed-packs");
+        const auto* outputs_cache = find_card("outputs-cache");
+        const auto* total_usage = find_card("total-usage");
+        const auto* free_disk = find_card("free-disk");
+
         std::wostringstream model_card;
-        model_card << L"ACTIVE MODEL";
+        model_card << L"CURRENT MODEL";
         if (!snapshot->active_generation.empty()) {
             model_card << L" — " << widen(snapshot->active_generation);
         }
-        model_card << L"\r\n" << format_bytes_compact(snapshot->active_model_bytes);
+        model_card << L"\r\n" << format_bytes_compact(
+            current_model == nullptr ? snapshot->active_model_bytes : current_model->bytes);
         set_control_text(id::chat_active_model_size, model_card.str());
+
+        std::wostringstream training_card;
+        training_card << L"ACCEPTED TRAINING DATA\r\n"
+                      << format_bytes_compact(
+                          accepted_data == nullptr
+                              ? snapshot->training_data_bytes
+                              : accepted_data->bytes)
+                      << L" • " << snapshot->training_data_files << L" files";
+        set_control_text(id::chat_training_data_size, training_card.str());
         set_control_text(
-            id::chat_runtime_size,
-            L"PYTORCH / CUDA RUNTIME — NOT TRAINING DATA\r\n" +
-                format_bytes_compact(snapshot->runtime_bytes));
+            id::chat_installed_packs_size,
+            L"INSTALLED PACKS\r\n" + format_bytes_compact(
+                installed_packs == nullptr ? 0U : installed_packs->bytes));
+        set_control_text(
+            id::chat_outputs_cache_size,
+            L"OUTPUTS / CACHE\r\n" + format_bytes_compact(
+                outputs_cache == nullptr ? 0U : outputs_cache->bytes));
+        set_control_text(
+            id::chat_total_usage_size,
+            L"TOTAL USAGE\r\n" + format_bytes_compact(
+                total_usage == nullptr ? snapshot->total_bytes : total_usage->bytes) +
+                L" • " + growth_text(
+                    total_usage == nullptr ? snapshot->growth_bytes : total_usage->growth_bytes));
+        set_control_text(
+            id::chat_free_disk_size,
+            L"FREE DISK\r\n" + format_bytes_compact(
+                free_disk == nullptr ? snapshot->free_disk_bytes : free_disk->bytes));
 
         std::wostringstream report;
-        report << L"Training data sources: " << format_bytes(snapshot->training_data_bytes)
-               << L" across " << snapshot->training_data_files << L" files"
-               << L"\r\nActive model " << widen(snapshot->active_generation) << L": "
-               << format_bytes(snapshot->active_model_bytes)
-               << L" across " << snapshot->active_model_files << L" files"
-               << L"\r\nPrivate PyTorch/CUDA runtime (not training data): "
-               << format_bytes(snapshot->runtime_bytes)
-               << L"\r\n\r\nTotal application data: " << format_bytes(snapshot->total_bytes)
-               << L" across " << snapshot->files << L" files";
-        if (storage_sample_available_) {
-            const auto changed = static_cast<std::int64_t>(snapshot->total_bytes) -
-                static_cast<std::int64_t>(previous_storage_bytes_);
-            report << L"\r\nChange since previous sample: "
-                   << (changed >= 0 ? L"+" : L"-")
-                   << format_bytes(static_cast<std::uintmax_t>(std::abs(changed)));
+        report << L"LIVE STORAGE CARDS\r\n";
+        for (const auto& card : snapshot->cards) {
+            report << L"  " << widen(card.label) << L": " << format_bytes(card.bytes);
+            if (card.growth_bytes != 0) {
+                report << L" • growth " << growth_text(card.growth_bytes);
+            }
+            if (card.files > 0U) {
+                report << L" • " << card.files << L" files";
+            }
+            report << L"\r\n";
         }
-        report << L"\r\nModel generations: " << snapshot->generation_directories
-               << L" (automatic retention keeps the active lineage plus recent repair candidates)"
-               << L"\r\nRepository trajectories: " << snapshot->trajectory_directories
-               << L" (bounded to 20 runs / 2 GiB)"
-               << L"\r\nGenerated media: bounded to 100 recent files per type / 2 GiB per type"
-               << L"\r\n\r\nTop-level usage\r\n";
+        report << L"  Legacy/private PyTorch runtime (not training data): "
+               << format_bytes(snapshot->runtime_bytes)
+               << L"\r\n\r\nModel generations: " << snapshot->generation_directories
+               << L" • repository trajectories: " << snapshot->trajectory_directories
+               << L"\r\nGrowth since previous sample: " << growth_text(snapshot->growth_bytes)
+               << L"\r\n\r\nTOP-LEVEL USAGE\r\n";
         for (const auto& category : snapshot->categories) {
             report << L"  " << widen(category.name) << L": "
                    << format_bytes(category.bytes) << L" • "
                    << category.files << L" files\r\n";
         }
-        report << L"\r\nLargest files\r\n";
+        report << L"\r\nLARGEST DIRECTORIES\r\n";
+        for (const auto& directory : snapshot->largest_directories) {
+            report << L"  " << directory.relative_path.wstring() << L": "
+                   << format_bytes(directory.bytes) << L" • "
+                   << directory.files << L" files\r\n";
+        }
+        report << L"\r\nLARGEST FILES\r\n";
         for (const auto& file : snapshot->largest_files) {
             report << L"  " << file.relative_path.wstring() << L": "
                    << format_bytes(file.bytes) << L"\r\n";
+        }
+        report << L"\r\nCAPABILITY-PACK PROJECTIONS\r\n";
+        for (const auto& pack : snapshot->pack_projections) {
+            report << L"  " << widen(pack.name)
+                   << L": download " << format_bytes(pack.download_bytes)
+                   << L" • installed " << format_bytes(pack.install_bytes)
+                   << L" • " << (pack.installed ? L"installed" : L"not installed")
+                   << L"\r\n";
+        }
+        report << L"\r\nSAFE CLEANUP QUOTAS\r\n";
+        for (const auto& quota : snapshot->quotas) {
+            report << L"  " << widen(quota.name) << L": "
+                   << format_bytes(quota.maximum_bytes);
+            if (quota.maximum_age_days > 0U) {
+                report << L" • " << quota.maximum_age_days << L" days";
+            }
+            if (quota.minimum_entries_to_keep > 0U) {
+                report << L" • keep at least " << quota.minimum_entries_to_keep;
+            }
+            report << L"\r\n";
         }
         previous_storage_bytes_ = snapshot->total_bytes;
         storage_sample_available_ = true;
@@ -6272,9 +6411,13 @@ void MainWindow::update_storage_report(const bool force) {
     if (force) {
         set_status(L"Refreshing application-data sizes in the background…");
     }
+    const auto previous_total = storage_sample_available_
+        ? std::optional<std::uintmax_t>{previous_storage_bytes_}
+        : std::nullopt;
     static_cast<void>(storage_operation_.start(
-        [this](const std::stop_token token) {
-            auto value = runtime::inspect_storage(paths_.root, 8U, token);
+        [this, previous_total](const std::stop_token token) {
+            auto value = runtime::inspect_storage_with_growth(
+                paths_.root, previous_total, 8U, 8U, token);
             {
                 std::lock_guard lock(result_mutex_);
                 pending_storage_snapshot_ = std::move(value);
@@ -6289,7 +6432,6 @@ void MainWindow::update_storage_report(const bool force) {
         },
         "measuring application-data storage"));
 }
-
 void MainWindow::update_log_view() {
     set_control_text(id::logs_view, widen(read_tail(active_log_)));
 }

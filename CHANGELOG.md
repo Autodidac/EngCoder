@@ -1,8 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- Converted the native library, Win32 application, and tests to eleven named C++23 modules built with CMake `FILE_SET CXX_MODULES`.
+- Unified interactive text, coding, repository, image, audio, and tool execution behind one streaming/cancellable provider contract; Coding Agent and Long Horizon are execution profiles.
+- Removed Python scripts and private-runtime installation from the base executable; heavy engines are explicit transactional capability packs whose installation is isolated from model selection and training.
+- Added a durable serialized training state machine with coalescing, atomic checkpoints, safe recovery, inference priority, and isolated candidate-host validation before atomic compare-and-swap promotion.
+- Expanded storage reporting to six live cards, sample growth, largest files/directories, pack-size projections, quotas, and no-follow cleanup.
+- Enforced a 100 MiB installed-base ceiling excluding models and packs, and added guarded exact-path AppData reset validation with a pre-deletion manifest.
+- Added module, unified routing, multimodal, rollback, selection isolation, resumable training, failed-host promotion, storage, footprint, and reset regression coverage.
 - Replaced the permissive three-canary English gate with six deterministic fluency, exact-instruction, grammar, definition, and conversational-context checks; old v1-ready manifests now resume bootstrap instead of serving corrupt prose.
 - Extended the Micro/Standard/Large English bootstrap targets to 24k/36k/50k cumulative steps and added curriculum weighting plus grounded conversational examples without materially increasing disk usage.
-- Added always-visible live Training Data, Active Model, and PyTorch/CUDA Runtime size cards to the Task page, with the runtime explicitly labeled as not training data.
+- Reworked the Task-page storage surface into six live cards for current model, accepted data, installed packs, outputs/cache, total growth, and free disk.
 - Strengthened local teacher and independent-verifier prompts to require complete grammatical English and reject invented fragments.
 
 ## 0.5.8

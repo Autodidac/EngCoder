@@ -135,7 +135,101 @@ def main() -> int:
         with urllib.request.urlopen(shutdown, timeout=5.0) as response:
             response.read()
         process.wait(timeout=10.0)
-        print("ThreadSpire internal-model streaming server smoke test passed")
+        process = None
+
+        active_pointer = model.active_manifest_path(temporary)
+        pointer_before = active_pointer.read_bytes()
+        active_generation = model.resolve_active_generation(temporary).name
+        shadow_generation = "g999999"
+        active_directory = model.resolve_active_generation(temporary)
+        shadow_directory = active_directory.parent / shadow_generation
+        shutil.copytree(active_directory, shadow_directory)
+        shadow_manifest_path = shadow_directory / "manifest.json"
+        shadow_manifest = json.loads(shadow_manifest_path.read_text(encoding="utf-8"))
+        shadow_manifest["generation"] = shadow_generation
+        shadow_manifest["parent_generation"] = active_generation
+        shadow_manifest["status"] = "trained-candidate"
+        shadow_manifest["promoted"] = False
+        shadow_manifest_path.write_text(
+            json.dumps(shadow_manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+        shadow_ready = temporary / "state" / "shadow-server.ready"
+        shadow_control = temporary / "shadow-control"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(source_root / "resources" / "model_worker.py"),
+                "serve",
+                "--port",
+                "0",
+                "--ready-file",
+                str(shadow_ready),
+                "--state-root",
+                str(temporary),
+                "--generation",
+                shadow_generation,
+                "--control-dir",
+                str(shadow_control),
+                "--max-loaded-models",
+                "1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        for _ in range(200):
+            if shadow_ready.is_file():
+                break
+            if process.poll() is not None:
+                output = process.stdout.read() if process.stdout is not None else ""
+                raise RuntimeError(f"shadow model host exited early: {output}")
+            time.sleep(0.025)
+        if not shadow_ready.is_file():
+            raise TimeoutError("shadow model host did not publish its ready file")
+        shadow_port = next(
+            int(line[5:])
+            for line in shadow_ready.read_text(encoding="utf-8").splitlines()
+            if line.startswith("port=")
+        )
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{shadow_port}/health", timeout=10.0
+        ) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        assert health["shadow_candidate"] is True
+        assert health["served_generation"] == shadow_generation
+
+        shadow_body = json.dumps({
+            "model": "threadspire://fast",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "temperature": 0.0,
+            "stream": False,
+        }).encode("utf-8")
+        shadow_request = urllib.request.Request(
+            f"http://127.0.0.1:{shadow_port}/v1/chat/completions",
+            data=shadow_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(shadow_request, timeout=60.0) as response:
+            shadow_result = json.loads(response.read().decode("utf-8"))
+        assert shadow_result["generation"] == shadow_generation
+        assert active_pointer.read_bytes() == pointer_before
+        assert model.resolve_active_generation(temporary).name == active_generation
+        assert shadow_control.is_dir()
+        assert not (temporary / "control" / "inference.server").exists()
+
+        shadow_shutdown = urllib.request.Request(
+            f"http://127.0.0.1:{shadow_port}/shutdown",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(shadow_shutdown, timeout=5.0) as response:
+            response.read()
+        process.wait(timeout=10.0)
+        print("ThreadSpire active and isolated shadow-model server smoke tests passed")
         return 0
     finally:
         if process is not None and process.poll() is None:

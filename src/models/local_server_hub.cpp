@@ -1,18 +1,18 @@
-#include "threadspire/ai/models/local_server_hub.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-#include "threadspire/ai/core/ini.hpp"
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
+
+module threadspire.models;
+import threadspire.core;
+import threadspire.platform;
 
 namespace threadspire::ai::models {
 namespace {

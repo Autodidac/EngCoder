@@ -1,7 +1,5 @@
-#include "threadspire/ai/learning/continual_learning_service.hpp"
-
-#include "threadspire/ai/platform/process.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -10,6 +8,9 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+
+module threadspire.learning;
+import threadspire.platform;
 
 namespace threadspire::ai::learning {
 namespace {
@@ -150,6 +151,133 @@ constexpr int preempted_exit_code = 75;
     return "english-core";
 }
 
+[[nodiscard]] int ready_port(const std::filesystem::path& ready_file) noexcept {
+    try {
+        std::ifstream stream(ready_file);
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (line.starts_with("port=")) {
+                return std::stoi(line.substr(5U));
+            }
+        }
+    } catch (...) {
+    }
+    return 0;
+}
+
+[[nodiscard]] CandidateHostChecks verify_internal_candidate_host(
+    const LearningSettings& settings,
+    const CandidateRecord& candidate,
+    const std::string_view generation,
+    const std::filesystem::path& metrics_path,
+    const std::stop_token stop_token) {
+    CandidateHostChecks checks;
+    const auto ready_file = candidate.job_directory / "candidate-host.ready";
+    const auto control_directory = candidate.job_directory / "candidate-host-control";
+    std::error_code filesystem_error;
+    std::filesystem::remove(ready_file, filesystem_error);
+    std::filesystem::create_directories(control_directory, filesystem_error);
+    if (filesystem_error) {
+        checks.diagnostics = "unable to create isolated candidate-host control directory: " +
+            filesystem_error.message();
+        return checks;
+    }
+
+    platform::ManagedProcess process;
+    std::string process_error;
+    if (!process.start(
+            platform::ProcessSpec{
+                .executable = settings.python_executable,
+                .arguments = {
+                    settings.worker_script.string(),
+                    "serve",
+                    "--port", "0",
+                    "--ready-file", ready_file.string(),
+                    "--state-root", settings.state_root.string(),
+                    "--generation", std::string(generation),
+                    "--control-dir", control_directory.string(),
+                    "--max-loaded-models", "1",
+                },
+                .working_directory = settings.state_root,
+                .log_file = candidate.log_path,
+                .append_log = true,
+            },
+            process_error)) {
+        checks.diagnostics = "isolated candidate host did not launch: " + process_error;
+        return checks;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+    auto port = 0;
+    while (!stop_token.stop_requested() && process.running() &&
+           std::chrono::steady_clock::now() < deadline) {
+        port = ready_port(ready_file);
+        if (port > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (stop_token.stop_requested()) {
+        process.stop();
+        checks.diagnostics = "candidate-host verification cancelled; active model remains online";
+        return checks;
+    }
+    if (port <= 0) {
+        const auto exit_code = process.exit_code();
+        process.stop();
+        checks.diagnostics = "candidate host did not become ready within the bounded startup window (exit " +
+            std::to_string(exit_code) + ')';
+        return checks;
+    }
+
+    const auto base_url = "http://127.0.0.1:" + std::to_string(port);
+    const auto health = backend::http_get(base_url + "/health", std::chrono::seconds(10));
+    checks.candidate_host_started = health.succeeded() &&
+        health.body.find(std::string(generation)) != std::string::npos &&
+        health.body.find("\"shadow_candidate\": true") != std::string::npos;
+    if (!checks.candidate_host_started) {
+        process.stop();
+        checks.diagnostics = health.error.empty()
+            ? "candidate health response did not identify the isolated shadow generation"
+            : "candidate health check failed: " + health.error;
+        return checks;
+    }
+    // The worker validates the generation manifest and every declared checksum before
+    // publishing its ready file. A later canary failure is therefore a recoverable
+    // host/inference failure, not evidence that the persisted artifact is corrupt.
+    checks.artifact_checksum_valid = true;
+
+    const auto canary = backend::http_post_json(
+        base_url + "/v1/chat/completions",
+        R"({"model":"threadspire://fast","messages":[{"role":"user","content":"Reply briefly in clear English: what is two plus two?"}],"max_tokens":48,"temperature":0.0,"stream":false})",
+        std::chrono::minutes(2));
+    process.stop();
+    checks.inference_canary_passed = canary.succeeded() &&
+        canary.body.find(std::string(generation)) != std::string::npos &&
+        canary.body.find("low_confidence") == std::string::npos &&
+        canary.body.find("\"content\": \"\"") == std::string::npos;
+    checks.deterministic_validation_passed =
+        read_metric(metrics_path, "passed_evaluation", 0.0) > 0.5 &&
+        read_metric(metrics_path, "generation_ready", 0.0) > 0.5;
+    checks.regression_gate_passed =
+        candidate.validation_score >= settings.policy.minimum_validation_score &&
+        candidate.regression_score <= settings.policy.maximum_regression;
+
+    if (!checks.artifact_checksum_valid) {
+        checks.diagnostics = canary.error.empty()
+            ? "candidate artifact failed checksum/load validation in the shadow host"
+            : "candidate host could not load its artifact: " + canary.error;
+    } else if (!checks.inference_canary_passed) {
+        checks.diagnostics = "candidate host returned an invalid or low-confidence inference canary";
+    } else if (!checks.deterministic_validation_passed) {
+        checks.diagnostics = "candidate failed deterministic held-out validation";
+    } else if (!checks.regression_gate_passed) {
+        checks.diagnostics = "candidate failed the independent regression gate";
+    } else {
+        checks.diagnostics = "isolated candidate host passed checksum, health, inference, deterministic, and regression checks";
+    }
+    return checks;
+}
 void publish_file(
     const std::filesystem::path& destination,
     const std::string_view contents) {
@@ -205,11 +333,20 @@ ContinualLearningService::ContinualLearningService(LearningSettings settings)
       memory_store_(settings_.state_root / "memory" / "episodes.jsonl"),
       expert_registry_(settings_.state_root / "experts" / "registry"),
       candidate_registry_(settings_.state_root / "candidates" / "registry"),
+      persistent_queue_(settings_.state_root / "jobs" / "training-state.json"),
       resource_governor_(settings_.resource_policy) {
     std::filesystem::create_directories(settings_.state_root / "jobs");
     std::filesystem::create_directories(settings_.state_root / "control");
     expert_registry_.load();
     candidate_registry_.load();
+    try {
+        persistent_queue_.load();
+        static_cast<void>(persistent_queue_.recover_inflight(
+            "process stopped while a shadow candidate was active; exact checkpoint retained"));
+    } catch (...) {
+        // A malformed queue must not prevent the last promoted model from serving.
+    }
+    recover_persisted_requests();
     recover_interrupted_candidates();
     publish_control_files();
     worker_ = std::jthread([this](const std::stop_token stop_token) {
@@ -306,7 +443,19 @@ void ContinualLearningService::request_skill_update(std::string skill) {
 }
 
 void ContinualLearningService::queue_request(LearningRequest request) {
-    {
+    try {
+        const auto key = request.candidate_id.has_value()
+            ? "candidate:" + *request.candidate_id
+            : "skill:" + request.skill + ':' + std::string(to_string(request.kind));
+        const auto durable = persistent_queue_.submit(
+            key,
+            request.skill,
+            request.candidate_id.value_or(""));
+        request.job_id = durable.job.id;
+    } catch (...) {
+        // Never launch an update that could not first be serialized.
+        return;
+    }    {
         std::lock_guard lock(mutex_);
         if (request.candidate_id.has_value()) {
             std::erase_if(queue_, [&request](const LearningRequest& pending) {
@@ -352,6 +501,7 @@ void ContinualLearningService::set_interactive_busy(const bool value) {
                    std::memory_order_acquire)) {
         }
     }
+    persistent_queue_.set_interactive_busy(interactive_busy());
     publish_control_files();
     condition_.notify_all();
 }
@@ -497,6 +647,50 @@ const memory::EpisodeStore& ContinualLearningService::memory_store() const noexc
     return memory_store_;
 }
 
+void ContinualLearningService::recover_persisted_requests() {
+    for (const auto& job : persistent_queue_.snapshot()) {
+        if (job.state != TrainingState::queued &&
+            job.state != TrainingState::recoverable_failed) {
+            continue;
+        }
+        LearningRequest request{
+            .job_id = job.id,
+            .skill = job.skill,
+            .candidate_id = job.candidate_id.empty()
+                ? std::nullopt
+                : std::optional<std::string>(job.candidate_id),
+            .kind = CandidateKind::lora_overlay,
+        };
+        if (request.candidate_id.has_value()) {
+            if (const auto* candidate = candidate_registry_.find(*request.candidate_id);
+                candidate != nullptr) {
+                request.kind = candidate->kind;
+            }
+        } else if (const auto separator = job.coalesce_key.rfind(':');
+                   separator != std::string::npos) {
+            request.kind = candidate_kind_from_string(
+                std::string_view(job.coalesce_key).substr(separator + 1U));
+        }
+        queue_.push_back(std::move(request));
+    }
+}
+
+void ContinualLearningService::transition_durable_phase(
+    const std::string_view job_id,
+    const TrainingState expected,
+    const TrainingState next,
+    const std::filesystem::path& checkpoint_path,
+    std::string message) noexcept {
+    if (job_id.empty()) {
+        return;
+    }
+    try {
+        static_cast<void>(persistent_queue_.transition(
+            job_id, expected, next, checkpoint_path, std::move(message)));
+    } catch (...) {
+        // Failure to publish state must not replace or stop the active model.
+    }
+}
 void ContinualLearningService::recover_interrupted_candidates() {
     const auto interrupted = candidate_registry_.mark_inflight_interrupted();
     if (!settings_.resume_interrupted_candidates) {
@@ -526,6 +720,15 @@ void ContinualLearningService::worker_loop(const std::stop_token stop_token) {
             request = std::move(queue_.front());
             queue_.pop_front();
         }
+        if (!request.job_id.empty()) {
+            const auto prepared = persistent_queue_.transition(
+                request.job_id, TrainingState::queued, TrainingState::preparing) ||
+                persistent_queue_.transition(
+                    request.job_id, TrainingState::recoverable_failed, TrainingState::preparing);
+            if (!prepared) {
+                continue;
+            }
+        }
         process_request(request, stop_token);
     }
 }
@@ -539,13 +742,21 @@ void ContinualLearningService::process_request(
         std::lock_guard lock(mutex_);
         const auto* existing = expert_registry_.find(request.skill);
         if (existing == nullptr) {
+            if (!request.job_id.empty()) {
+                static_cast<void>(persistent_queue_.transition(
+                    request.job_id,
+                    TrainingState::preparing,
+                    TrainingState::recoverable_failed,
+                    {},
+                    "skill registry entry disappeared before preparation"));
+            }
             return;
         }
         active_module = *existing;
         settings = settings_;
     }
 
-    const auto job_id = make_job_id(request.skill);
+    const auto job_id = request.job_id.empty() ? make_job_id(request.skill) : request.job_id;
     LearningJobStatus status{
         .id = job_id,
         .skill = request.skill,
@@ -568,37 +779,85 @@ void ContinualLearningService::process_request(
         }
     }
     update_status(status);
+    if (!request.job_id.empty() && !persistent_queue_.transition(
+            request.job_id,
+            TrainingState::preparing,
+            TrainingState::training,
+            status.progress_path,
+            "training shadow candidate while the last promoted model keeps serving")) {
+        return;
+    }
 
+    bool completed = false;
     if (request.kind == CandidateKind::full_rank_skill &&
         !active_module.base_model.starts_with("threadspire://")) {
-        static_cast<void>(run_consolidation(
-            settings, active_module, status, request.candidate_id, stop_token));
-        return;
+        completed = run_consolidation(
+            settings, active_module, status, request.candidate_id, request.job_id, stop_token);
+    } else if (active_module.base_model.starts_with("threadspire://")) {
+        completed = run_internal_update(
+            settings, active_module, status, request.candidate_id, request.job_id, stop_token);
+    } else {
+        completed = run_lora_update(
+            settings, active_module, status, request.candidate_id, request.job_id, stop_token);
+        if (completed && settings.automatic_consolidation &&
+            expert_registry_.ready_for_consolidation(active_module, settings.policy)) {
+            completed = run_consolidation(
+                settings, active_module, status, std::nullopt, request.job_id, stop_token);
+        }
     }
 
-    if (active_module.base_model.starts_with("threadspire://")) {
-        static_cast<void>(run_internal_update(
-            settings, active_module, status, request.candidate_id, stop_token));
+    if (request.job_id.empty()) {
         return;
     }
-
-    if (!run_lora_update(
-            settings, active_module, status, request.candidate_id, stop_token)) {
-        return;
+    bool rejected = status.message.find("reject") != std::string::npos;
+    if (!status.candidate_id.empty()) {
+        std::lock_guard lock(mutex_);
+        if (const auto* candidate = candidate_registry_.find(status.candidate_id);
+            candidate != nullptr) {
+            rejected = rejected || candidate->state == CandidateState::rejected;
+        }
     }
-
-    if (settings.automatic_consolidation &&
-        expert_registry_.ready_for_consolidation(active_module, settings.policy)) {
-        static_cast<void>(run_consolidation(
-            settings, active_module, status, std::nullopt, stop_token));
+    if (completed) {
+        transition_durable_phase(
+            request.job_id, TrainingState::training, TrainingState::evaluating,
+            status.progress_path, "candidate training complete; evaluating held-out gates");
+        transition_durable_phase(
+            request.job_id, TrainingState::evaluating, TrainingState::promoting,
+            status.progress_path, "candidate passed evaluation; verifying isolated candidate host");
+        transition_durable_phase(
+            request.job_id, TrainingState::promoting, TrainingState::completed,
+            status.progress_path, "candidate completed without replacing a working model early");
+    } else if (rejected) {
+        transition_durable_phase(
+            request.job_id, TrainingState::training, TrainingState::evaluating,
+            status.progress_path, "candidate reached evaluation");
+        transition_durable_phase(
+            request.job_id, TrainingState::evaluating, TrainingState::rejected,
+            status.progress_path, status.message);
+        transition_durable_phase(
+            request.job_id, TrainingState::promoting, TrainingState::rejected,
+            status.progress_path, status.message);
+    } else {
+        const auto message = status.message.empty()
+            ? "candidate failed recoverably; checkpoint retained"
+            : status.message;
+        transition_durable_phase(
+            request.job_id, TrainingState::training, TrainingState::recoverable_failed,
+            status.progress_path, message);
+        transition_durable_phase(
+            request.job_id, TrainingState::evaluating, TrainingState::recoverable_failed,
+            status.progress_path, message);
+        transition_durable_phase(
+            request.job_id, TrainingState::promoting, TrainingState::recoverable_failed,
+            status.progress_path, message);
     }
 }
-
 bool ContinualLearningService::run_internal_update(
     const LearningSettings& settings,
     ExpertModule& active_module,
     LearningJobStatus& status,
     const std::optional<std::string> resume_candidate_id,
+    const std::string_view durable_job_id,
     const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         status.state = LearningJobState::cancelled;
@@ -780,6 +1039,9 @@ bool ContinualLearningService::run_internal_update(
         return false;
     }
 
+    transition_durable_phase(
+        durable_job_id, TrainingState::training, TrainingState::evaluating,
+        status.progress_path, "candidate training complete; evaluating held-out gates");
     candidate.validation_score = read_metric(metrics_path, "validation_score", 0.0);
     candidate.regression_score = read_metric(metrics_path, "regression_score", 1.0);
     const auto passed_evaluation = read_metric(
@@ -814,6 +1076,9 @@ bool ContinualLearningService::run_internal_update(
         settings.state_root, internal_generation);
     candidate.updated_unix_ms = memory::now_unix_ms();
     commit_candidate(candidate);
+    transition_durable_phase(
+        durable_job_id, TrainingState::evaluating, TrainingState::promoting,
+        status.progress_path, "candidate passed evaluation; verifying isolated candidate host");
 
     std::lock_guard promotion_lock(promotion_mutex_);
     auto registry_stale = false;
@@ -835,34 +1100,64 @@ bool ContinualLearningService::run_internal_update(
         return false;
     }
 
-    const auto promotion_result = platform::run_process(
-        platform::ProcessSpec{
-            .executable = settings.python_executable,
-            .arguments = {
-                settings.worker_script.string(),
-                "promote-internal",
-                "--state-root", settings.state_root.string(),
-                "--generation", internal_generation,
-                "--expected-parent", internal_parent,
-            },
-            .working_directory = settings.state_root,
-            .log_file = candidate.log_path,
-            .append_log = true,
+    const AtomicPromotionCoordinator promotion_coordinator;
+    const auto atomic_promotion = promotion_coordinator.promote(
+        AtomicPromotionRequest{
+            .active_pointer = settings.state_root / "models" / "internal" / "active.json",
+            .candidate_directory = candidate.artifact_path,
+            .candidate_generation = internal_generation,
+            .expected_parent_generation = internal_parent,
         },
-        [] { return false; });
-    if (!promotion_result.launched || promotion_result.exit_code != 0) {
-        candidate.state = CandidateState::rejected;
-        candidate.message = promotion_result.error.empty()
-            ? "internal candidate promotion failed its parent compare-and-swap"
-            : promotion_result.error;
+        [&settings, &candidate, &internal_generation, &metrics_path, stop_token](
+            const std::filesystem::path&) {
+            return verify_internal_candidate_host(
+                settings, candidate, internal_generation, metrics_path, stop_token);
+        },
+        [&settings, &candidate, &internal_generation, &internal_parent] {
+            const auto promotion_result = platform::run_process(
+                platform::ProcessSpec{
+                    .executable = settings.python_executable,
+                    .arguments = {
+                        settings.worker_script.string(),
+                        "promote-internal",
+                        "--state-root", settings.state_root.string(),
+                        "--generation", internal_generation,
+                        "--expected-parent", internal_parent,
+                    },
+                    .working_directory = settings.state_root,
+                    .log_file = candidate.log_path,
+                    .append_log = true,
+                },
+                [] { return false; });
+            return CandidatePromotionCommitResult{
+                .succeeded = promotion_result.launched && promotion_result.exit_code == 0,
+                .diagnostics = promotion_result.error.empty()
+                    ? (promotion_result.exit_code == 0
+                        ? "candidate manifest and active pointer committed atomically"
+                        : "candidate compare-and-swap promotion command failed")
+                    : promotion_result.error,
+            };
+        });
+    if (atomic_promotion.outcome != PromotionOutcome::promoted) {
+        const auto recoverable =
+            atomic_promotion.outcome == PromotionOutcome::recoverable_failed;
+        candidate.state = recoverable
+            ? CandidateState::interrupted
+            : CandidateState::rejected;
+        candidate.message = atomic_promotion.diagnostics.empty()
+            ? (recoverable
+                ? "candidate host failed recoverably; active model remains online"
+                : "candidate was rejected before atomic promotion")
+            : atomic_promotion.diagnostics;
         candidate.updated_unix_ms = memory::now_unix_ms();
         commit_candidate(candidate);
-        status.state = LearningJobState::failed;
+        status.state = recoverable
+            ? LearningJobState::interrupted
+            : LearningJobState::failed;
         status.message = candidate.message;
         update_status(status);
         return false;
     }
-
     registry_stale = false;
     {
         std::lock_guard lock(mutex_);
@@ -922,6 +1217,7 @@ bool ContinualLearningService::run_lora_update(
     ExpertModule& active_module,
     LearningJobStatus& status,
     const std::optional<std::string> resume_candidate_id,
+    const std::string_view durable_job_id,
     const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         status.state = LearningJobState::cancelled;
@@ -1119,6 +1415,9 @@ bool ContinualLearningService::run_lora_update(
         return false;
     }
 
+    transition_durable_phase(
+        durable_job_id, TrainingState::training, TrainingState::evaluating,
+        status.progress_path, "candidate training complete; evaluating held-out gates");
     candidate.state = CandidateState::evaluating;
     candidate.message = "evaluating skill improvement and held-out regression";
     candidate.updated_unix_ms = memory::now_unix_ms();
@@ -1145,6 +1444,9 @@ bool ContinualLearningService::run_lora_update(
         return false;
     }
 
+    transition_durable_phase(
+        durable_job_id, TrainingState::evaluating, TrainingState::promoting,
+        status.progress_path, "candidate passed evaluation; committing adapter with parent check");
     bool promoted = false;
     {
         std::lock_guard lock(mutex_);
@@ -1198,6 +1500,7 @@ bool ContinualLearningService::run_consolidation(
     ExpertModule& active_module,
     LearningJobStatus& status,
     const std::optional<std::string> resume_candidate_id,
+    const std::string_view durable_job_id,
     const std::stop_token stop_token) {
     if (active_module.adapter_path.empty()) {
         return false;
@@ -1382,6 +1685,9 @@ bool ContinualLearningService::run_consolidation(
         return false;
     }
 
+    transition_durable_phase(
+        durable_job_id, TrainingState::training, TrainingState::evaluating,
+        status.progress_path, "candidate training complete; evaluating module integrity and retention");
     candidate.state = CandidateState::evaluating;
     candidate.message = "verifying module checksum, FFN-only tensor contract, and manifest counts";
     candidate.updated_unix_ms = memory::now_unix_ms();
@@ -1440,6 +1746,9 @@ bool ContinualLearningService::run_consolidation(
         return false;
     }
 
+    transition_durable_phase(
+        durable_job_id, TrainingState::evaluating, TrainingState::promoting,
+        status.progress_path, "candidate passed retention gates; committing module with parent check");
     bool promoted = false;
     {
         std::lock_guard lock(mutex_);

@@ -1,13 +1,14 @@
-#include "threadspire/ai/learning/expert_registry.hpp"
-
-#include "threadspire/ai/core/ini.hpp"
-#include "threadspire/ai/memory/episode_store.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <ranges>
 #include <stdexcept>
+
+module threadspire.learning;
+import threadspire.core;
+import threadspire.storage;
 
 namespace threadspire::ai::learning {
 

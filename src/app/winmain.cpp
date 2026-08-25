@@ -1,4 +1,3 @@
-#include "threadspire/ai/app/main_window.hpp"
 
 #include <Windows.h>
 #include <CommCtrl.h>
@@ -6,6 +5,8 @@
 
 #include <exception>
 #include <string>
+
+import threadspire.ui;
 
 namespace {
 

@@ -1,10 +1,12 @@
-#include "threadspire/ai/routing/router.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <ranges>
 #include <sstream>
+
+module threadspire.tasks;
 
 namespace threadspire::ai::routing {
 namespace {

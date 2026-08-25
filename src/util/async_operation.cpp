@@ -1,7 +1,9 @@
-#include "threadspire/ai/util/async_operation.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <exception>
 #include <utility>
+
+module threadspire.core;
 
 namespace threadspire::ai::util {
 

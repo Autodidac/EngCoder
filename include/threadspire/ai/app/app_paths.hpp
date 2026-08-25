@@ -7,6 +7,11 @@ namespace threadspire::ai::app {
 struct AppPaths final {
     std::filesystem::path executable;
     std::filesystem::path root;
+    std::filesystem::path packs;
+    std::filesystem::path outputs;
+    std::filesystem::path cache;
+    std::filesystem::path candidates;
+    std::filesystem::path checkpoints;
     std::filesystem::path runtime;
     std::filesystem::path python;
     std::filesystem::path worker;
@@ -28,6 +33,6 @@ struct AppPaths final {
 };
 
 [[nodiscard]] AppPaths make_app_paths();
-void materialize_embedded_resources(const AppPaths& paths);
+void initialize_base_resources(const AppPaths& paths);
 
 } // namespace threadspire::ai::app

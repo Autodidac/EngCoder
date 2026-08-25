@@ -1,0 +1,49 @@
+#pragma once
+
+// Standard-library declarations used by module implementation units. Public
+// ThreadSpire declarations live in named module interfaces; this prelude is
+// intentionally limited to implementation dependencies.
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <ios>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <random>
+#include <ranges>
+#include <set>
+#include <shared_mutex>
+#include <sstream>
+#include <stop_token>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>

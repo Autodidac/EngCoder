@@ -1,20 +1,3 @@
-#include "threadspire/ai/backend/completion_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/learning/candidate_registry.hpp"
-#include "threadspire/ai/learning/continual_learning_service.hpp"
-#include "threadspire/ai/learning/expert_registry.hpp"
-#include "threadspire/ai/learning/knowledge_classifier.hpp"
-#include "threadspire/ai/learning/piggyback_foundry.hpp"
-#include "threadspire/ai/mcp/client.hpp"
-#include "threadspire/ai/memory/episode_store.hpp"
-#include "threadspire/ai/models/local_provider.hpp"
-#include "threadspire/ai/models/model_registry.hpp"
-#include "threadspire/ai/platform/process.hpp"
-#include "threadspire/ai/resource/resource_governor.hpp"
-#include "threadspire/ai/routing/router.hpp"
-#include "threadspire/ai/routing/task.hpp"
-#include "threadspire/ai/runtime/internal_model_state.hpp"
-#include "threadspire/ai/runtime/storage_monitor.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -23,6 +6,16 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+import threadspire.core;
+import threadspire.learning;
+import threadspire.mcp;
+import threadspire.models;
+import threadspire.platform;
+import threadspire.providers;
+import threadspire.scheduler;
+import threadspire.storage;
+import threadspire.tasks;
 
 namespace {
 
@@ -842,8 +835,12 @@ void test_windows_ui_source_contract() {
     require(ui.find("static_cast<int>(client.right - client.left)") != std::string::npos &&
                 ui.find("static_cast<int>(client.bottom - client.top)") != std::string::npos,
             "Win32 LONG layout dimensions must be normalized before integer algorithms");
-    require(ui.find("static_cast<int>(\n                metrics.tmHeight + metrics.tmExternalLeading)") != std::string::npos &&
-                ui.find("static_cast<int>(\n        formatting.bottom - formatting.top)") != std::string::npos &&
+    require(ui.find("const auto measured_line_height = static_cast<int>(") != std::string::npos &&
+                ui.find("metrics.tmHeight + metrics.tmExternalLeading") != std::string::npos &&
+                ui.find("line_height = std::max(1, measured_line_height)") != std::string::npos &&
+                ui.find("const auto formatting_height = static_cast<int>(") != std::string::npos &&
+                ui.find("formatting.bottom - formatting.top") != std::string::npos &&
+                ui.find("std::max(1, formatting_height / line_height)") != std::string::npos &&
                 ui.find("std::max(1, metrics.tmHeight + metrics.tmExternalLeading)") == std::string::npos &&
                 ui.find("std::max(1, (formatting.bottom - formatting.top) / line_height)") == std::string::npos,
             "Win32 text metrics must be normalized from LONG before std::max template deduction");
@@ -870,16 +867,21 @@ void test_windows_ui_source_contract() {
     require(ui.find("L\"Generate image\"") != std::string::npos &&
                 ui.find("L\"Generate speech\"") != std::string::npos &&
                 ui.find("L\"Use tools\"") != std::string::npos &&
-                ui.find("models_manual_capabilities") != std::string::npos &&
-                ui.find("run_media_request") != std::string::npos &&
-                ui.find("update_storage_report") != std::string::npos &&
-                ui.find("TRAINING DATA") != std::string::npos &&
-                ui.find("ACTIVE MODEL") != std::string::npos &&
-                ui.find("NOT TRAINING DATA") != std::string::npos,
-            "the Task surface must route every capability and prominently separate training-data, active-model, and runtime sizes");
+                ui.find("backend::UnifiedProviderRouter") != std::string::npos &&
+                ui.find("backend::ExecutionProfile::coding_agent") != std::string::npos &&
+                ui.find("backend::ExecutionProfile::long_horizon") != std::string::npos &&
+                ui.find("backend::MediaTaskProvider") != std::string::npos &&
+                ui.find("CURRENT MODEL") != std::string::npos &&
+                ui.find("ACCEPTED TRAINING DATA") != std::string::npos &&
+                ui.find("INSTALLED PACKS") != std::string::npos &&
+                ui.find("OUTPUTS / CACHE") != std::string::npos &&
+                ui.find("TOTAL USAGE") != std::string::npos &&
+                ui.find("FREE DISK") != std::string::npos &&
+                ui.find("Legacy/private PyTorch runtime (not training data)") != std::string::npos,
+            "the Task surface must route every capability through execution profiles and expose all six live storage cards");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
-                ui.find(".analysis_prompt = analysis_prompt") != std::string::npos,
+                ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos,
             "the workspace must pass bounded recent turns to inference without making them inflate route complexity");
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
@@ -966,19 +968,22 @@ void test_windows_ui_source_contract() {
                 ui.find("Create + bootstrap train") != std::string::npos &&
                 ui.find("external base weights: none") != std::string::npos,
             "the Local AI page must expose explicit internal-model creation, bootstrap training, and provenance");
-    require(ui.find("Automatic setup and recovery") != std::string::npos &&
-                ui.find("drive_automatic_lifecycle") != std::string::npos &&
-                ui.find("internal-model-progress.json") != std::string::npos &&
-                ui.find("stopped reporting progress for 15 minutes") != std::string::npos,
-            "internal-model setup, exact resume, host restart, retry, and hang recovery must run automatically");
-    require(ui.find("Show advanced recovery controls") != std::string::npos &&
+    require(ui.find("Installing a pack never starts training, changes the selected model, or interrupts a task") != std::string::npos &&
+                ui.find("runtime::CapabilityPackManager") != std::string::npos &&
+                ui.find("install_transactional") != std::string::npos &&
+                ui.find("install_backend(const bool automatic)") == std::string::npos &&
+                ui.find("install_backend(true)") == std::string::npos &&
+                ui.find("automatic_lifecycle_enabled_ = false") != std::string::npos &&
+                ui.find("Legacy automatic-lifecycle preferences are intentionally ignored") != std::string::npos,
+            "capability-pack selection and installation must be explicit, transactional, and isolated from model or task state");
+    require(ui.find("Show capability-pack and model controls") != std::string::npos &&
                 ui.find("advanced_model_controls") != std::string::npos &&
                 ui.find("show_advanced_model_controls ? SW_SHOW : SW_HIDE") != std::string::npos,
-            "manual setup and recovery controls must be collapsed by default instead of presented as a required workflow");
-    require(ui.find("automatic_lifecycle_enabled_ && !internal_model_ready(paths_)") != std::string::npos &&
-                ui.find("page_ = Page::models") != std::string::npos &&
+            "explicit capability-pack and model controls must remain available without enabling automatic lifecycle actions");
+    require(ui.find("automatic_lifecycle_enabled_ && !internal_model_ready(paths_)") == std::string::npos &&
+                ui.find("case id::models_automation_toggle") == std::string::npos &&
                 ui.find("page == page_ ? WS_VISIBLE : 0U") != std::string::npos,
-            "an incomplete automatic bootstrap must open on its visible progress dashboard");
+            "legacy automatic setup preferences must not install packs, start training, or force navigation");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -1067,6 +1072,11 @@ void test_worker_and_resource_contract() {
                 worker.find("--slot-timeout-seconds") != std::string::npos &&
                 worker.find("_foreground_training_cleanup") != std::string::npos,
             "foreground bootstrap must clear stale blockers, publish heartbeats, and time out instead of waiting forever");
+    require(worker.find("--generation") != std::string::npos &&
+                worker.find("--control-dir") != std::string::npos &&
+                worker.find("shadow_candidate") != std::string::npos &&
+                worker.find("load_generation_model") != std::string::npos,
+            "candidate verification must serve an exact unpromoted generation in an isolated shadow host");
     const auto internal_model = read_text_file(source / "resources/internal_model.py");
     const auto curriculum_guard = read_text_file(source / "resources/curriculum_guard.py");
     const auto lifecycle_ui = read_text_file(source / "src/app/main_window.cpp");
@@ -1081,7 +1091,7 @@ void test_worker_and_resource_contract() {
                 internal_model.find("resumed_from_repair_generation") != std::string::npos &&
                 internal_model.find("_next_generation(state_root, parent)") != std::string::npos &&
                 worker.find("A rejected shadow candidate is a recoverable training outcome") != std::string::npos &&
-                lifecycle_ui.find("training process exited without publishing a ready generation") != std::string::npos &&
+                lifecycle_ui.find("an explicit repair retry must continue from the saved candidate") != std::string::npos &&
                 lifecycle_ui.find("saved repair candidate") != std::string::npos,
             "automatic and manual bootstrap repair must continue the strongest rejected lineage and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
@@ -1102,6 +1112,11 @@ void test_worker_and_resource_contract() {
                 continual.find("promote-internal") != std::string::npos &&
                 continual.find("activate-internal") != std::string::npos &&
                 continual.find("internal_generation_path") != std::string::npos &&
+                continual.find("verify_internal_candidate_host") != std::string::npos &&
+                continual.find("AtomicPromotionCoordinator") != std::string::npos &&
+                continual.find("CandidatePromotionCommitResult") != std::string::npos &&
+                continual.find("recover_persisted_requests") != std::string::npos &&
+                continual.find("transition_durable_phase") != std::string::npos &&
                 continual.find("promotion_mutex_") != std::string::npos &&
                 continual.find("std::erase_if(queue_") != std::string::npos &&
                 continual.find("training_episode_count") != std::string::npos,
@@ -1124,17 +1139,28 @@ void test_worker_and_resource_contract() {
         source / "src/runtime/backend_manager.cpp");
     require(resources.find("RT_MANIFEST") == std::string::npos,
             "manifest must be supplied exactly once by CMake");
-    require(cmake.find("THREADSPIRE_CURRICULUM_GUARD") != std::string::npos &&
-                resources.find("IDR_CURRICULUM_GUARD") != std::string::npos &&
-                resource_ids.find("#define IDR_CURRICULUM_GUARD 209") != std::string::npos &&
+    require(cmake.find("THREADSPIRE_MODEL_WORKER") == std::string::npos &&
+                cmake.find("THREADSPIRE_INTERNAL_MODEL") == std::string::npos &&
+                cmake.find("THREADSPIRE_CURRICULUM_GUARD") == std::string::npos &&
+                resources.find("IDR_MODEL_WORKER") == std::string::npos &&
+                resources.find("IDR_INTERNAL_MODEL") == std::string::npos &&
+                resources.find("IDR_CURRICULUM_GUARD") == std::string::npos &&
+                resource_ids.find("IDR_MODEL_WORKER") == std::string::npos &&
+                resource_ids.find("IDR_INTERNAL_MODEL") == std::string::npos &&
+                resource_ids.find("IDR_CURRICULUM_GUARD") == std::string::npos,
+            "the base executable must not embed Python training programs or resource IDs");
+    require(app_paths_header.find("std::filesystem::path packs") != std::string::npos &&
                 app_paths_header.find("curriculum_guard_module") != std::string::npos &&
-                app_paths_source.find("paths.root / \"backend\" / \"curriculum_guard.py\"") != std::string::npos &&
-                app_paths_source.find("write_resource(IDR_CURRICULUM_GUARD, paths.curriculum_guard_module, true)") != std::string::npos &&
+                app_paths_source.find("paths.packs / \"internal-pytorch-training\"") != std::string::npos &&
+                app_paths_source.find("training_pack / \"backend\" / \"curriculum_guard.py\"") != std::string::npos &&
+                app_paths_source.find("write_resource(IDR_CURRICULUM_GUARD") == std::string::npos &&
+                backend_manager.find("paths.packs / \"internal-pytorch-training\" / \"pack.json\"") != std::string::npos &&
                 backend_manager.find("is_regular_file(paths.curriculum_guard_module") != std::string::npos,
-            "curriculum_guard.py must be embedded, deployed beside internal_model.py, overwritten during repair, and required by backend verification");
-    require(backend_manager.find("\"setuptools<82\"") != std::string::npos &&
-                backend_manager.find("\"pip\", \"setuptools\", \"wheel\"") == std::string::npos,
-            "backend repair must keep setuptools within PyTorch 2.11's supported range");
+            "heavy training files must exist only inside an explicitly installed, verified capability pack");
+    require(backend_manager.find("setuptools") == std::string::npos &&
+                backend_manager.find("pip") == std::string::npos &&
+                backend_manager.find("Automatic Python/PyTorch installation was removed") != std::string::npos,
+            "the base backend manager must never create a private runtime or install PyTorch automatically");
 }
 
 void test_seed_material_counts() {

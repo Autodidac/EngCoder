@@ -1,12 +1,13 @@
-#include "threadspire/ai/mcp/client.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <chrono>
 #include <sstream>
 #include <utility>
+
+module threadspire.mcp;
+import threadspire.core;
+import threadspire.platform;
 
 namespace threadspire::ai::mcp {
 namespace {

@@ -1,11 +1,13 @@
-#include "threadspire/ai/learning/knowledge_classifier.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cctype>
 #include <initializer_list>
 #include <ranges>
 #include <string>
 #include <string_view>
+
+module threadspire.learning;
 
 namespace threadspire::ai::learning {
 namespace {

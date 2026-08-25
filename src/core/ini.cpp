@@ -1,10 +1,12 @@
-#include "threadspire/ai/core/ini.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <fstream>
 #include <stdexcept>
+
+module threadspire.core;
 
 namespace threadspire::ai::core {
 namespace {

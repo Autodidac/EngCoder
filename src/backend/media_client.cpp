@@ -1,9 +1,5 @@
-#include "threadspire/ai/backend/media_client.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/models/local_server_hub.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -12,6 +8,11 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+
+module threadspire.media;
+import threadspire.core;
+import threadspire.models;
+import threadspire.platform;
 
 namespace threadspire::ai::backend {
 namespace {
@@ -274,4 +275,75 @@ MediaResult MediaClient::generate(
     return result;
 }
 
+std::string_view MediaTaskProvider::id() const noexcept {
+    return "native-media";
+}
+
+ProviderCapabilities MediaTaskProvider::capabilities() const noexcept {
+    return {
+        .interactive_text = false,
+        .coding = false,
+        .repository_work = false,
+        .image_generation = true,
+        .audio_generation = true,
+        .tools = false,
+        .streaming = false,
+        .cancellation = true,
+        .file_artifacts = true,
+    };
+}
+
+UnifiedTaskResult MediaTaskProvider::execute(
+    const UnifiedTaskRequest& request,
+    const std::stop_token stop_token) {
+    UnifiedTaskResult result{
+        .task_id = request.task_id,
+        .provider_id = std::string(id()),
+    };
+    if (!capabilities().supports(request.modality, request.profile)) {
+        result.error = "media provider requires an interactive image or audio request";
+        return result;
+    }
+    if (request.on_event && !request.on_event({
+            .kind = TaskEventKind::status,
+            .text = request.modality == WorkModality::image_generation
+                ? "generating image artifact"
+                : "generating audio artifact",
+        })) {
+        result.cancelled = true;
+        result.error = "task cancelled by event consumer";
+        return result;
+    }
+    const auto media = client_.generate(
+        MediaRequest{
+            .kind = request.modality == WorkModality::image_generation
+                ? MediaKind::image
+                : MediaKind::speech,
+            .model = request.model,
+            .prompt = request.prompt,
+            .output_root = request.output_root,
+        },
+        stop_token);
+    result.succeeded = media.succeeded;
+    result.cancelled = stop_token.stop_requested();
+    result.error = media.error;
+    if (media.succeeded) {
+        TaskArtifact artifact{
+            .kind = media.kind == MediaKind::image ? ArtifactKind::image : ArtifactKind::audio,
+            .path = media.output_path,
+            .mime_type = media.mime_type,
+            .label = media.kind == MediaKind::image ? "generated image" : "generated audio",
+        };
+        result.artifacts.push_back(artifact);
+        result.content = media.output_path.string();
+        if (request.on_event) {
+            static_cast<void>(request.on_event({
+                .kind = TaskEventKind::artifact,
+                .text = artifact.label,
+                .artifact = std::move(artifact),
+            }));
+        }
+    }
+    return result;
+}
 } // namespace threadspire::ai::backend

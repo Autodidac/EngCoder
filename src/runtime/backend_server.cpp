@@ -1,11 +1,12 @@
-#include "threadspire/ai/runtime/backend_server.hpp"
-
-#include "threadspire/ai/backend/http_client.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <chrono>
 #include <fstream>
 #include <string>
 #include <thread>
+
+module threadspire.scheduler;
+import threadspire.platform;
 
 namespace threadspire::ai::runtime {
 namespace {

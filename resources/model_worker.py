@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     serve.add_argument("--port", type=int, default=0)
     serve.add_argument("--ready-file", type=Path, required=True)
     serve.add_argument("--state-root", type=Path, required=True)
+    serve.add_argument("--generation", default="")
+    serve.add_argument("--control-dir", type=Path)
     serve.add_argument("--max-loaded-models", type=int, default=2)
 
     train = commands.add_parser("train-lora")
@@ -400,9 +402,9 @@ class ModelCache:
 
 
 class ServerState:
-    def __init__(self, state_root: Path, maximum_models: int) -> None:
+    def __init__(self, state_root: Path, maximum_models: int, generation: str = "", control_dir: Path | None = None) -> None:
         self.state_root = state_root
-        self.control_dir = state_root / "control"
+        self.control_dir = control_dir or (state_root / "control")
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self.cache = ModelCache(maximum_models)
         self.shutdown_requested = threading.Event()
@@ -413,6 +415,7 @@ class ServerState:
         self._internal_lock = threading.RLock()
         self._internal_model: internal.LoadedInternalModel | None = None
         self._internal_generation = ""
+        self.requested_internal_generation = generation.strip()
 
     def begin_inference(self) -> None:
         with self._generation_lock:
@@ -440,20 +443,31 @@ class ServerState:
             time.sleep(0.05)
 
     def get_internal(self) -> internal.LoadedInternalModel:
-        pointer = internal.active_manifest_path(self.state_root)
-        if not pointer.is_file():
-            raise FileNotFoundError(
-                "ThreadSpire internal model is not initialized. Use Create internal model first."
-            )
-        payload = json.loads(pointer.read_text(encoding="utf-8"))
-        generation = str(payload.get("generation", ""))
+        generation = self.requested_internal_generation
+        if not generation:
+            pointer = internal.active_manifest_path(self.state_root)
+            if not pointer.is_file():
+                raise FileNotFoundError(
+                    "ThreadSpire internal model is not initialized. Use Create internal model first."
+                )
+            payload = json.loads(pointer.read_text(encoding="utf-8"))
+            generation = str(payload.get("generation", ""))
         with self._internal_lock:
             if self._internal_model is not None and generation == self._internal_generation:
                 return self._internal_model
             self._clear_internal_locked()
-            loaded = internal.load_active_model(self.state_root)
+            loaded = (
+                internal.load_generation_model(self.state_root, generation)
+                if self.requested_internal_generation else
+                internal.load_active_model(self.state_root)
+            )
+            allowed_status = (
+                {"trained-candidate"}
+                if self.requested_internal_generation else
+                {"trained"}
+            )
             if not (
-                loaded.manifest.get("status") == "trained"
+                loaded.manifest.get("status") in allowed_status
                 and loaded.manifest.get("bootstrap_complete", False)
                 and loaded.manifest.get("full_backbone_trained", False)
                 and loaded.manifest.get("generation_ready", False)
@@ -465,6 +479,14 @@ class ServerState:
             self._internal_model = loaded
             self._internal_generation = loaded.generation
             return loaded
+
+    def served_generation(self) -> str:
+        if self.requested_internal_generation:
+            return self.requested_internal_generation
+        try:
+            return internal.resolve_active_generation(self.state_root).name
+        except Exception:
+            return ""
 
     def _clear_internal_locked(self) -> None:
         if self._internal_model is not None:
@@ -1061,6 +1083,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                     "uptime_seconds": time.monotonic() - self.state.started,
                     "active_generations": self.state.active_generations(),
+                    "served_generation": self.state.served_generation(),
+                    "shadow_candidate": bool(self.state.requested_internal_generation),
                     "internal_model": internal.status_payload(self.state.state_root),
                 }
             except Exception as exception:
@@ -1132,18 +1156,37 @@ def torch_out_of_memory_error() -> type[BaseException]:
 
 def serve(arguments: argparse.Namespace) -> int:
     arguments.state_root.mkdir(parents=True, exist_ok=True)
-    control_dir = arguments.state_root / "control"
+    control_dir = arguments.control_dir or (arguments.state_root / "control")
     control_dir.mkdir(parents=True, exist_ok=True)
     (control_dir / "inference.server").unlink(missing_ok=True)
-    status = internal.status_payload(arguments.state_root)
-    if not bool(status.get("ready", False)):
-        raise RuntimeError(
-            "refusing to serve an internal generation that has not passed "
-            "full-backbone bootstrap and generation readiness"
-        )
+    if arguments.generation:
+        candidate_path = internal.internal_root(arguments.state_root) / "generations" / arguments.generation
+        manifest = internal.generation_manifest(candidate_path)
+        if not (
+            manifest.get("status") == "trained-candidate"
+            and bool(manifest.get("bootstrap_complete", False))
+            and bool(manifest.get("full_backbone_trained", False))
+            and bool(manifest.get("generation_ready", False))
+            and internal.manifest_uses_current_bootstrap_policy(manifest)
+        ):
+            raise RuntimeError(
+                "refusing to shadow-serve a candidate that has not passed all readiness gates"
+            )
+    else:
+        status = internal.status_payload(arguments.state_root)
+        if not bool(status.get("ready", False)):
+            raise RuntimeError(
+                "refusing to serve an internal generation that has not passed "
+                "full-backbone bootstrap and generation readiness"
+            )
     server = ThreadingHTTPServer(("127.0.0.1", arguments.port), RequestHandler)
     server.daemon_threads = True
-    state = ServerState(arguments.state_root, arguments.max_loaded_models)
+    state = ServerState(
+        arguments.state_root,
+        arguments.max_loaded_models,
+        generation=arguments.generation,
+        control_dir=arguments.control_dir,
+    )
     server.threadspire_state = state  # type: ignore[attr-defined]
     port = int(server.server_address[1])
     atomic_write_text(arguments.ready_file, f"port={port}\npid={os.getpid()}\n")

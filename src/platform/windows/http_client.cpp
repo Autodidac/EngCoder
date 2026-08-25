@@ -1,8 +1,7 @@
-#include "threadspire/ai/backend/http_client.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <Windows.h>
 #include <Winhttp.h>
-
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -10,6 +9,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+module threadspire.platform;
 
 namespace threadspire::ai::backend {
 

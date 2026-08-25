@@ -6,31 +6,43 @@ ThreadSpire's serving intelligence remains stable while learning occurs beside i
 
 The internal model is not an adapter over an imported checkpoint. It is a custom decoder transformer whose active weights were initialized and trained locally. Imported local LLMs are optional tools for data generation, verification, routing experiments, and external LoRA workflows.
 
-## 2. Runtime topology
+## 2. Native base and module topology
 
 ```text
-ThreadSpire.exe — C++23
+ThreadSpire.exe — native C++23 workbench (<= 100 MiB installed base)
 │
-├── Win32 GUI and source selection
-├── Assistant and Coding Agent
-├── deterministic task analysis and routing
-├── episodic/retrieval memory
-├── evidence and candidate registries
-├── compiler/test evaluator
-├── resource governor
-├── std::jthread continual-learning coordinator
-├── MCP and connected-local-LLM clients
-└── supervised private PyTorch worker
-    ├── ThreadSpire internal transformer
-    ├── internal streaming generation
-    ├── full-weight shadow-candidate training
-    ├── modular skill-expert training
-    ├── exact-resume checkpoints
-    ├── evaluation and generation publication
-    └── optional external-model LoRA tools
+├── threadspire.ui
+├── threadspire.tasks ── execution profile + modality + cancellation + artifacts
+├── threadspire.providers ── one streaming provider contract and capability router
+├── threadspire.scheduler ── foreground priority + explicit pack transactions
+├── threadspire.learning ── durable queue + isolated shadow-host promotion
+├── threadspire.storage ── accounting, projections, quotas, no-follow cleanup
+├── threadspire.models / media / mcp
+└── threadspire.core / platform
+
+Optional packs (installed only on explicit user action)
+├── compact native inference
+├── internal PyTorch training
+├── Transformers/PEFT fine-tuning
+├── image engine
+└── audio engine
 ```
 
-C++ owns application policy, persistence, routing, process lifetime, and promotion decisions. Python/PyTorch owns tensor execution. The process boundary keeps CUDA and package failures outside the GUI process.
+CMake publishes eleven named C++23 modules through `FILE_SET CXX_MODULES`. Native consumers and tests use `import`; operating-system and third-party headers are isolated in global module fragments or implementation units.
+
+`TaskProvider` is the single provider boundary. A request carries modality (interactive text, code, repository, image, audio, or tool), execution profile (`interactive`, `coding_agent`, or `long_horizon`), streaming callbacks, cancellation, model/endpoint data, and file-artifact policy. Coding Agent and Long Horizon are profiles of the same request rather than alternate product interfaces.
+
+The base process owns application policy, persistence, routing, task lifetime, storage safety, and promotion decisions. It does not require Python. A pack may provide a supervised Python/PyTorch or media worker, but installation is transactional and side-effect isolated: it cannot start training, change source/model selection, start a host, or cancel foreground work.
+
+## 2.1 Durable learning boundary
+
+Training jobs persist as `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, or `recoverable-failed`. Duplicate work coalesces, checkpoint publication is atomic, and recovered in-flight work re-enters safely. Inference leases preempt background optimization at checkpoint boundaries.
+
+The active generation is never trained or stopped in place. Promotion starts a separate host for the exact unpromoted generation, verifies the manifest/checksums, health, a deterministic inference canary, held-out metrics, and regression limits, then rechecks the active parent and commits with compare-and-swap. Until that succeeds, the current host and active pointer remain unchanged.
+
+## 2.2 Data and English Gate v2
+
+Bootstrap targets are bounded at 24,000 steps for Micro, 36,000 for Standard, and 50,000 for Large. The gate reports useful cap diagnostics instead of continuing without a bound. Curated records retain provenance, normalized messages are deduplicated, anchors are deterministic and disjoint, and teacher output remains quarantined until an independent verifier admits it.
 
 ## 3. Internal neural architecture
 

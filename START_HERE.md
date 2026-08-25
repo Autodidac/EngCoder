@@ -1,81 +1,39 @@
-# Start Here — ThreadSpire 0.5.8
+# Start Here — ThreadSpire 0.6.0
 
-## 1. Build and launch once
+## 1. Build and validate
 
-Double-click `BUILD_AND_RUN.cmd`, or run it from PowerShell in the extracted `ThreadSpire` directory:
-
-```powershell
-.\BUILD_AND_RUN.cmd clean
-```
-
-It detects Visual Studio 2022 or 2026, performs a strict Release build, runs the tests, and launches ThreadSpire. The launcher closes an older running ThreadSpire instance before replacing it. Later runs may omit `clean` for an incremental rebuild:
+From PowerShell in the ThreadSpire source directory:
 
 ```powershell
-.\BUILD_AND_RUN.cmd
+cmake --fresh --preset windows-vs2022
+cmake --build --preset windows-vs2022-release --clean-first -- /m:1
+ctest --preset windows-vs2022-release
 ```
 
-## 2. Launch it; do not perform a setup sequence
+Launch `out\build\windows-vs2022\bin\Release\ThreadSpire.exe` after the tests pass. The base application is native C++23 and does not require Python or PyTorch.
 
-ThreadSpire now owns the complete internal-AI lifecycle. **Automatic setup and recovery** is enabled by default and persists across launches. It will:
+## 2. Use the unified Task workbench
 
-1. create or repair the private Python runtime;
-2. install and verify the pinned CUDA/PyTorch backend;
-3. detect an existing internal generation;
-4. resume bootstrap training from its exact checkpoint;
-5. evaluate and promote the completed generation;
-6. start the internal-model host; and
-7. restart or retry failed stages with bounded backoff.
+Open **Task**, choose a modality, select a compatible provider, and submit the prompt. Ask/write, code help, repository work, images, speech, and tools share the same request, streaming, cancellation, and artifact path. Coding Agent and Long Horizon are execution profiles of that task instead of separate interfaces.
 
-Manual setup and recovery controls are collapsed by default behind **Show advanced recovery controls**. They are not a required button sequence.
+Connected OpenAI-compatible local servers can be used without an internal-training runtime. Repository tasks keep compiler/test details on **Run Details**, while generated image/audio artifacts are written under `%LOCALAPPDATA%\ThreadSpire\outputs`.
 
-## 3. Read the live status instead of guessing
+## 3. Install capability packs only when wanted
 
-When bootstrap is incomplete, ThreadSpire opens directly on **Local AI**. That dashboard shows:
+Open **Connections** to inspect projected download and installed sizes. Available pack classes are compact native inference, internal PyTorch training, Transformers/PEFT fine-tuning, image, and audio.
 
-- the current lifecycle phase;
-- overall bootstrap step and percentage;
-- verified target-token count;
-- elapsed time and measured ETA;
-- worker heartbeat state; and
-- the exact failure reason when a stage fails.
+Selecting **Install pack** performs a staged, verified transaction. It does not select a model, start a host, queue training, or interrupt a running task. Python-based files and dependencies exist only inside the corresponding optional pack.
 
-The ETA appears after enough work has completed to measure the current machine. A worker that stops reporting progress for 15 minutes is terminated automatically and resumed from its checkpoint instead of being left apparently running overnight.
+## 4. Train deliberately and safely
 
-Version 0.5.7 and later performs a one-time full-backbone migration. Partial expert-only generations, their candidates/jobs, expert registry, and stale training state move under `%LOCALAPPDATA%\ThreadSpire\quarantine\partial-backbone-*`; nothing is deleted. Verified episode memory and user configuration stay in place. If a full-backbone candidate misses its generation canaries, automatic and manual repair continue from that learned candidate instead of restarting the same pass from random weights. The host remains stopped until a candidate passes held-out loss and deterministic generation canaries. Run `SHOW_MODEL_STORAGE.cmd` to open the exact model directory and lineage report.
+After explicitly installing and verifying the internal-training pack, use **Learning** to select the target and queue work. Package selection never changes the target. Durable jobs coalesce and move through queued, preparing, training, evaluating, promoting, and terminal states. A cancellation or crash leaves an atomic checkpoint that can resume.
 
-## 4. Talk to the internal model
+Foreground inference has priority. A candidate trains beside the active generation and is tested in its own isolated host. The active model keeps serving until the candidate passes checksum, health, inference-canary, deterministic held-out validation, and regression checks and is committed atomically.
 
-After the status reads **Ready**:
+The strengthened English Gate v2 uses curated provenance, deduplication, deterministic anchors, and an independent verifier. Bootstrap caps are 24,000 steps for Micro, 36,000 for Standard, and 50,000 for Large; reaching a cap stops with diagnostics.
 
-1. Open **Workspace**.
-2. Set **AI source** to **ThreadSpire internal model**, or leave it on **Automatic**.
-3. Enter a message and select **Send**.
+## 5. Watch storage
 
-The internal model begins from random weights created on this machine. It does not load Qwen, Llama, OpenAI, LM Studio, Ollama, or another pretrained checkpoint.
+The Task page shows large cards for current model, accepted training data, installed packs, outputs/cache, total usage and growth, and free disk. **Storage & Logs** adds largest files/directories, pack projections, quotas, and safe no-follow cleanup for logs, unpromoted candidates, checkpoints, outputs, and caches.
 
-## 5. Let it improve
-
-- **Accept + learn** admits a successful response as user-verified evidence.
-- **Reject** stores negative evidence.
-- Compiler/test-confirmed Coding Agent outcomes are stronger evidence.
-- Background learning trains a shadow generation, yields to foreground inference, resumes exactly, evaluates, and promotes only a passing candidate.
-- For the internal model, each independently admitted episode can queue a weight update immediately; same-skill work coalesces behind the active trainer.
-- Connected local LLMs may generate or verify candidate examples, but their weights never become the ThreadSpire internal model.
-- The internal model cannot teach or verify itself. Keep a capable external local LLM marked as **Teacher** and, preferably, a different model marked as **Verifier**.
-
-Open **Learning**. Version 0.5.7 and later starts its continual-learning target on **English foundation — recommended first** rather than `cpp23-core`. C++ training remains available but is no longer silently selected. Changing the target affects the next pass only; it does not cancel or retrigger current training.
-
-For normal target-specific training:
-
-1. Select the target.
-2. Generate verified examples or import trusted JSONL.
-3. Review the evidence and live pipeline report.
-4. Queue the selected weight update.
-
-**Stop current pass** ends evidence generation/import and pauses weight training at the next safe checkpoint. **Pause all background weight training** preserves resumable state. Disabling **Automatic verified examples while idle** does not change the selected target.
-
-See [CUSTOM_TRAINING.md](CUSTOM_TRAINING.md) for the complete custom-skill and JSONL workflow.
-
-Obvious repetitive or corrupt internal drafts are withheld and retried rather than dumped into the conversation. Automatic source mode can fall back to another connected local model. This is a structural corruption gate, not a guarantee that a fluent answer is factually correct.
-
-Selecting **Stop** on the Local AI host controls intentionally disables automatic host recovery. Re-enable **Automatic setup and recovery** to return control to the lifecycle controller.
+The native installed base must remain at or below 100 MiB, excluding models and optional packs. See [BUILDING.md](BUILDING.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [CUSTOM_TRAINING.md](CUSTOM_TRAINING.md).

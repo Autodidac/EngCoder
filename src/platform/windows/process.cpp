@@ -1,13 +1,14 @@
-#include "threadspire/ai/platform/process.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <Windows.h>
-
 #include <chrono>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+module threadspire.platform;
 
 namespace threadspire::ai::platform {
 namespace {

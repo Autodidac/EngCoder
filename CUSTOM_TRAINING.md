@@ -1,4 +1,4 @@
-# Custom Training in ThreadSpire 0.5.6
+# Custom Training in ThreadSpire 0.6.0
 
 ThreadSpire separates four decisions that were previously mixed together:
 
@@ -7,7 +7,7 @@ ThreadSpire separates four decisions that were previously mixed together:
 3. **Automatic generation** — whether ThreadSpire creates more verified examples while idle.
 4. **Weight update** — the explicit shadow-training job that evaluates a candidate before promotion.
 
-Changing one setting does not silently change the others.
+Changing one setting does not silently change the others. Training controls become available only after the internal PyTorch training pack is explicitly installed and verified; installing or selecting that pack does not queue work or change the target.
 
 ## Recommended first run
 
@@ -68,4 +68,4 @@ When importing through the Learning page, the currently selected target is autho
 
 The selected target is stored under `%LOCALAPPDATA%\ThreadSpire\config`. The automatic-training switch is stored separately, so disabling automation no longer resets the target. Dataset cursors are keyed by target and file, so switching between English, C++, and custom files does not reuse another target's position.
 
-Do not delete `%LOCALAPPDATA%\ThreadSpire` when upgrading. The clean active generation, candidates, accepted evidence, and checkpoints are retained. Legacy mixed/C++ generations quarantined by the one-time English migration remain available for inspection but are not reused.
+Normal upgrades preserve `%LOCALAPPDATA%\ThreadSpire`, including active generations, accepted evidence, candidates, and checkpoints. The 0.6.0 native-first replacement procedure is an explicit exception only when its release checklist authorizes the guarded reset after the replacement build and tests pass.

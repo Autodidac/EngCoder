@@ -1,10 +1,8 @@
-#include "threadspire/ai/runtime/internal_model_state.hpp"
-
-#include "threadspire/ai/core/json.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +10,9 @@
 #include <limits>
 #include <string>
 #include <string_view>
+
+module threadspire.scheduler;
+import threadspire.core;
 
 namespace threadspire::ai::runtime {
 namespace {

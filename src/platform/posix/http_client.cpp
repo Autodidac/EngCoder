@@ -1,10 +1,10 @@
-#include "threadspire/ai/backend/http_client.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
-#include <cctype>
 #include <cstring>
 #include <limits>
 #include <netdb.h>
@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+module threadspire.platform;
 
 namespace threadspire::ai::backend {
 

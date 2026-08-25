@@ -1,11 +1,13 @@
-#include "threadspire/ai/routing/task.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
 #include <string>
 #include <string_view>
+
+module threadspire.tasks;
 
 namespace threadspire::ai::routing {
 namespace {

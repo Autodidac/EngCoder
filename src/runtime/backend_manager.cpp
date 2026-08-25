@@ -1,8 +1,5 @@
-#include "threadspire/ai/runtime/backend_manager.hpp"
-
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/platform/process.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -13,6 +10,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+module threadspire.scheduler;
+import threadspire.core;
+import threadspire.platform;
 
 namespace threadspire::ai::runtime {
 namespace {
@@ -155,101 +156,25 @@ void rotate_log_if_needed(const std::filesystem::path& log_path, const bool appe
 
 bool backend_files_present(const app::AppPaths& paths) noexcept {
     std::error_code error;
-    return std::filesystem::is_regular_file(paths.python, error) &&
+    return std::filesystem::is_regular_file(
+               paths.packs / "internal-pytorch-training" / "pack.json", error) &&
+           std::filesystem::is_regular_file(paths.python, error) &&
            std::filesystem::is_regular_file(paths.worker, error) &&
            std::filesystem::is_regular_file(paths.internal_model_module, error) &&
            std::filesystem::is_regular_file(paths.curriculum_guard_module, error);
 }
 
 util::OperationResult install_backend(
-    const app::AppPaths& paths,
-    const std::filesystem::path& log_path,
-    std::string pytorch_index_url,
-    const std::stop_token stop_token) {
-    std::filesystem::create_directories(log_path.parent_path());
-    std::error_code error;
-    std::filesystem::remove(log_path, error);
-
-    auto python = paths.python;
-    if (!std::filesystem::is_regular_file(python)) {
-        auto result = run_step(
-            "py.exe",
-            {"-3.12", "-m", "venv", paths.runtime.string()},
-            paths.root,
-            log_path,
-            false,
-            stop_token,
-            "Creating the private Python 3.12 runtime");
-        if (result.state == util::OperationState::failed && !stop_token.stop_requested()) {
-            result = run_step(
-                "py.exe",
-                {"-3", "-m", "venv", paths.runtime.string()},
-                paths.root,
-                log_path,
-                true,
-                stop_token,
-                "Creating the private Python runtime");
-        }
-        if (result.state != util::OperationState::succeeded) {
-            result.message += "; install 64-bit Python 3.12 if py.exe is unavailable";
-            return result;
-        }
-        python = paths.runtime / "Scripts" / "python.exe";
-    }
-
-    auto result = run_step(
-        python,
-        {"-m", "pip", "install", "--upgrade", "pip", "setuptools<82", "wheel"},
-        paths.root,
-        log_path,
-        true,
-        stop_token,
-        "Updating pip");
-    if (result.state != util::OperationState::succeeded) {
-        return result;
-    }
-
-    if (pytorch_index_url.empty()) {
-        pytorch_index_url = "https://download.pytorch.org/whl/cu128";
-    }
-    result = run_step(
-        python,
-        {"-m", "pip", "install", "--upgrade", "torch==2.11.0", "--index-url", std::move(pytorch_index_url)},
-        paths.root,
-        log_path,
-        true,
-        stop_token,
-        "Installing CUDA PyTorch");
-    if (result.state != util::OperationState::succeeded) {
-        return result;
-    }
-
-    result = run_step(
-        python,
-        {
-            "-m", "pip", "install", "--upgrade",
-            "accelerate==1.14.0",
-            "bitsandbytes==0.50.1",
-            "datasets==5.0.1",
-            "peft==0.20.0",
-            "safetensors==0.8.0",
-            "transformers==5.15.0",
-            "sentencepiece",
-        },
-        paths.root,
-        log_path,
-        true,
-        stop_token,
-        "Installing inference and continual-learning packages");
-    if (result.state != util::OperationState::succeeded) {
-        return result;
-    }
-
-    auto verified_paths = paths;
-    verified_paths.python = std::move(python);
-    return verify_backend(verified_paths, log_path, stop_token);
+    const app::AppPaths&,
+    const std::filesystem::path&,
+    std::string,
+    const std::stop_token) {
+    return {
+        .state = util::OperationState::failed,
+        .exit_code = -1,
+        .message = "Automatic Python/PyTorch installation was removed from the base application. Install the Internal PyTorch Training capability pack explicitly from a verified staged payload.",
+    };
 }
-
 util::OperationResult verify_backend(
     const app::AppPaths& paths,
     const std::filesystem::path& log_path,
@@ -269,7 +194,7 @@ util::OperationResult verify_backend(
         log_path,
         true,
         stop_token,
-        "Checking PyTorch, CUDA, internal-model code, Transformers, PEFT, and safetensors");
+        "Checking the explicitly installed internal-training capability pack");
     if (result.state == util::OperationState::succeeded) {
         result.message = "Backend ready for random-initialized internal models, inference, optional LoRA incubation, and expert consolidation";
     }

@@ -1,13 +1,9 @@
-#include "threadspire/ai/long_horizon/runner.hpp"
-
-#include "threadspire/ai/backend/completion_client.hpp"
-#include "threadspire/ai/memory/episode_store.hpp"
-#include "threadspire/ai/platform/process.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <random>
@@ -16,6 +12,11 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+module threadspire.tasks;
+import threadspire.platform;
+import threadspire.providers;
+import threadspire.storage;
 
 namespace threadspire::ai::long_horizon {
 namespace {

@@ -1,18 +1,20 @@
-#include "threadspire/ai/memory/episode_store.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <random>
 #include <ranges>
 #include <set>
-#include <unordered_set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
+
+module threadspire.storage;
 
 namespace threadspire::ai::memory {
 namespace {

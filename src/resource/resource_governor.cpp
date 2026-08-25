@@ -1,7 +1,9 @@
-#include "threadspire/ai/resource/resource_governor.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cmath>
+
+module threadspire.platform;
 
 namespace threadspire::ai::resource {
 

@@ -1,9 +1,5 @@
-#include "threadspire/ai/learning/piggyback_foundry.hpp"
-
-#include "threadspire/ai/backend/completion_client.hpp"
-#include "threadspire/ai/core/json.hpp"
-#include "threadspire/ai/memory/episode_store.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -11,6 +7,11 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+module threadspire.learning;
+import threadspire.core;
+import threadspire.providers;
+import threadspire.storage;
 
 namespace threadspire::ai::learning {
 namespace {

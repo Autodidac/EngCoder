@@ -1,10 +1,11 @@
-#include "threadspire/ai/resource/resource_governor.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <Windows.h>
-
 #include <algorithm>
 #include <cstdint>
 #include <mutex>
+
+module threadspire.platform;
 
 namespace threadspire::ai::resource {
 namespace {

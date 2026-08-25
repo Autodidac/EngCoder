@@ -1,5 +1,5 @@
-#include "threadspire/ai/platform/process.hpp"
-
+module;
+#include "module_prelude.hpp"
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -11,6 +11,8 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+module threadspire.platform;
 
 namespace threadspire::ai::platform {
 namespace {
