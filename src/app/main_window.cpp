@@ -806,10 +806,27 @@ void draw_dark_text(
         return L"Built-in AI is ready and uses only local model files.";
     }
 
-    const auto target = runtime::default_bootstrap_target(state);
+    const auto progress = runtime::read_internal_model_progress(paths);
+    const auto progress_active = progress.available &&
+        progress.phase != "complete" && progress.phase != "candidate-ready" &&
+        progress.phase != "repair-required" && progress.phase != "rejected" &&
+        progress.phase != "failed";
+    const auto target = progress_active && progress.bootstrap_target_steps > 0U
+        ? progress.bootstrap_target_steps
+        : runtime::default_bootstrap_target(state);
+    const auto completed = progress_active
+        ? (progress.total_steps > 0U
+            ? progress.total_steps
+            : progress.prior_total_steps + progress.step)
+        : state.steps;
     std::wostringstream stream;
-    stream << L"Built-in AI learning setup: " << state.steps << L"/" << target
-           << L" • progress is saved automatically";
+    stream << L"Built-in AI learning setup: ";
+    if (progress_active && completed == 0U) {
+        stream << L"starting";
+    } else {
+        stream << completed << L"/" << target;
+    }
+    stream << L" • progress is saved automatically";
     return stream.str();
 }
 [[nodiscard]] std::wstring format_duration(const double seconds) {

@@ -1004,9 +1004,12 @@ void test_windows_ui_source_contract() {
                 ui.find("Built-in AI: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
                 ui.find("built_in_status = L\"READY\"") != std::string::npos &&
+                ui.find("const auto progress_active = progress.available") != std::string::npos &&
+                ui.find("progress_active && completed == 0U") != std::string::npos &&
+                ui.find("stream << L\"starting\"") != std::string::npos &&
                 ui.find("Improving the built-in AI automatically from approved examples") != std::string::npos &&
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
-            "Chat must show built-in AI readiness and automatic progress while new setups use the minimum 24k profile");
+            "Chat and AI Setup must show one live built-in AI counter while new setups use the minimum 24k profile");
     require(ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
                 ui.find("never prevents Chat from using another connected AI") != std::string::npos &&
