@@ -52,6 +52,7 @@ constexpr COLORREF transcript_error_color = RGB(255, 121, 135);
 constexpr COLORREF transcript_output_color = RGB(125, 220, 160);
 constexpr DWORD immersive_dark_mode_attribute = 20U;
 constexpr std::array<std::size_t, 3> automatic_bootstrap_targets{24000U, 36000U, 50000U};
+constexpr std::string_view internal_pool_selection_id = "@threadspire/internal-pool";
 
 namespace id {
 constexpr int tabs = 100;
@@ -2149,23 +2150,23 @@ void MainWindow::create_chat_page() {
         mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Use tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
-    create_control(L"STATIC", L"Use", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
+    create_control(L"STATIC", L"Use AIs from", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_source, parent);
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic — fastest ready AI")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Anywhere — automatic backup (default)")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Other AI apps only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire built-in only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
         static_cast<WPARAM>(inference_source_),
         0));
 
-    create_control(L"STATIC", L"AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
+    create_control(L"STATIC", L"Choose AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -2233,8 +2234,8 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Clear", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_clear, parent);
     create_control(
-        L"STATIC", L"Ctrl+Enter runs. Shift+Enter or Enter inserts a new line.",
-        WS_CHILD | WS_VISIBLE, 0, id::chat_hint, parent);
+        L"STATIC", L"",
+        WS_CHILD, 0, id::chat_hint, parent);
     create_control(
         L"BUTTON", L"Open outputs", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_open_output, parent);
@@ -2268,17 +2269,17 @@ void MainWindow::create_coding_page() {
     const auto parent = control(id::page_coding);
 
     create_control(
-        L"STATIC", L"Use", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"Use AIs from", WS_CHILD | WS_VISIBLE,
         0, id::coding_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::coding_source, parent);
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic — fastest ready AI")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Anywhere — automatic backup (default)")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Other AI apps only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire built-in only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2853,12 +2854,12 @@ void MainWindow::layout_controls() {
     workspace_x += scaled(44, dpi_);
     move_control(control(id::chat_mode), workspace_x, 0, scaled(190, dpi_), row + scaled(160, dpi_));
     workspace_x += scaled(190, dpi_) + gap;
-    move_control(control(id::chat_source_label), workspace_x, 0, scaled(62, dpi_), row);
-    workspace_x += scaled(66, dpi_);
-    move_control(control(id::chat_source), workspace_x, 0, scaled(218, dpi_), row + scaled(120, dpi_));
-    workspace_x += scaled(218, dpi_) + gap;
-    move_control(control(id::chat_model_label), workspace_x, 0, scaled(48, dpi_), row);
-    workspace_x += scaled(52, dpi_);
+    move_control(control(id::chat_source_label), workspace_x, 0, scaled(82, dpi_), row);
+    workspace_x += scaled(86, dpi_);
+    move_control(control(id::chat_source), workspace_x, 0, scaled(255, dpi_), row + scaled(120, dpi_));
+    workspace_x += scaled(255, dpi_) + gap;
+    move_control(control(id::chat_model_label), workspace_x, 0, scaled(70, dpi_), row);
+    workspace_x += scaled(74, dpi_);
 
     const auto workspace_button_width = scaled(108, dpi_);
     const auto workspace_settings_width = scaled(142, dpi_);
@@ -3031,12 +3032,12 @@ void MainWindow::layout_controls() {
 
     // Dedicated coding workspace remains available as the second primary tab.
     auto coding_x = 0;
-    move_control(control(id::coding_source_label), coding_x, 0, scaled(62, dpi_), row);
-    coding_x += scaled(66, dpi_);
-    move_control(control(id::coding_source), coding_x, 0, scaled(218, dpi_), row + scaled(120, dpi_));
-    coding_x += scaled(218, dpi_) + gap;
-    move_control(control(id::coding_model_label), coding_x, 0, scaled(48, dpi_), row);
-    coding_x += scaled(52, dpi_);
+    move_control(control(id::coding_source_label), coding_x, 0, scaled(82, dpi_), row);
+    coding_x += scaled(86, dpi_);
+    move_control(control(id::coding_source), coding_x, 0, scaled(255, dpi_), row + scaled(120, dpi_));
+    coding_x += scaled(255, dpi_) + gap;
+    move_control(control(id::coding_model_label), coding_x, 0, scaled(70, dpi_), row);
+    coding_x += scaled(74, dpi_);
     const auto coding_discover_width = scaled(108, dpi_);
     const auto coding_settings_width = scaled(142, dpi_);
     const auto coding_model_width = std::max(
@@ -4044,6 +4045,11 @@ void MainWindow::refresh_model_selectors() {
             right.tokens_per_second;
         return left_score > right_score;
     });
+    const auto internal_ready = static_cast<std::size_t>(std::ranges::count_if(
+        available,
+        [](const models::ModelProfile& model) { return models::is_internal_model(model); }));
+    const auto connected_ready = available.size() - internal_ready;
+
 
     model_selector_ids_.clear();
     model_selector_ids_.emplace_back();
@@ -4052,19 +4058,26 @@ void MainWindow::refresh_model_selectors() {
         switch (inference_source_) {
         case InferenceSource::local_bridge:
             return available.empty()
-                ? L"Choose a connected AI — waiting"
-                : L"Choose a connected AI for me";
+                ? L"Waiting for a connected AI"
+                : L"Best connected AI for the task";
         case InferenceSource::custom_model:
             if (custom_host_running) {
-                return L"Choose a built-in AI for me";
+                return L"Best ThreadSpire AI for the task";
             }
             return bootstrap_training
-                ? L"Choose a built-in AI — still learning"
-                : L"Choose a built-in AI — unavailable";
+                ? L"ThreadSpire AIs are still learning"
+                : L"ThreadSpire built-in AI is unavailable";
         case InferenceSource::automatic:
-            return available.empty()
-                ? L"Choose any AI — waiting"
-                : L"Choose any ready AI for me";
+            if (internal_ready > 0U && connected_ready > 0U) {
+                return L"Best available AI (automatic backup)";
+            }
+            if (internal_ready > 0U) {
+                return L"Best built-in AI — no connected AI ready";
+            }
+            if (connected_ready > 0U) {
+                return L"Best connected AI — built-in AI not ready";
+            }
+            return L"Waiting for an AI";
         }
         return L"Automatic";
     }();
@@ -4084,15 +4097,27 @@ void MainWindow::refresh_model_selectors() {
     reset_combo(id::chat_model);
     reset_combo(id::coding_model);
 
+    if (inference_source_ == InferenceSource::automatic) {
+        model_selector_ids_.emplace_back(internal_pool_selection_id);
+        const auto* pool_label = internal_ready > 0U
+            ? L"ThreadSpire built-in AIs only"
+            : L"ThreadSpire built-in AIs only — not ready";
+        for (const auto identifier : {id::chat_model, id::coding_model}) {
+            static_cast<void>(::SendMessageW(
+                control(identifier),
+                CB_ADDSTRING,
+                0,
+                reinterpret_cast<LPARAM>(pool_label)));
+        }
+    }
     for (const auto& model : available) {
         model_selector_ids_.push_back(model.id);
-        std::wstring label;
+        std::wstring label = widen(model.display_name);
         if (inference_source_ == InferenceSource::automatic) {
             label += models::is_internal_model(model)
-                ? L"Built-in • "
-                : L"Other app • ";
+                ? L" • ThreadSpire built-in"
+                : L" • other AI app";
         }
-        label += widen(model.display_name);
         if (models::is_internal_model(model) && !custom_host_running) {
             label += bootstrap_training
                 ? L" • learning automatically"
@@ -4138,7 +4163,7 @@ void MainWindow::refresh_model_selectors() {
             } else if (bootstrap_training) {
                 ready << L"Learning is running automatically. ThreadSpire will start it when ready.";
             } else {
-                ready << L"Required built-in AI files are not installed. Chat will use another ready AI.";
+                ready << L"ThreadSpire built-in AI is unavailable. No other AI will be used in this group.";
             }
         } else if (inference_source_ == InferenceSource::local_bridge) {
             ready << L"OTHER AI APP\r\n"
@@ -4228,10 +4253,16 @@ void MainWindow::update_model_selection(const int source_identifier) {
 
     if (preferred_model_id_.empty()) {
         set_status(inference_source_ == InferenceSource::custom_model
-            ? L"Built-in AI only; another AI will not be used"
+            ? L"Best ThreadSpire built-in AI; another AI app will not be used"
             : inference_source_ == InferenceSource::local_bridge
-                ? L"Choose a connected AI automatically"
-                : L"Choose any ready AI automatically");
+                ? L"Best connected AI; ThreadSpire built-in AI will not be used"
+                : L"Best available AI; automatic backup is allowed");
+        return;
+    }
+    if (preferred_model_id_ == internal_pool_selection_id) {
+        set_status(backend_server_.running()
+            ? L"ThreadSpire built-in AIs only. ThreadSpire may choose between its built-in lanes; another AI app will never be used."
+            : L"ThreadSpire built-in AIs only is selected, but the built-in AI is not ready. No other AI will be used.");
         return;
     }
     const auto snapshot = runtime_model_snapshot();
@@ -4340,7 +4371,8 @@ bool MainWindow::model_supports_workspace_task(const models::ModelProfile& model
 }
 
 std::optional<std::string> MainWindow::selected_model_id() const {
-    return preferred_model_id_.empty()
+    return preferred_model_id_.empty() ||
+           preferred_model_id_ == internal_pool_selection_id
         ? std::nullopt
         : std::optional<std::string>(preferred_model_id_);
 }
@@ -4361,6 +4393,20 @@ bool MainWindow::source_accepts(const models::ModelProfile& model) const noexcep
 void MainWindow::apply_source_filter(models::ModelRegistry& registry) const {
     for (auto& model : registry.models()) {
         model.enabled = model.enabled && source_accepts(model);
+    }
+}
+void MainWindow::apply_model_choice_filter(models::ModelRegistry& registry) const {
+    apply_source_filter(registry);
+    if (preferred_model_id_ == internal_pool_selection_id) {
+        for (auto& model : registry.models()) {
+            model.enabled = model.enabled && models::is_internal_model(model);
+        }
+        return;
+    }
+    if (const auto selected = selected_model_id(); selected.has_value()) {
+        for (auto& model : registry.models()) {
+            model.enabled = model.enabled && model.id == *selected;
+        }
     }
 }
 
@@ -4417,35 +4463,48 @@ std::wstring MainWindow::runtime_summary(
     }
 
     std::wostringstream stream;
-    switch (inference_source_) {
-    case InferenceSource::local_bridge:
-        stream << L"Using: another AI app";
-        break;
-    case InferenceSource::custom_model:
-        stream << (custom_host_running
-            ? L"Using: built-in AI only"
-            : L"Using: built-in AI only • not ready");
-        break;
-    case InferenceSource::automatic:
-        stream << L"Using: fastest ready AI";
-        break;
+    if (preferred_model_id_ == internal_pool_selection_id) {
+        stream << L"AI: ThreadSpire built-in AIs only";
+    } else {
+        switch (inference_source_) {
+        case InferenceSource::local_bridge:
+            stream << L"AI group: other AI apps only";
+            break;
+        case InferenceSource::custom_model:
+            stream << L"AI group: ThreadSpire built-in only";
+            break;
+        case InferenceSource::automatic:
+            if (custom_host_running && connected_ready > 0U) {
+                stream << L"AI: best available • automatic backup ready";
+            } else if (custom_host_running) {
+                stream << L"AI: ThreadSpire built-in • no connected AI backup is ready";
+            } else if (connected_ready > 0U) {
+                stream << L"AI: connected app • ThreadSpire built-in AI is not ready";
+            } else {
+                stream << L"AI: waiting for a ready AI";
+            }
+            break;
+        }
     }
-    stream << L" • Connected AI: ";
+    stream << L" • Other AI apps: ";
     if (connected_ready == 0U) {
         stream << L"not found";
     } else {
         stream << L"ready (" << connected_ready << L")";
     }
-    stream << L" • Built-in AI: " << built_in_status;
+    stream << L" • ThreadSpire built-in: " << built_in_status;
 
     if (const auto selected = selected_model_id(); selected.has_value()) {
         if (const auto* profile = registry.find(*selected); profile != nullptr) {
-            stream << L" • Chosen: " << widen(profile->display_name);
+            stream << L" • Locked to: " << widen(profile->display_name);
         }
     }
     return stream.str();
 }
 std::string MainWindow::requested_runtime_heading() const {
+    if (preferred_model_id_ == internal_pool_selection_id) {
+        return "ASSISTANT — THREADSPIRE INTERNAL MODEL";
+    }
     switch (inference_source_) {
     case InferenceSource::local_bridge:
         return "ASSISTANT — CONNECTED LOCAL LLM";
@@ -4498,7 +4557,7 @@ models::ModelRegistry MainWindow::runtime_model_snapshot() const {
 
 std::optional<models::ModelProfile> MainWindow::best_coding_model() const {
     auto snapshot = runtime_model_snapshot();
-    apply_source_filter(snapshot);
+    apply_model_choice_filter(snapshot);
     if (const auto selected = selected_model_id(); selected.has_value()) {
         if (const auto* model = snapshot.find(*selected);
             model != nullptr &&
@@ -4528,12 +4587,7 @@ void MainWindow::preview_route() {
     }
 
     auto snapshot = runtime_model_snapshot();
-    apply_source_filter(snapshot);
-    if (const auto selected = selected_model_id(); selected.has_value()) {
-        for (auto& model : snapshot.models()) {
-            model.enabled = model.id == *selected && model.enabled;
-        }
-    }
+    apply_model_choice_filter(snapshot);
 
     routing::TaskAnalyzer analyzer;
     auto analysis = analyzer.analyze(prompt);
@@ -4604,7 +4658,7 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
     yield_automatic_bootstrap_to_foreground();
 
     auto snapshot = runtime_model_snapshot();
-    apply_source_filter(snapshot);
+    apply_model_choice_filter(snapshot);
     for (auto& model : snapshot.models()) {
         model.enabled = model.enabled && model_supports_workspace_task(model);
     }
@@ -4764,7 +4818,7 @@ void MainWindow::send_request(const RequestSurface surface) {
     }
 
     auto snapshot = runtime_model_snapshot();
-    apply_source_filter(snapshot);
+    apply_model_choice_filter(snapshot);
     if (workspace) {
         for (auto& model : snapshot.models()) {
             model.enabled = model.enabled && model_supports_workspace_task(model);
@@ -4774,14 +4828,10 @@ void MainWindow::send_request(const RequestSurface surface) {
         const auto* selected_profile = snapshot.find(*selected);
         if (selected_profile == nullptr || !selected_profile->enabled) {
             const auto error =
-                L"The selected model is no longer responding. Select Automatic or Discover again.";
+                L"The selected AI is not responding. No other AI was used.";
             set_control_text(response_id, error);
             set_status(error);
-            refresh_model_selectors();
             return;
-        }
-        for (auto& model : snapshot.models()) {
-            model.enabled = model.id == *selected && model.enabled;
         }
     }
 
@@ -4789,8 +4839,10 @@ void MainWindow::send_request(const RequestSurface surface) {
         snapshot.models(),
         [](const models::ModelProfile& model) { return model.enabled; });
     if (!has_usable_model) {
-        const auto error = inference_source_ == InferenceSource::custom_model
-            ? L"The built-in AI is not ready. No other AI was used."
+        const auto error = preferred_model_id_ == internal_pool_selection_id
+            ? L"No ThreadSpire built-in AI is ready. Another AI app was not used."
+            : inference_source_ == InferenceSource::custom_model
+                ? L"The built-in AI is not ready. No other AI was used."
             : inference_source_ == InferenceSource::local_bridge
                 ? L"No connected AI is ready."
                 : L"No AI is ready.";
@@ -4865,7 +4917,9 @@ void MainWindow::send_request(const RequestSurface surface) {
         stream_target_control_ = response_id;
     }
 
-    const auto request_status = inference_source_ == InferenceSource::custom_model
+    const auto built_in_only = inference_source_ == InferenceSource::custom_model ||
+        preferred_model_id_ == internal_pool_selection_id;
+    const auto request_status = built_in_only
         ? (coding
             ? L"Running the selected built-in coding AI…"
             : L"Running the selected built-in AI…")
@@ -4899,9 +4953,7 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto execution_profile = coding
         ? backend::ExecutionProfile::coding_agent
         : backend::ExecutionProfile::interactive;
-    const auto allow_automatic_fallback =
-        inference_source_ == InferenceSource::automatic &&
-        !selected_model_id().has_value();
+    const auto allow_automatic_fallback = !selected_model_id().has_value();
     const auto started = chat_operation_.start(
         [this,
          surface,

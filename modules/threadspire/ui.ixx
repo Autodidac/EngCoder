@@ -166,6 +166,7 @@ private:
     [[nodiscard]] std::optional<std::string> selected_model_id() const;
     [[nodiscard]] bool source_accepts(const models::ModelProfile& model) const noexcept;
     void apply_source_filter(models::ModelRegistry& registry) const;
+    void apply_model_choice_filter(models::ModelRegistry& registry) const;
     [[nodiscard]] std::wstring runtime_summary(
         const models::ModelRegistry& registry,
         bool custom_host_running) const;

@@ -935,14 +935,15 @@ void test_windows_ui_source_contract() {
             "primary navigation must keep chat and creation clear while repository automation remains an execution profile instead of a duplicate console");
     require(ui.find("ThreadSpire — local evolving AI") != std::string::npos,
             "the user-facing application source must use the ThreadSpire product name");
-    require(ui.find("L\"Automatic — fastest ready AI\"") != std::string::npos &&
-                ui.find("L\"Another AI app only\"") != std::string::npos &&
-                ui.find("L\"Built-in AI only\"") != std::string::npos &&
+    require(ui.find("L\"Use AIs from\"") != std::string::npos &&
+                ui.find("L\"Anywhere — automatic backup (default)\"") != std::string::npos &&
+                ui.find("L\"Other AI apps only\"") != std::string::npos &&
+                ui.find("L\"ThreadSpire built-in only\"") != std::string::npos &&
+                ui.find("L\"Choose AI\"") != std::string::npos &&
                 ui.find("update_inference_source") != std::string::npos &&
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
-                ui.find("id::chat_clear") != std::string::npos &&
-                ui.find("Ctrl+Enter runs") != std::string::npos,
+                ui.find("id::chat_clear") != std::string::npos,
             "the primary workspace must expose an explicit synchronized runtime source and complete conversation controls");
     require(ui.find("L\"Generate image\"") != std::string::npos &&
                 ui.find("L\"Generate speech\"") != std::string::npos &&
@@ -1102,8 +1103,8 @@ void test_windows_ui_source_contract() {
                 ui.find("page == page_ ? WS_VISIBLE : 0U") != std::string::npos,
             "setup, checking, learning, recovery, and startup must default to one idle-safe automatic coordinator without forcing tab navigation");
     require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
-                ui.find("Using: fastest ready AI") != std::string::npos &&
-                ui.find("Built-in AI: ") != std::string::npos &&
+                ui.find("AI: best available") != std::string::npos &&
+                ui.find("ThreadSpire built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
                 ui.find("built_in_status = L\"READY\"") != std::string::npos &&
                 ui.find("const auto progress_active = progress.available") != std::string::npos &&
@@ -1116,7 +1117,7 @@ void test_windows_ui_source_contract() {
             "Chat and AI Setup must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
     require(ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") == std::string::npos &&
-                ui.find("Using: built-in AI only • not ready") != std::string::npos &&
+                ui.find("AI group: ThreadSpire built-in only") != std::string::npos &&
                 ui.find("set_status(runtime_summary(snapshot, backend_server_.running()))") != std::string::npos &&
                 ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
                 ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
@@ -1125,12 +1126,14 @@ void test_windows_ui_source_contract() {
                 ui.find("automatic_learning_limit_reached") != std::string::npos &&
                 ui.find("no unapproved model was activated") != std::string::npos,
             "an unavailable manually selected built-in AI must remain selected while automatic setup continues honestly");
-    require(ui.find("apply_source_filter(snapshot)") != std::string::npos &&
-                ui.find("model.enabled = model.id == *selected && model.enabled") != std::string::npos &&
-                ui.find("inference_source_ == InferenceSource::automatic &&") != std::string::npos &&
-                ui.find("!selected_model_id().has_value()") != std::string::npos &&
+    require(ui.find("internal_pool_selection_id") != std::string::npos &&
+                ui.find("ThreadSpire built-in AIs only") != std::string::npos &&
+                ui.find("apply_model_choice_filter(snapshot)") != std::string::npos &&
+                ui.find("model.enabled = model.enabled && models::is_internal_model(model)") != std::string::npos &&
+                ui.find("model.enabled = model.enabled && model.id == *selected") != std::string::npos &&
+                ui.find("const auto allow_automatic_fallback = !selected_model_id().has_value()") != std::string::npos &&
                 ui.find(".allow_automatic_fallback = allow_automatic_fallback") != std::string::npos &&
-                ui.find("Built-in AI only") != std::string::npos &&
+                ui.find("The selected AI is not responding. No other AI was used.") != std::string::npos &&
                 ui.find("safe backup") == std::string::npos,
             "a manual source or exact AI choice must disable automatic switching while Automatic mode retains it");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
