@@ -30,6 +30,14 @@ def main() -> int:
 
     assert model.canonical_training_scope("english-foundation") == "english-core"
     assert model.canonical_training_scope("cpp23-core") == "cpp23-core"
+    initial_rate = 3.0e-4
+    extended_rate = model.bounded_bootstrap_learning_rate(
+        initial_rate, 24_000, 0, 36_000, 24_000
+    )
+    assert abs(extended_rate - initial_rate * 0.10) < 1.0e-12
+    assert model.bounded_bootstrap_learning_rate(
+        initial_rate, 0, 0, 24_000, 0
+    ) == initial_rate
 
     temporary = Path(tempfile.mkdtemp(prefix="threadspire-internal-smoke-"))
     try:

@@ -770,6 +770,29 @@ def bootstrap_learning_rate(
     return initial_rate * multiplier
 
 
+def bounded_bootstrap_learning_rate(
+    initial_rate: float,
+    prior_steps: int,
+    current_steps: int,
+    target_steps: int,
+    prior_target_steps: int,
+) -> float:
+    """Never raise the rate when an unready bootstrap target is extended."""
+    scheduled = bootstrap_learning_rate(
+        initial_rate, prior_steps, current_steps, target_steps
+    )
+    if (
+        prior_steps <= 0
+        or prior_target_steps <= 0
+        or target_steps <= prior_target_steps
+    ):
+        return scheduled
+    previous_ceiling = bootstrap_learning_rate(
+        initial_rate, prior_steps, 0, prior_target_steps
+    )
+    return min(scheduled, previous_ceiling)
+
+
 def save_generation(
     state_root: Path,
     model: ThreadSpireModel,
@@ -1732,8 +1755,14 @@ def train_candidate(
     if not sequences:
         raise RuntimeError("no verified internal-model training examples were available")
     parameters = configure_training_scope(model, optimizer_scope)
-    initial_learning_rate = bootstrap_learning_rate(
-        learning_rate, prior_total_steps, 0, effective_bootstrap_target)
+    prior_bootstrap_target = int(loaded.manifest.get("bootstrap_target_steps", 0))
+    initial_learning_rate = bounded_bootstrap_learning_rate(
+        learning_rate,
+        prior_total_steps,
+        0,
+        effective_bootstrap_target,
+        prior_bootstrap_target,
+    )
     optimizer = torch.optim.AdamW(parameters, lr=initial_learning_rate, betas=(0.9, 0.95), weight_decay=0.1)
     use_amp = device.type == "cuda"
     amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
@@ -1879,8 +1908,13 @@ def train_candidate(
                 batch_items.append(sequences[order[cursor]])
                 cursor += 1
             if bootstrap_backbone_required:
-                rate = bootstrap_learning_rate(
-                    learning_rate, prior_total_steps, steps, effective_bootstrap_target)
+                rate = bounded_bootstrap_learning_rate(
+                    learning_rate,
+                    prior_total_steps,
+                    steps,
+                    effective_bootstrap_target,
+                    prior_bootstrap_target,
+                )
                 for group in optimizer.param_groups:
                     group["lr"] = rate
             input_ids, labels, active_skills = collate_batch(batch_items, device)

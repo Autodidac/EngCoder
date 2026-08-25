@@ -1154,8 +1154,10 @@ void test_worker_and_resource_contract() {
                 internal_model.find("full_backbone_trained") != std::string::npos &&
                 internal_model.find("evaluate_generation_readiness") != std::string::npos &&
                 internal_model.find("optimizer_scope = \"all\"") != std::string::npos &&
-                internal_model.find("honor_inference_priority") != std::string::npos,
-            "internal training must use the full backbone, pass generation canaries, persist completion metadata, and report exact resumable progress");
+                internal_model.find("honor_inference_priority") != std::string::npos &&
+                internal_model.find("bounded_bootstrap_learning_rate") != std::string::npos &&
+                internal_model.find("return min(scheduled, previous_ceiling)") != std::string::npos,
+            "internal training must use the full backbone, never raise the rate on an extended repair target, pass generation canaries, persist completion metadata, and report exact resumable progress");
     require(internal_model.find("filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]") != std::string::npos &&
                 internal_model.find("token_id in {EOS_ID, SEPARATOR_ID}") != std::string::npos,
             "generation must honor the supervised end-of-answer separator instead of forcing correct answers to continue as garbage");
