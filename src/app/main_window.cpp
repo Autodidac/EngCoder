@@ -722,29 +722,96 @@ void draw_dark_text(
     return internal_model_ready(paths) && runtime::backend_files_present(paths);
 }
 
+[[nodiscard]] bool training_pack_payload_ready(
+    const std::filesystem::path& source) noexcept {
+    try {
+        if (source.empty() || !std::filesystem::is_directory(source)) {
+            return false;
+        }
+        const auto catalog = runtime::CapabilityPackManager::catalog();
+        const auto descriptor = std::ranges::find(
+            catalog,
+            std::string_view{"internal-pytorch-training"},
+            &runtime::CapabilityPackDescriptor::id);
+        if (descriptor == catalog.end()) {
+            return false;
+        }
+        std::error_code error;
+        for (const auto& relative : descriptor->required_files) {
+            const auto file = (source / relative).lexically_normal();
+            const auto status = std::filesystem::symlink_status(file, error);
+            if (error || std::filesystem::is_symlink(status) ||
+                !std::filesystem::is_regular_file(status)) {
+                return false;
+            }
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+[[nodiscard]] std::optional<std::filesystem::path> automatic_training_pack_source(
+    const AppPaths& paths,
+    const std::filesystem::path& preferred) {
+    const auto executable_directory = paths.executable.parent_path();
+    const std::array candidates{
+        preferred,
+        paths.root / "pack-inbox" / "internal-pytorch-training",
+        paths.root / "downloads" / "internal-pytorch-training",
+        executable_directory / "optional-packs" / "internal-pytorch-training",
+        executable_directory / "packs" / "internal-pytorch-training",
+    };
+    const auto installed = (paths.packs / "internal-pytorch-training").lexically_normal();
+    for (const auto& candidate : candidates) {
+        const auto normalized = candidate.lexically_normal();
+        if (!normalized.empty() && normalized != installed &&
+            training_pack_payload_ready(normalized)) {
+            return normalized;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool automatic_learning_limit_reached(
+    const AppPaths& paths,
+    const runtime::InternalModelState& state) noexcept {
+    if (state.bootstrap_complete) {
+        return false;
+    }
+    const auto progress = runtime::read_internal_model_progress(paths);
+    if (!progress.available) {
+        return false;
+    }
+    const auto target = progress.bootstrap_target_steps > 0U
+        ? progress.bootstrap_target_steps
+        : runtime::default_bootstrap_target(state);
+    const auto completed = progress.total_steps > 0U
+        ? progress.total_steps
+        : progress.prior_total_steps + progress.step;
+    const auto terminal = progress.phase == "repair-required" ||
+        progress.phase == "rejected" || progress.phase == "failed";
+    return terminal && target > 0U && completed >= target;
+}
+
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
     const auto state = runtime::inspect_internal_model_state(paths);
     if (!state.exists) {
-        return L"Not created yet. Install and verify a training pack, then select Create or Create + bootstrap.";
+        return L"Built-in AI has not been set up yet.";
     }
     if (!state.manifest_valid) {
-        return L"Internal model needs explicit repair: " + widen(state.error);
+        return L"Built-in AI setup was interrupted. ThreadSpire will continue from the last safe point.";
+    }
+    if (state.bootstrap_complete) {
+        return L"Built-in AI is ready and uses only local model files.";
     }
 
     const auto target = runtime::default_bootstrap_target(state);
     std::wostringstream stream;
-    stream << L"Generation " << widen(state.generation)
-           << L" • " << widen(state.status)
-           << L" • " << state.parameter_count << L" parameters"
-           << L" • " << state.tokens_seen << L" verified target tokens"
-           << L" • bootstrap " << state.steps << L"/" << target
-           << (state.bootstrap_complete ? L" usable" : L" incomplete")
-           << L" • backbone " << (state.full_backbone_trained ? L"trained" : L"pending")
-           << L" • generation canaries " << (state.generation_ready ? L"passed" : L"pending")
-           << L" • external base weights: none";
+    stream << L"Built-in AI learning setup: " << state.steps << L"/" << target
+           << L" • progress is saved automatically";
     return stream.str();
 }
-
 [[nodiscard]] std::wstring format_duration(const double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) {
         return L"unknown";
@@ -1043,8 +1110,8 @@ LRESULT CALLBACK page_host_subclass(
             if (const auto* model = registry->find(stage.model_id); model != nullptr) {
                 model_name = widen(model->display_name);
                 runtime_kind = models::is_internal_model(*model)
-                    ? L"ThreadSpire internal model"
-                    : L"connected local LLM";
+                    ? L"built-in AI"
+                    : L"another AI app";
             }
         }
         stream << L"• " << widen(stage.role) << L" -> " << model_name;
@@ -1111,8 +1178,13 @@ MainWindow::MainWindow(const HINSTANCE instance)
         } catch (...) {
         }
     }
-    // The internal Python executable can only come from the explicit training pack.
+    // Heavy runtime files stay in the optional pack; the native app coordinates them.
     selected_python_ = paths_.python;
+    const auto saved_pack_source = trim_line_endings(read_text(
+        paths_.root / "config" / "internal-ai-setup-files.txt"));
+    if (!saved_pack_source.empty()) {
+        selected_pack_source_ = std::filesystem::path(widen(saved_pack_source)).lexically_normal();
+    }
 
     preferred_model_id_ = read_text(paths_.root / "config" / "preferred-model.txt");
     preferred_model_id_ = trim_line_endings(std::move(preferred_model_id_));
@@ -1131,7 +1203,7 @@ MainWindow::MainWindow(const HINSTANCE instance)
     if (inference_source_ == InferenceSource::custom_model &&
         !internal_host_startable(paths_)) {
         // A stale internal-only preference must never hide a working connected model.
-        // Keep installation and training explicit, but run this session in Automatic.
+        // Automatic setup can continue in the background while Chat uses what is ready.
         inference_source_ = InferenceSource::automatic;
     }
 
@@ -1214,12 +1286,12 @@ MainWindow::MainWindow(const HINSTANCE instance)
     active_log_ = paths_.logs / "model-server.log";
     interactive_model_verified_ = std::filesystem::is_regular_file(
         paths_.root / "inference-verified.flag");
-    // Capability-pack installation and model lifecycle are always explicit.
-    // Legacy automatic-lifecycle preferences are intentionally ignored.
-    automatic_lifecycle_enabled_ = false;
+    const auto lifecycle_setting = trim_line_endings(read_text(
+        paths_.root / "config" / "automatic-lifecycle.txt"));
+    automatic_lifecycle_enabled_ = lifecycle_setting != "off";
     const auto training_setting = trim_line_endings(read_text(
         paths_.root / "config" / "automatic-training.txt"));
-    automatic_training_enabled_ = training_setting == "on";
+    automatic_training_enabled_ = training_setting != "off";
     lifecycle_retry_at_ = std::chrono::steady_clock::now();
     next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 }
@@ -1566,7 +1638,7 @@ void MainWindow::create_controls() {
         MAKELPARAM(scaled(150, dpi_), scaled(30, dpi_))));
     const std::array tabs_and_pages{
         std::pair{L"Chat", Page::chat},
-        std::pair{L"Connections", Page::models},
+        std::pair{L"AI Setup", Page::models},
         std::pair{L"Learning", Page::learning},
         std::pair{L"Skills", Page::skills},
         std::pair{L"Storage & Logs", Page::logs},
@@ -1634,12 +1706,9 @@ void MainWindow::create_controls() {
     load_models_editor();
     update_skill_report();
     update_learning_report();
-    if (inference_source_ != InferenceSource::local_bridge &&
-        internal_host_startable(paths_)) {
-        // Starting an already-verified host is safe at boot. This never installs a
-        // pack, starts training, changes the selected model, or interrupts a task.
-        start_backend();
-    }
+    // Automatic setup is coordinated independently of model selection. It yields to
+    // active work and never prevents Chat from using another connected AI.
+    drive_automatic_lifecycle();
     discover_local_ai();
     if (!saved_mcp.empty()) {
         connect_mcp();
@@ -1667,35 +1736,35 @@ void MainWindow::create_chat_page() {
         mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Use tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
-    create_control(L"STATIC", L"AI source", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
+    create_control(L"STATIC", L"Use", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_source, parent);
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic (any ready AI)")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic — fastest ready AI")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Connected local LLM")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire internal model")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
         static_cast<WPARAM>(inference_source_),
         0));
 
-    create_control(L"STATIC", L"Model", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
+    create_control(L"STATIC", L"Choose AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::chat_model, parent);
     create_control(
-        L"BUTTON", L"Discover", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_discover, parent);
     create_control(
-        L"BUTTON", L"Connections…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"AI setup…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_open_models, parent);
     create_control(
-        L"STATIC", L"AI source: connected local LLM • no responding model discovered yet",
+        L"STATIC", L"Using: checking available AI • Built-in AI: checking automatic setup",
         WS_CHILD | WS_VISIBLE, 0, id::chat_backend, parent);
 
     create_control(
@@ -1713,11 +1782,11 @@ void MainWindow::create_chat_page() {
         0, id::chat_response_label, parent);
     create_control(
         L"EDIT",
-        L"Choose the AI source above, then type a message below.\r\n\r\n"
-        L"CONNECTED LOCAL LLM\r\n"
-        L"Uses LM Studio, Ollama, llama.cpp, or another compatible local API.\r\n\r\n"
-        L"THREADSPIRE INTERNAL MODEL\r\n"
-        L"Uses the dedicated PyTorch host and your promoted local weights.",
+        L"Type a message below. ThreadSpire automatically uses the best AI that is ready.\r\n\r\n"
+        L"OTHER AI APPS\r\n"
+        L"ThreadSpire finds and uses compatible AI apps already running on this computer.\r\n\r\n"
+        L"BUILT-IN AI\r\n"
+        L"Setup, learning, recovery, and startup happen automatically in the background.",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::chat_response, parent);
@@ -1758,10 +1827,10 @@ void MainWindow::create_chat_page() {
         0, id::chat_open_output, parent);
 
     create_control(
-        L"STATIC", L"Execution details", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"Task details", WS_CHILD | WS_VISIBLE,
         0, id::chat_plan_label, parent);
     create_control(
-        L"BUTTON", L"Preview route", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Show plan", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_route, parent);
     create_control(
         L"EDIT", L"Waiting for a message.", WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -1769,16 +1838,16 @@ void MainWindow::create_chat_page() {
         WS_EX_CLIENTEDGE, id::chat_plan, parent);
 
     create_control(
-        L"BUTTON", L"Automatic verified-data learning",
+        L"BUTTON", L"Learn automatically from approved results",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::chat_auto_learning, parent);
     set_checked(id::chat_auto_learning, automatic_training_enabled_);
     create_control(
         L"STATIC",
-        L"Automatic learning is armed. It starts when a local teacher model is available and the app is idle.",
+        L"Automatic learning is on. It waits while you are using the app.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_learning_status, parent);
     create_control(
-        L"STATIC", L"MCP tools: disconnected",
+        L"STATIC", L"Optional tools: not connected",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_mcp_status, parent);
 }
 
@@ -1786,17 +1855,17 @@ void MainWindow::create_coding_page() {
     const auto parent = control(id::page_coding);
 
     create_control(
-        L"STATIC", L"AI source", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"Use", WS_CHILD | WS_VISIBLE,
         0, id::coding_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::coding_source, parent);
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic (any ready AI)")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic — fastest ready AI")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Connected local LLM")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire internal model")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -1804,17 +1873,17 @@ void MainWindow::create_coding_page() {
         0));
 
     create_control(
-        L"STATIC", L"Model", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"Choose AI", WS_CHILD | WS_VISIBLE,
         0, id::coding_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::coding_model, parent);
     create_control(
-        L"BUTTON", L"Discover", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::coding_discover, parent);
     create_control(
-        L"BUTTON", L"Connections…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"AI setup…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::coding_open_models, parent);
     create_control(
         L"STATIC", L"AI source: connected local LLM • no coding model discovered yet", WS_CHILD | WS_VISIBLE,
@@ -1876,71 +1945,16 @@ void MainWindow::create_coding_page() {
 void MainWindow::create_models_page() {
     const auto parent = control(id::page_models);
     create_control(
-        L"STATIC", L"Connected local LLM servers — LM Studio, Ollama, llama.cpp, LocalAI",
-        WS_CHILD | WS_VISIBLE, 0, id::models_local_header, parent);
-    create_control(
-        L"BUTTON", L"Discover local AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-        0, id::models_discover, parent);
-    create_control(
-        L"STATIC", L"Scanning Ollama, LM Studio, llama.cpp and compatible localhost APIs…",
-        WS_CHILD | WS_VISIBLE, 0, id::models_discovery_status, parent);
-
-    create_control(L"STATIC", L"Endpoint", WS_CHILD | WS_VISIBLE, 0, id::models_manual_endpoint_label, parent);
-    create_control(
-        L"EDIT", L"http://127.0.0.1:1234", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE, id::models_manual_endpoint, parent);
-    create_control(L"STATIC", L"Model ID", WS_CHILD | WS_VISIBLE, 0, id::models_manual_model_label, parent);
-    create_control(
-        L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE, id::models_manual_model, parent);
-    const auto protocol = create_control(
-        L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        WS_EX_CLIENTEDGE, id::models_manual_protocol, parent);
-    static_cast<void>(::SendMessageW(
-        protocol, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"OpenAI-compatible")));
-    static_cast<void>(::SendMessageW(
-        protocol, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Ollama")));
-    static_cast<void>(::SendMessageW(protocol, CB_SETCURSEL, 0, 0));
-    create_control(
-        L"BUTTON", L"Coding", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        0, id::models_manual_coding, parent);
-    set_checked(id::models_manual_coding, true);
-    create_control(
-        L"BUTTON", L"Teacher", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        0, id::models_manual_teacher, parent);
-    set_checked(id::models_manual_teacher, true);
-    create_control(
-        L"BUTTON", L"Add endpoint", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, id::models_manual_add, parent);
-
-    create_control(
-        L"STATIC", L"Capabilities", WS_CHILD | WS_VISIBLE,
-        0, id::models_manual_capabilities_label, parent);
-    create_control(
-        L"EDIT", L"chat,code,repository,tools", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE, id::models_manual_capabilities, parent);
-
-    create_control(
-        L"STATIC", L"MCP tool servers",
-        WS_CHILD | WS_VISIBLE, 0, id::models_mcp_header, parent);
-    create_control(L"STATIC", L"MCP endpoint", WS_CHILD | WS_VISIBLE, 0, id::models_mcp_label, parent);
-    create_control(
-        L"EDIT", L"http://127.0.0.1:3000/mcp", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE, id::models_mcp_endpoint, parent);
-    create_control(
-        L"BUTTON", L"Connect MCP", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, id::models_mcp_connect, parent);
-    create_control(
-        L"STATIC", L"MCP disconnected", WS_CHILD | WS_VISIBLE,
-        0, id::models_mcp_status, parent);
-
-    create_control(
-        L"STATIC", L"ThreadSpire capability packs and internal AI — explicit, transactional, on demand",
+        L"STATIC", L"Built-in AI",
         WS_CHILD | WS_VISIBLE, 0, id::models_backend_header, parent);
     create_control(
-        L"STATIC", L"Installing a pack never starts training, changes the selected model, or interrupts a task.",
-        WS_CHILD | WS_VISIBLE,
+        L"BUTTON", L"Keep built-in AI ready automatically",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::models_automation_toggle, parent);
+    set_checked(id::models_automation_toggle, automatic_lifecycle_enabled_);
+    create_control(
+        L"STATIC", L"Built-in AI has not been set up yet.",
+        WS_CHILD | WS_VISIBLE, 0, id::models_internal_status, parent);
     const auto progress = create_control(
         PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
         0, id::models_progress, parent);
@@ -1957,75 +1971,131 @@ void MainWindow::create_models_page() {
         0,
         static_cast<LPARAM>(accent_color)));
     create_control(
-        L"STATIC", L"Install and verify a capability pack explicitly before using its engine.",
+        L"STATIC", L"ThreadSpire is checking what is ready.",
         WS_CHILD | WS_VISIBLE, 0, id::models_progress_detail, parent);
+
     create_control(
-        L"BUTTON", L"Show capability-pack and model controls",
+        L"STATIC", L"Other AI apps on this computer",
+        WS_CHILD | WS_VISIBLE, 0, id::models_local_header, parent);
+    create_control(
+        L"BUTTON", L"Find AI apps now", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        0, id::models_discover, parent);
+    create_control(
+        L"STATIC", L"Looking for compatible AI apps…",
+        WS_CHILD | WS_VISIBLE, 0, id::models_discovery_status, parent);
+
+    create_control(
+        L"BUTTON", L"Backup and repair options",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::models_advanced_header, parent);
     set_checked(id::models_advanced_header, false);
+
+    create_control(L"STATIC", L"Address", WS_CHILD | WS_VISIBLE, 0, id::models_manual_endpoint_label, parent);
     create_control(
-        L"STATIC", L"Initial size",
+        L"EDIT", L"http://127.0.0.1:1234", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::models_manual_endpoint, parent);
+    create_control(L"STATIC", L"AI name", WS_CHILD | WS_VISIBLE, 0, id::models_manual_model_label, parent);
+    create_control(
+        L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::models_manual_model, parent);
+    const auto protocol = create_control(
+        L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+        WS_EX_CLIENTEDGE, id::models_manual_protocol, parent);
+    static_cast<void>(::SendMessageW(
+        protocol, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Most local AI apps")));
+    static_cast<void>(::SendMessageW(
+        protocol, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Ollama")));
+    static_cast<void>(::SendMessageW(protocol, CB_SETCURSEL, 0, 0));
+    create_control(
+        L"BUTTON", L"Can write code", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, id::models_manual_coding, parent);
+    set_checked(id::models_manual_coding, true);
+    create_control(
+        L"BUTTON", L"Can help learning", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, id::models_manual_teacher, parent);
+    set_checked(id::models_manual_teacher, true);
+    create_control(
+        L"BUTTON", L"Add AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::models_manual_add, parent);
+    create_control(
+        L"STATIC", L"What it can do", WS_CHILD | WS_VISIBLE,
+        0, id::models_manual_capabilities_label, parent);
+    create_control(
+        L"EDIT", L"chat,code,repository,tools", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::models_manual_capabilities, parent);
+
+    create_control(
+        L"STATIC", L"Optional tool connection",
+        WS_CHILD | WS_VISIBLE, 0, id::models_mcp_header, parent);
+    create_control(L"STATIC", L"Tool address", WS_CHILD | WS_VISIBLE, 0, id::models_mcp_label, parent);
+    create_control(
+        L"EDIT", L"http://127.0.0.1:3000/mcp", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::models_mcp_endpoint, parent);
+    create_control(
+        L"BUTTON", L"Connect tools", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::models_mcp_connect, parent);
+    create_control(
+        L"STATIC", L"No optional tools connected",
+        WS_CHILD | WS_VISIBLE, 0, id::models_mcp_status, parent);
+
+    create_control(
+        L"STATIC", L"Built-in AI size",
         WS_CHILD | WS_VISIBLE, 0, id::models_internal_profile_label, parent);
     const auto internal_profile = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::models_internal_profile, parent);
     static_cast<void>(::SendMessageW(
-        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Micro — 22.5M parameters")));
+        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Small — fastest setup")));
     static_cast<void>(::SendMessageW(
-        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Standard — about 50M parameters")));
+        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Medium — balanced")));
     static_cast<void>(::SendMessageW(
-        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Large local — about 94M parameters")));
+        internal_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Large — best quality")));
     static_cast<void>(::SendMessageW(internal_profile, CB_SETCURSEL, 0, 0));
     create_control(
-        L"BUTTON", L"Create random model", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Rebuild from scratch", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_internal_create, parent);
     create_control(
-        L"BUTTON", L"Create + bootstrap train", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Continue setup", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_internal_bootstrap, parent);
     create_control(
-        L"STATIC", L"Internal model not created",
-        WS_CHILD | WS_VISIBLE, 0, id::models_internal_status, parent);
-    create_control(
-        L"STATIC", L"Training-pack payload",
+        L"STATIC", L"Setup files",
         WS_CHILD | WS_VISIBLE, 0, id::models_python_label, parent);
     create_control(
         L"EDIT", selected_pack_source_.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::models_python, parent);
     create_control(
-        L"BUTTON", L"Browse…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Choose folder…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_browse, parent);
     create_control(
-        L"BUTTON", L"Install pack", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Replace setup files", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_install, parent);
     create_control(
-        L"BUTTON", L"Verify", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Check setup", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_verify, parent);
     create_control(
-        L"BUTTON", L"Start internal-model host", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Start built-in AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_start, parent);
     create_control(
-        L"BUTTON", L"Stop", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Stop built-in AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_stop, parent);
     create_control(
-        L"STATIC", L"Trained-model host not checked", WS_CHILD | WS_VISIBLE,
-        0, id::models_status, parent);
+        L"STATIC", L"No backup action has run",
+        WS_CHILD | WS_VISIBLE, 0, id::models_status, parent);
 
     create_control(
-        L"STATIC", L"Advanced model registry (INI)",
+        L"STATIC", L"Saved AI list",
         WS_CHILD | WS_VISIBLE, 0, id::models_registry_header, parent);
     create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_HSCROLL,
         WS_EX_CLIENTEDGE, id::models_editor, parent);
     create_control(
-        L"BUTTON", L"Reload registry", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Undo list edits", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_reload, parent);
     create_control(
-        L"BUTTON", L"Save registry", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Save AI list", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_save, parent);
 }
-
 void MainWindow::create_learning_page() {
     const auto parent = control(id::page_learning);
     create_control(
@@ -2646,101 +2716,27 @@ void MainWindow::layout_controls() {
         y,
         width - scaled(176, dpi_),
         row);
-    y += row + gap;
-
-    const auto models_label_width = scaled(92, dpi_);
-    const auto protocol_width = scaled(190, dpi_);
-    move_control(
-        control(id::models_manual_endpoint_label),
-        0,
-        y,
-        models_label_width,
-        row);
-    move_control(
-        control(id::models_manual_endpoint),
-        models_label_width + gap,
-        y,
-        width - models_label_width - protocol_width - gap * 2,
-        row);
-    move_control(
-        control(id::models_manual_protocol),
-        width - protocol_width,
-        y,
-        protocol_width,
-        row + scaled(96, dpi_));
-    y += row + gap;
-
-    const auto add_endpoint_width = scaled(145, dpi_);
-    const auto teacher_width = scaled(96, dpi_);
-    const auto coding_width = scaled(92, dpi_);
-    move_control(
-        control(id::models_manual_model_label),
-        0,
-        y,
-        models_label_width,
-        row);
-    move_control(
-        control(id::models_manual_model),
-        models_label_width + gap,
-        y,
-        width - models_label_width - add_endpoint_width - teacher_width -
-            coding_width - gap * 4,
-        row);
-    move_control(
-        control(id::models_manual_coding),
-        width - add_endpoint_width - teacher_width - coding_width - gap * 2,
-        y,
-        coding_width,
-        row);
-    move_control(
-        control(id::models_manual_teacher),
-        width - add_endpoint_width - teacher_width - gap,
-        y,
-        teacher_width,
-        row);
-    move_control(
-        control(id::models_manual_add),
-        width - add_endpoint_width,
-        y,
-        add_endpoint_width,
-        row);
-    y += row + gap * 2;
-    move_control(
-        control(id::models_manual_capabilities_label),
-        0, y, models_label_width, row);
-    move_control(
-        control(id::models_manual_capabilities),
-        models_label_width + gap,
-        y,
-        width - models_label_width - gap,
-        row);
-    y += row + gap * 2;
-
-    move_control(control(id::models_mcp_header), 0, y, width, row);
-    y += row;
-    const auto mcp_label_width = scaled(105, dpi_);
-    const auto mcp_button_width = scaled(140, dpi_);
-    move_control(control(id::models_mcp_label), 0, y, mcp_label_width, row);
-    move_control(
-        control(id::models_mcp_endpoint),
-        mcp_label_width + gap,
-        y,
-        width - mcp_label_width - mcp_button_width - gap * 2,
-        row);
-    move_control(
-        control(id::models_mcp_connect),
-        width - mcp_button_width,
-        y,
-        mcp_button_width,
-        row);
-    y += row + gap;
-    move_control(control(id::models_mcp_status), 0, y, width, row);
     y += row + gap * 2;
 
     move_control(control(id::models_advanced_header), 0, y, width, row);
     y += row + gap;
 
-    constexpr std::array advanced_model_controls{
+    constexpr std::array backup_model_controls{
+        id::models_manual_endpoint_label,
+        id::models_manual_endpoint,
+        id::models_manual_model_label,
+        id::models_manual_model,
+        id::models_manual_protocol,
+        id::models_manual_coding,
+        id::models_manual_teacher,
+        id::models_manual_add,
+        id::models_manual_capabilities_label,
+        id::models_manual_capabilities,
+        id::models_mcp_header,
+        id::models_mcp_label,
+        id::models_mcp_endpoint,
+        id::models_mcp_connect,
+        id::models_mcp_status,
         id::models_internal_profile_label,
         id::models_internal_profile,
         id::models_internal_create,
@@ -2758,71 +2754,134 @@ void MainWindow::layout_controls() {
         id::models_reload,
         id::models_save,
     };
-    const auto show_advanced_model_controls = checked(id::models_advanced_header);
-    for (const auto identifier : advanced_model_controls) {
-        ::ShowWindow(
-            control(identifier),
-            show_advanced_model_controls ? SW_SHOW : SW_HIDE);
+    const auto show_backup_controls = checked(id::models_advanced_header);
+    for (const auto identifier : backup_model_controls) {
+        ::ShowWindow(control(identifier), show_backup_controls ? SW_SHOW : SW_HIDE);
     }
 
-    if (show_advanced_model_controls) {
-        const auto internal_label_width = scaled(100, dpi_);
-        const auto internal_create_width = scaled(165, dpi_);
-        const auto internal_bootstrap_width = scaled(190, dpi_);
+    if (show_backup_controls) {
+        const auto models_label_width = scaled(110, dpi_);
+        const auto protocol_width = scaled(190, dpi_);
+        move_control(control(id::models_manual_endpoint_label), 0, y, models_label_width, row);
         move_control(
-            control(id::models_internal_profile_label),
-            0,
+            control(id::models_manual_endpoint),
+            models_label_width + gap,
             y,
-            internal_label_width,
+            width - models_label_width - protocol_width - gap * 2,
             row);
+        move_control(
+            control(id::models_manual_protocol),
+            width - protocol_width,
+            y,
+            protocol_width,
+            row + scaled(96, dpi_));
+        y += row + gap;
+
+        const auto add_ai_width = scaled(105, dpi_);
+        const auto learning_width = scaled(150, dpi_);
+        const auto coding_width = scaled(120, dpi_);
+        move_control(control(id::models_manual_model_label), 0, y, models_label_width, row);
+        move_control(
+            control(id::models_manual_model),
+            models_label_width + gap,
+            y,
+            width - models_label_width - add_ai_width - learning_width - coding_width - gap * 4,
+            row);
+        move_control(
+            control(id::models_manual_coding),
+            width - add_ai_width - learning_width - coding_width - gap * 2,
+            y,
+            coding_width,
+            row);
+        move_control(
+            control(id::models_manual_teacher),
+            width - add_ai_width - learning_width - gap,
+            y,
+            learning_width,
+            row);
+        move_control(control(id::models_manual_add), width - add_ai_width, y, add_ai_width, row);
+        y += row + gap;
+        move_control(control(id::models_manual_capabilities_label), 0, y, models_label_width, row);
+        move_control(
+            control(id::models_manual_capabilities),
+            models_label_width + gap,
+            y,
+            width - models_label_width - gap,
+            row);
+        y += row + gap * 2;
+
+        move_control(control(id::models_mcp_header), 0, y, width, row);
+        y += row;
+        const auto tool_label_width = scaled(110, dpi_);
+        const auto tool_button_width = scaled(140, dpi_);
+        move_control(control(id::models_mcp_label), 0, y, tool_label_width, row);
+        move_control(
+            control(id::models_mcp_endpoint),
+            tool_label_width + gap,
+            y,
+            width - tool_label_width - tool_button_width - gap * 2,
+            row);
+        move_control(
+            control(id::models_mcp_connect),
+            width - tool_button_width,
+            y,
+            tool_button_width,
+            row);
+        y += row + gap;
+        move_control(control(id::models_mcp_status), 0, y, width, row);
+        y += row + gap * 2;
+
+        const auto internal_label_width = scaled(120, dpi_);
+        const auto rebuild_width = scaled(170, dpi_);
+        const auto continue_width = scaled(150, dpi_);
+        move_control(control(id::models_internal_profile_label), 0, y, internal_label_width, row);
         move_control(
             control(id::models_internal_profile),
             internal_label_width + gap,
             y,
-            std::max(scaled(220, dpi_), width - internal_label_width - internal_create_width -
-                internal_bootstrap_width - gap * 4),
+            std::max(
+                scaled(220, dpi_),
+                width - internal_label_width - rebuild_width - continue_width - gap * 4),
             row);
         move_control(
             control(id::models_internal_create),
-            width - internal_create_width - internal_bootstrap_width - gap,
+            width - rebuild_width - continue_width - gap,
             y,
-            internal_create_width,
+            rebuild_width,
             row);
         move_control(
             control(id::models_internal_bootstrap),
-            width - internal_bootstrap_width,
+            width - continue_width,
             y,
-            internal_bootstrap_width,
+            continue_width,
             row);
         y += row + gap;
-        const auto python_label_width = scaled(132, dpi_);
-        move_control(control(id::models_python_label), 0, y, python_label_width, row);
+
+        const auto setup_label_width = scaled(120, dpi_);
+        const auto choose_width = scaled(130, dpi_);
+        move_control(control(id::models_python_label), 0, y, setup_label_width, row);
         move_control(
             control(id::models_python),
-            python_label_width + gap,
+            setup_label_width + gap,
             y,
-            width - python_label_width - scaled(120, dpi_) - gap * 2,
+            width - setup_label_width - choose_width - gap * 2,
             row);
         move_control(
             control(id::models_browse),
-            width - scaled(120, dpi_),
+            width - choose_width,
             y,
-            scaled(120, dpi_),
+            choose_width,
             row);
         y += row + gap;
 
         auto model_action_x = 0;
-        for (const auto identifier : {
-                 id::models_install,
-                 id::models_verify,
-                 id::models_start,
-                 id::models_stop}) {
-            const auto current_width =
-                identifier == id::models_start ? scaled(170, dpi_) :
-                identifier == id::models_install ? scaled(150, dpi_) :
-                scaled(110, dpi_);
-            move_control(control(identifier), model_action_x, y, current_width, row);
-            model_action_x += current_width + gap;
+        for (const auto [identifier, action_width] : std::array{
+                 std::pair{id::models_install, scaled(170, dpi_)},
+                 std::pair{id::models_verify, scaled(120, dpi_)},
+                 std::pair{id::models_start, scaled(150, dpi_)},
+                 std::pair{id::models_stop, scaled(150, dpi_)}}) {
+            move_control(control(identifier), model_action_x, y, action_width, row);
+            model_action_x += action_width + gap;
         }
         y += row + gap;
         move_control(control(id::models_status), 0, y, width, row);
@@ -2850,7 +2909,6 @@ void MainWindow::layout_controls() {
             scaled(145, dpi_),
             row);
     }
-
     auto learning_y = 0;
     move_control(control(id::learning_header), 0, learning_y, width, row);
     learning_y += row;
@@ -3214,16 +3272,31 @@ void MainWindow::handle_command(const int identifier) {
     case id::models_mcp_connect:
         connect_mcp();
         break;
+    case id::models_automation_toggle:
+        automatic_lifecycle_enabled_ = checked(id::models_automation_toggle);
+        lifecycle_failures_ = 0U;
+        lifecycle_last_error_.clear();
+        lifecycle_retry_at_ = std::chrono::steady_clock::now();
+        try {
+            write_text(
+                paths_.root / "config" / "automatic-lifecycle.txt",
+                automatic_lifecycle_enabled_ ? "on\n" : "off\n");
+        } catch (...) {
+        }
+        set_status(automatic_lifecycle_enabled_
+            ? L"ThreadSpire will set up and keep the built-in AI ready automatically"
+            : L"Automatic built-in AI setup is paused; the current task is unchanged");
+        break;
     case id::models_advanced_header:
         set_control_text(
             id::models_advanced_header,
             checked(id::models_advanced_header)
-                ? L"Hide capability-pack and model controls"
-                : L"Show capability-pack and model controls");
+                ? L"Hide backup and repair options"
+                : L"Backup and repair options");
         layout_controls();
         set_status(checked(id::models_advanced_header)
-            ? L"Capability-pack and model controls shown"
-            : L"Capability-pack controls hidden; running tasks are unchanged");
+            ? L"Backup and repair options shown"
+            : L"Backup options hidden; automatic setup remains active");
         break;
     case id::models_internal_create:
         create_internal_model(false);
@@ -3375,7 +3448,7 @@ void MainWindow::update_workspace_mode() {
     set_control_text(
         id::chat_response_label,
         task == WorkspaceTask::repository ? L"Task and verified run result" : L"Task output");
-    set_status(L"Task capability changed; the model list now shows only compatible sources");
+    set_status(L"Task changed. ThreadSpire updated the available AI choices.");
     refresh_model_selectors();
     layout_controls();
 }
@@ -3420,19 +3493,19 @@ void MainWindow::refresh_model_selectors() {
         switch (inference_source_) {
         case InferenceSource::local_bridge:
             return available.empty()
-                ? L"Automatic — no connected local LLM is ready"
-                : L"Automatic — fastest connected local LLM";
+                ? L"Automatic — waiting for another AI app"
+                : L"Automatic — fastest ready AI app";
         case InferenceSource::custom_model:
             if (custom_host_running) {
-                return L"Automatic — best ThreadSpire internal model";
+                return L"Automatic — built-in AI is ready";
             }
             return bootstrap_training
-                ? L"Automatic — internal model is training; host resumes automatically"
-                : L"Automatic — internal-model host is stopped";
+                ? L"Automatic — built-in AI is learning"
+                : L"Automatic — built-in AI setup is continuing";
         case InferenceSource::automatic:
             return available.empty()
-                ? L"Automatic — no usable runtime is ready"
-                : L"Automatic — fastest available runtime";
+                ? L"Automatic — waiting for an AI"
+                : L"Automatic — fastest ready AI";
         }
         return L"Automatic";
     }();
@@ -3457,14 +3530,14 @@ void MainWindow::refresh_model_selectors() {
         std::wstring label;
         if (inference_source_ == InferenceSource::automatic) {
             label += models::is_internal_model(model)
-                ? L"ThreadSpire • "
-                : L"Connected • ";
+                ? L"Built-in • "
+                : L"Other app • ";
         }
         label += widen(model.display_name);
         if (models::is_internal_model(model) && !custom_host_running) {
             label += bootstrap_training
-                ? L" • bootstrap training; host resumes automatically"
-                : L" • host stopped";
+                ? L" • learning automatically"
+                : L" • setup continuing";
         }
         for (const auto identifier : {id::chat_model, id::coding_model}) {
             static_cast<void>(::SendMessageW(
@@ -3500,30 +3573,24 @@ void MainWindow::refresh_model_selectors() {
     if (workspace_transcript_.empty() && !available.empty()) {
         std::wostringstream ready;
         if (inference_source_ == InferenceSource::custom_model) {
-            ready << L"THREADSPIRE INTERNAL MODEL\r\n";
+            ready << L"BUILT-IN AI\r\n";
             if (custom_host_running) {
-                ready << available.size() << L" trained model"
-                      << (available.size() == 1U ? L" is" : L"s are")
-                      << L" available through the running ThreadSpire host.";
+                ready << L"Ready. Type a message below.";
             } else if (bootstrap_training) {
-                ready << L"The internal model is bootstrap-training now. The host is intentionally "
-                      << L"paused to free compute and will start automatically when training completes.";
+                ready << L"Learning is running automatically. ThreadSpire will start it when ready.";
             } else {
-                ready << available.size() << L" trained model"
-                      << (available.size() == 1U ? L" is" : L"s are")
-                      << L" configured, but the internal-model host is stopped. "
-                      << L"Open Connections to start it.";
+                ready << L"Setup is continuing automatically. Progress is shown above.";
             }
         } else if (inference_source_ == InferenceSource::local_bridge) {
-            ready << L"CONNECTED LOCAL LLM\r\n"
-                  << available.size() << L" model"
-                  << (available.size() == 1U ? L" is" : L"s are")
-                  << L" available from local servers. Type a message below and select Send.";
+            ready << L"OTHER AI APP\r\n"
+                  << available.size() << L" ready AI choice"
+                  << (available.size() == 1U ? L"" : L"s")
+                  << L" found. Type a message below.";
         } else {
-            ready << L"AUTOMATIC AI SOURCE\r\n"
-                  << available.size() << L" usable model"
-                  << (available.size() == 1U ? L" is" : L"s are")
-                  << L" available. ThreadSpire will choose the fastest capable source.";
+            ready << L"AUTOMATIC\r\n"
+                  << available.size() << L" ready AI choice"
+                  << (available.size() == 1U ? L"" : L"s")
+                  << L" found. ThreadSpire will use the fastest one that fits the task.";
         }
         set_control_text(id::chat_response, ready.str());
     }
@@ -3728,77 +3795,84 @@ void MainWindow::apply_source_filter(models::ModelRegistry& registry) const {
 std::wstring MainWindow::runtime_summary(
     const models::ModelRegistry& registry,
     const bool custom_host_running) const {
-    std::size_t bridged_ready = 0;
-    std::size_t custom_configured = 0;
+    std::size_t connected_ready = 0;
     for (const auto& model : registry.models()) {
-        if (!model.enabled) {
-            continue;
-        }
-        if (models::is_internal_model(model)) {
-            ++custom_configured;
-        } else {
-            ++bridged_ready;
+        if (model.enabled && !models::is_internal_model(model)) {
+            ++connected_ready;
         }
     }
 
-    const auto bootstrap_training =
+    const auto setup_running =
         lifecycle_action_ == LifecycleAction::bootstrap_model &&
         backend_operation_.running();
     const auto host_starting =
         lifecycle_action_ == LifecycleAction::start_host &&
         backend_operation_.running();
     const auto internal_state = runtime::inspect_internal_model_state(paths_);
-    const auto internal_status = [&]() -> const wchar_t* {
-        if (custom_host_running) {
-            return L"running";
+    const auto progress = runtime::read_internal_model_progress(paths_);
+    std::wstring built_in_status;
+    if (custom_host_running) {
+        built_in_status = L"READY";
+    } else if (setup_running) {
+        const auto completed = progress.total_steps > 0U
+            ? progress.total_steps
+            : progress.prior_total_steps + progress.step;
+        const auto target = progress.bootstrap_target_steps > 0U
+            ? progress.bootstrap_target_steps
+            : runtime::default_bootstrap_target(internal_state);
+        std::wostringstream value;
+        value << L"NOT READY — learning automatically";
+        if (target > 0U) {
+            value << L" (" << completed << L"/" << target << L")";
         }
-        if (bootstrap_training) {
-            return L"training; connected models stay available";
-        }
-        if (host_starting) {
-            return L"starting";
-        }
-        if (!internal_state.exists) {
-            return L"not installed";
-        }
-        if (!internal_state.manifest_valid || !internal_state.bootstrap_complete) {
-            return L"not ready";
-        }
-        if (!runtime::backend_files_present(paths_)) {
-            return L"ready, but its capability pack is not installed";
-        }
-        return L"stopped";
-    }();
+        built_in_status = value.str();
+    } else if (host_starting) {
+        built_in_status = L"NOT READY — starting automatically";
+    } else if (!automatic_lifecycle_enabled_) {
+        built_in_status = L"NOT READY — automatic setup paused";
+    } else if (automatic_learning_limit_reached(paths_, internal_state)) {
+        built_in_status = L"NOT READY — quality limit reached; no unapproved model was used";
+    } else if (!runtime::backend_files_present(paths_)) {
+        built_in_status = L"NOT READY — waiting for optional setup files";
+    } else if (!internal_state.exists) {
+        built_in_status = L"NOT READY — automatic setup starting";
+    } else if (!internal_state.manifest_valid) {
+        built_in_status = L"NOT READY — recovering automatically";
+    } else if (!internal_state.bootstrap_complete) {
+        built_in_status = L"NOT READY — learning will resume automatically";
+    } else {
+        built_in_status = L"READY — starting automatically";
+    }
 
     std::wostringstream stream;
     switch (inference_source_) {
     case InferenceSource::local_bridge:
-        stream << L"AI source: connected local LLM • " << bridged_ready
-               << L" model" << (bridged_ready == 1U ? L"" : L"s") << L" available";
+        stream << L"Using: another AI app";
         break;
     case InferenceSource::custom_model:
-        stream << L"AI source: ThreadSpire internal model • internal model "
-               << internal_status
-               << L" • " << custom_configured << L" profile"
-               << (custom_configured == 1U ? L"" : L"s") << L" configured";
+        stream << (custom_host_running
+            ? L"Using: built-in AI"
+            : L"Selected: built-in AI (not ready)");
         break;
     case InferenceSource::automatic:
-        stream << L"AI source: automatic • " << bridged_ready << L" connected model"
-               << (bridged_ready == 1U ? L"" : L"s") << L" available • internal model "
-               << internal_status;
+        stream << L"Using: fastest ready AI";
         break;
     }
+    stream << L" • Connected AI: ";
+    if (connected_ready == 0U) {
+        stream << L"not found";
+    } else {
+        stream << L"ready (" << connected_ready << L")";
+    }
+    stream << L" • Built-in AI: " << built_in_status;
 
     if (const auto selected = selected_model_id(); selected.has_value()) {
         if (const auto* profile = registry.find(*selected); profile != nullptr) {
-            stream << L" • selected: " << widen(profile->display_name);
+            stream << L" • Chosen: " << widen(profile->display_name);
         }
-    } else {
-        stream << L" • model: automatic";
     }
     return stream.str();
 }
-
 std::string MainWindow::requested_runtime_heading() const {
     switch (inference_source_) {
     case InferenceSource::local_bridge:
@@ -4119,10 +4193,10 @@ void MainWindow::send_request(const RequestSurface surface) {
     if (inference_source_ == InferenceSource::custom_model &&
         !backend_server_.running()) {
         const auto error =
-            L"ThreadSpire internal model is selected, but its model host is stopped. "
-            L"Open Connections, verify the PyTorch runtime, and select Start internal-model host.";
+            L"Built-in AI is selected but is not ready yet. ThreadSpire will finish its setup "
+            L"automatically when the optional files are available; choose Automatic to work now.";
         set_control_text(response_id, error);
-        set_control_text(plan_id, L"The ThreadSpire internal-model runtime is unavailable until its host is running.");
+        set_control_text(plan_id, L"Built-in AI is still being prepared automatically.");
         set_status(error);
         return;
     }
@@ -4233,7 +4307,7 @@ void MainWindow::send_request(const RequestSurface surface) {
     set_status(request_status);
     set_control_text(
         id::chat_learning_status,
-        L"Foreground inference active. Background learning is paused.");
+        L"Answering now. Automatic learning is waiting.");
 
     learning_service_->set_interactive_busy(true);
     const auto internal_base_url = backend_server_.running()
@@ -4959,22 +5033,32 @@ void MainWindow::generate_piggyback(
             : std::chrono::minutes(2));
 }
 
-void MainWindow::create_internal_model(const bool bootstrap) {
+void MainWindow::create_internal_model(
+    const bool bootstrap,
+    const bool automatic) {
     if (backend_operation_.running()) {
-        set_status(L"A model operation is already running");
+        if (!automatic) {
+            set_status(L"Another built-in AI action is already running");
+        }
         return;
     }
 
     auto selected_paths = paths_;
     selected_paths.python = selected_python_;
     if (!runtime::backend_files_present(selected_paths)) {
-        set_status(L"Install and verify the Internal PyTorch Training capability pack first");
+        if (!automatic) {
+            set_status(L"Built-in AI setup files are not available yet");
+        }
         return;
     }
 
     const auto state = runtime::inspect_internal_model_state(paths_);
-    const auto selected_index = static_cast<int>(::SendMessageW(
-        control(id::models_internal_profile), CB_GETCURSEL, 0, 0));
+    // Automatic setup starts with the smallest profile and its 24k quality target.
+    // Existing models keep their recorded profile; backup controls may explicitly choose another.
+    const auto selected_index = automatic
+        ? 0
+        : static_cast<int>(::SendMessageW(
+            control(id::models_internal_profile), CB_GETCURSEL, 0, 0));
     std::string profile = selected_index == 2
         ? "large-local"
         : (selected_index == 1 ? "standard" : "micro");
@@ -4998,8 +5082,15 @@ void MainWindow::create_internal_model(const bool bootstrap) {
 
     if (bootstrap && state.bootstrap_complete) {
         if (!backend_server_.running()) {
-            start_backend();
+            start_backend(automatic);
         }
+        return;
+    }
+    if (bootstrap && automatic_learning_limit_reached(paths_, state)) {
+        lifecycle_last_error_ =
+            "Built-in AI reached its bounded learning target without passing every quality check; "
+            "no unapproved model was activated.";
+        set_status(L"Built-in AI reached its quality limit. The unapproved result was not activated.");
         return;
     }
 
@@ -5025,9 +5116,9 @@ void MainWindow::create_internal_model(const bool bootstrap) {
         id::models_internal_status,
         bootstrap
             ? (state.manifest_valid
-                ? L"Resuming exact bootstrap training from the existing local checkpoint…"
-                : L"Creating random weights, then running the requested bootstrap…")
-            : L"Creating random internal weights…");
+                ? L"Continuing built-in AI setup from the last saved point…"
+                : L"Creating the built-in AI, then teaching it the basics…")
+            : L"Rebuilding the built-in AI from scratch…");
 
     const auto started = backend_operation_.start(
         [this,
@@ -5095,13 +5186,15 @@ void MainWindow::create_internal_model(const bool bootstrap) {
                     : util::OperationState::failed,
                 .exit_code = host_started ? 0 : 1,
                 .message = host_started
-                    ? "Internal model bootstrap completed and its host started as requested"
+                    ? "Built-in AI setup completed and it is now running"
                     : "Bootstrap completed, but the model host did not start: " + message,
             };
         },
         bootstrap
-            ? "running the explicitly requested resumable internal-model bootstrap"
-            : "creating ThreadSpire's random internal model");
+            ? (automatic
+                ? "automatically teaching the built-in AI from its last saved point"
+                : "continuing built-in AI setup from its last saved point")
+            : "rebuilding the built-in AI from scratch");
 
     if (started) {
         lifecycle_action_ = LifecycleAction::bootstrap_model;
@@ -5110,26 +5203,52 @@ void MainWindow::create_internal_model(const bool bootstrap) {
     }
 }
 
-void MainWindow::install_backend() {
+void MainWindow::install_backend(const bool automatic) {
     if (backend_operation_.running()) {
-        set_status(L"Another capability-pack or internal-model operation is already running");
+        if (!automatic) {
+            set_status(L"Another built-in AI action is already running");
+        }
         return;
     }
     if (backend_server_.running()) {
-        set_status(L"Stop the internal-model host explicitly before replacing its training pack; it was not interrupted");
+        if (!automatic) {
+            set_status(L"Stop the built-in AI before replacing its setup files");
+        }
         return;
     }
-    selected_pack_source_ = std::filesystem::path(control_text(id::models_python)).lexically_normal();
-    if (!std::filesystem::is_directory(selected_pack_source_)) {
-        set_status(L"Choose an existing verified Internal PyTorch Training pack payload folder first");
+
+    std::optional<std::filesystem::path> source;
+    if (automatic) {
+        source = automatic_training_pack_source(paths_, selected_pack_source_);
+    } else {
+        const auto selected = std::filesystem::path(
+            control_text(id::models_python)).lexically_normal();
+        if (training_pack_payload_ready(selected)) {
+            source = selected;
+        }
+    }
+    if (!source.has_value()) {
+        if (!automatic) {
+            set_status(L"Choose a complete built-in AI setup folder first");
+        }
         return;
     }
+
+    selected_pack_source_ = source->lexically_normal();
+    set_control_text(id::models_python, selected_pack_source_.wstring());
+    try {
+        write_text(
+            paths_.root / "config" / "internal-ai-setup-files.txt",
+            selected_pack_source_.string() + "\n");
+    } catch (...) {
+    }
+
     const auto catalog = runtime::CapabilityPackManager::catalog();
     const auto descriptor = std::ranges::find(
         catalog, std::string_view{"internal-pytorch-training"},
         &runtime::CapabilityPackDescriptor::id);
     if (descriptor == catalog.end()) {
-        set_status(L"The Internal PyTorch Training pack is not present in the native catalog");
+        set_status(L"The built-in AI setup description is missing");
         return;
     }
     const runtime::CapabilityPackInstallRequest request{
@@ -5149,17 +5268,22 @@ void MainWindow::install_backend() {
                         : util::OperationState::failed),
                 .exit_code = result.succeeded ? 0 : 1,
                 .message = result.succeeded
-                    ? "Internal PyTorch Training pack installed transactionally; no model or task state changed"
+                    ? "Built-in AI setup files are ready; the working model and current task were not changed"
                     : result.error,
             };
         },
-        "installing the explicitly selected capability pack transactionally");
+        automatic
+            ? "automatically preparing the built-in AI files"
+            : "replacing the built-in AI files from backup");
     if (started) {
         lifecycle_action_ = LifecycleAction::install_backend;
-        set_status(L"Installing the selected capability pack; current tasks and model selection are unchanged");
+        set_status(automatic
+            ? L"Preparing the built-in AI in the background"
+            : L"Replacing the built-in AI setup files; the current task is unchanged");
     }
 }
-void MainWindow::verify_backend() {
+
+void MainWindow::verify_backend(const bool automatic) {
     if (backend_operation_.running()) {
         return;
     }
@@ -5171,21 +5295,22 @@ void MainWindow::verify_backend() {
         [selected_paths, log](const std::stop_token token) {
             return runtime::verify_backend(selected_paths, log, token);
         },
-        "verifying the explicitly installed ThreadSpire internal-model backend");
+        automatic
+            ? "automatically checking the built-in AI"
+            : "checking the built-in AI from backup controls");
     if (started) {
         lifecycle_action_ = LifecycleAction::verify_backend;
     }
 }
-
-void MainWindow::start_backend() {
+void MainWindow::start_backend(const bool automatic) {
     if (backend_operation_.running()) {
         return;
     }
     if (!internal_model_ready(paths_)) {
-        set_status(
-            L"The active generation is not ready. Select Create + bootstrap train to continue "
-            L"from the saved repair candidate.");
-        show_page(Page::models);
+        if (!automatic) {
+            set_status(L"Built-in AI setup is incomplete. Choose Continue setup under Backup and repair.");
+            show_page(Page::models);
+        }
         return;
     }
     set_active_log(backend_server_.log_path());
@@ -5199,30 +5324,40 @@ void MainWindow::start_backend() {
                 .message = std::move(message),
             };
         },
-        "starting the explicitly requested ThreadSpire internal-model host");
+        automatic
+            ? "automatically starting the built-in AI"
+            : "starting the built-in AI from backup controls");
     if (started) {
         lifecycle_action_ = LifecycleAction::start_host;
     }
 }
-
 void MainWindow::stop_backend() {
     automatic_lifecycle_enabled_ = false;
+    set_checked(id::models_automation_toggle, false);
+    try {
+        write_text(paths_.root / "config" / "automatic-lifecycle.txt", "off\n");
+    } catch (...) {
+    }
     backend_operation_.cancel();
     lifecycle_action_ = LifecycleAction::none;
     backend_server_.stop();
-    set_status(L"Internal-model host stopped; packs, model selection, and training state are unchanged");
-    set_control_text(id::models_status, L"Stopped manually");
+    set_status(L"Built-in AI stopped; automatic restart is paused");
+    set_control_text(id::models_status, L"Built-in AI stopped from backup controls");
 }
-
 void MainWindow::browse_python() {
-    const auto selected = choose_directory(
-        L"Select a verified Internal PyTorch Training capability-pack payload");
+    const auto selected = choose_directory(L"Choose the built-in AI setup folder");
     if (!selected.has_value()) {
         return;
     }
     selected_pack_source_ = selected->lexically_normal();
     set_control_text(id::models_python, selected_pack_source_.wstring());
-    set_status(L"Capability-pack payload selected; nothing has been installed or started");
+    try {
+        write_text(
+            paths_.root / "config" / "internal-ai-setup-files.txt",
+            selected_pack_source_.string() + "\n");
+    } catch (...) {
+    }
+    set_status(L"Backup setup folder selected; automatic setup will use it when ready");
 }
 void MainWindow::load_models_editor() {
     set_control_text(id::models_editor, widen(read_text(paths_.model_registry)));
@@ -5603,8 +5738,8 @@ void MainWindow::handle_lifecycle_completion() {
             backend_verified_ = true;
             backend_repair_required_ = false;
         } else if (completed_action == LifecycleAction::install_backend) {
-            // Installation is isolated: verification, model selection, training,
-            // and host startup remain separate explicit actions.
+            // File replacement is isolated. The automatic coordinator may check and
+            // continue setup on a later tick, after this transaction has completed.
             backend_verified_ = false;
             backend_repair_required_ = false;
             selected_python_ = paths_.python;
@@ -5662,19 +5797,60 @@ void MainWindow::drive_automatic_lifecycle() {
                 constexpr std::int64_t maximum_silent_ms = 15LL * 60LL * 1000LL;
                 if (now_ms > progress.heartbeat_unix_ms + maximum_silent_ms) {
                     lifecycle_last_error_ =
-                        "The training worker stopped reporting progress for 15 minutes; "
-                        "it is being terminated and will resume from its exact checkpoint.";
+                        "Built-in AI setup stopped reporting progress and will resume "
+                        "from its last saved point.";
                     backend_operation_.cancel();
                 }
             }
         }
         return;
     }
-    // Capability-pack selection and installation are deliberately isolated
-    // from model selection, training, hosting, and active work. Every lifecycle
-    // operation below this point requires an explicit user action.
-}
+    if (lifecycle_action_ != LifecycleAction::none ||
+        !automatic_lifecycle_enabled_ ||
+        std::chrono::steady_clock::now() < lifecycle_retry_at_) {
+        return;
+    }
 
+    // Setup yields to anything the user is doing. Installing files, teaching the
+    // local model, and starting its helper never interrupt an active task.
+    if (chat_operation_.running() || media_operation_.running() ||
+        long_horizon_operation_.running() || piggyback_operation_.running() ||
+        learning_service_->interactive_busy()) {
+        return;
+    }
+    const auto learning_pipeline = learning_service_->pipeline_snapshot();
+    if (learning_pipeline.active_job.has_value()) {
+        return;
+    }
+
+    auto selected_paths = paths_;
+    selected_paths.python = selected_python_;
+    if (backend_repair_required_ || !runtime::backend_files_present(selected_paths)) {
+        if (automatic_training_pack_source(paths_, selected_pack_source_).has_value()) {
+            install_backend(true);
+        }
+        return;
+    }
+    if (!backend_verified_) {
+        verify_backend(true);
+        return;
+    }
+
+    const auto state = runtime::inspect_internal_model_state(paths_);
+    if (!state.manifest_valid || !state.bootstrap_complete) {
+        if (automatic_learning_limit_reached(paths_, state)) {
+            lifecycle_last_error_ =
+                "Built-in AI reached its bounded learning target without passing every quality check; "
+                "no unapproved model was activated.";
+            return;
+        }
+        create_internal_model(true, true);
+        return;
+    }
+    if (!backend_server_.running()) {
+        start_backend(true);
+    }
+}
 void MainWindow::update_internal_model_lifecycle_ui() {
     const auto state = runtime::inspect_internal_model_state(paths_);
     const auto progress = runtime::read_internal_model_progress(paths_);
@@ -5698,21 +5874,22 @@ void MainWindow::update_internal_model_lifecycle_ui() {
 
     std::wostringstream detail;
     const auto now = std::chrono::steady_clock::now();
-    if (!backend_operation_.running() &&
-        lifecycle_action_ == LifecycleAction::none &&
-        !state.bootstrap_complete) {
-        detail << L"Capability packs and model operations are explicit.";
-        if (!lifecycle_last_error_.empty()) {
-            detail << L" Last repair result: " << widen(lifecycle_last_error_) << L".";
-        }
-        detail << L" Select an explicit install, verify, create, train, or start action to continue.";
+    auto selected_paths = paths_;
+    selected_paths.python = selected_python_;
+    const auto setup_files_ready = runtime::backend_files_present(selected_paths);
+    const auto setup_source_ready =
+        automatic_training_pack_source(paths_, selected_pack_source_).has_value();
+
+    if (!automatic_lifecycle_enabled_) {
+        detail << L"Automatic setup is paused. Backup and repair options can turn it back on.";
     } else if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             lifecycle_retry_at_ - now).count();
-        detail << L"Recoverable operation can be retried in " << std::max<std::int64_t>(0, remaining)
-               << L" s — " << widen(lifecycle_last_error_);
+        detail << L"ThreadSpire will try again in "
+               << std::max<std::int64_t>(0, remaining)
+               << L" seconds. Technical details are under Backup and repair.";
     } else if (lifecycle_action_ == LifecycleAction::bootstrap_model && progress.available) {
-        detail << widen(progress.message.empty() ? progress.phase : progress.message);
+        detail << L"Teaching the built-in AI";
         const auto completed = progress.total_steps > 0U
             ? progress.total_steps
             : progress.prior_total_steps + progress.step;
@@ -5720,42 +5897,54 @@ void MainWindow::update_internal_model_lifecycle_ui() {
             ? progress.bootstrap_target_steps
             : target;
         if (progress_target > 0U) {
-            detail << L" • overall step " << completed << L"/" << progress_target;
+            detail << L" • " << completed << L"/" << progress_target;
         } else if (progress.maximum_steps > 0U) {
-            detail << L" • step " << progress.step << L"/" << progress.maximum_steps;
-        }
-        if (progress.tokens_seen > 0U) {
-            detail << L" • " << progress.tokens_seen << L" verified target tokens";
-        }
-        if (progress.full_backbone_trained) {
-            detail << L" • full backbone trained";
-        }
-        if (progress.generation_ready) {
-            detail << L" • generation canaries passed";
+            detail << L" • " << progress.step << L"/" << progress.maximum_steps;
         }
         if (progress.elapsed_seconds > 0.0) {
             detail << L" • elapsed " << format_duration(progress.elapsed_seconds);
         }
         if (progress.eta_seconds.has_value()) {
-            detail << L" • ETA " << format_duration(*progress.eta_seconds);
+            detail << L" • about " << format_duration(*progress.eta_seconds) << L" remaining";
         }
         if (progress.stale) {
-            detail << L" • heartbeat delayed; bounded worker timeout remains active";
+            detail << L" • progress is delayed; the saved work remains safe";
         }
     } else if (backend_operation_.running()) {
-        const auto operation = backend_operation_.snapshot();
-        detail << widen(operation.message);
+        switch (lifecycle_action_) {
+        case LifecycleAction::install_backend:
+            detail << L"Preparing the optional built-in AI files…";
+            break;
+        case LifecycleAction::verify_backend:
+            detail << L"Checking the built-in AI…";
+            break;
+        case LifecycleAction::start_host:
+            detail << L"Starting the built-in AI…";
+            break;
+        case LifecycleAction::bootstrap_model:
+            detail << L"Teaching the built-in AI…";
+            break;
+        case LifecycleAction::none:
+            detail << L"ThreadSpire is checking what is ready…";
+            break;
+        }
     } else if (state.bootstrap_complete && backend_server_.running()) {
-        detail << L"Ready — bootstrap complete and the internal-model host is running. "
-               << L"The promoted working model remains active.";
-    } else if (!lifecycle_last_error_.empty()) {
-        detail << L"Recoverable operation: " << widen(lifecycle_last_error_);
+        detail << L"Built-in AI is ready and running. ThreadSpire will keep it available automatically.";
+    } else if (automatic_learning_limit_reached(paths_, state)) {
+        detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
+    } else if (!setup_files_ready && setup_source_ready) {
+        detail << L"Built-in AI files were found. ThreadSpire will finish setup automatically.";
+    } else if (!setup_files_ready) {
+        detail << L"Waiting for the optional built-in AI files. Chat keeps using any connected AI meanwhile.";
+    } else if (!backend_verified_) {
+        detail << L"ThreadSpire is checking the built-in AI before using it.";
+    } else if (!state.bootstrap_complete) {
+        detail << L"ThreadSpire will continue built-in AI learning automatically when the computer is idle.";
     } else {
-        detail << L"No lifecycle action is running; installed packs and the selected model are unchanged.";
+        detail << L"ThreadSpire is starting the built-in AI automatically.";
     }
     set_control_text(id::models_progress_detail, detail.str());
 }
-
 void MainWindow::update_periodic_state() {
     update_chat_result();
     update_media_result();
@@ -5799,54 +5988,52 @@ void MainWindow::update_periodic_state() {
 
     if (mcp_client_->connected()) {
         std::wostringstream mcp_status;
-        mcp_status << L"MCP tools: connected — " << mcp_client_->tools().size()
+        mcp_status << L"Optional tools: connected — " << mcp_client_->tools().size()
                    << L" available";
         set_control_text(id::chat_mcp_status, mcp_status.str());
     } else {
         set_control_text(
             id::chat_mcp_status,
-            L"MCP tools: disconnected. Configure them on Local AI when needed.");
+            L"Optional tools are not connected. Set them up under AI Setup only if needed.");
     }
 
     if (chat_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Foreground inference active. Background learning is paused.");
+            L"Answering now. Automatic learning is waiting.");
     } else if (media_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Media generation active. Background learning is paused.");
+            L"Creating media now. Automatic learning is waiting.");
     } else if (piggyback_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Generating verified examples for " + widen(active_piggyback_skill_) + L".");
+            L"Improving the built-in AI automatically from approved examples. Chat remains available.");
     } else if (learning_pipeline.active_job.has_value()) {
         set_control_text(
             id::chat_learning_status,
-            L"Background retraining: " +
-                widen(std::string(learning::to_string(
-                    learning_pipeline.active_job->state))) +
-                L" • " + widen(learning_pipeline.active_job->skill));
+            L"Improving the built-in AI in the background. You can keep using Chat.");
     } else if (learning_pipeline.queued_updates > 0U) {
         std::wostringstream queued;
-        queued << L"Background retraining queue: "
-               << learning_pipeline.queued_updates << L" update"
-               << (learning_pipeline.queued_updates == 1U ? L"" : L"s");
+        queued << L"Automatic learning has "
+               << learning_pipeline.queued_updates << L" saved improvement"
+               << (learning_pipeline.queued_updates == 1U ? L"" : L"s")
+               << L" waiting.";
         set_control_text(id::chat_learning_status, queued.str());
     } else if (learning_service_->paused()) {
-        set_control_text(id::chat_learning_status, L"Background learning is paused.");
+        set_control_text(id::chat_learning_status, L"Automatic learning is paused.");
     } else if (!checked(id::learning_auto)) {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic example generation is disabled; the selected target remains unchanged.");
+            L"Automatic learning is off.");
     } else if (!teacher_available) {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic learning for " + widen(selected_training_skill()) + L" waits for an external teacher.");
+            L"Automatic learning is on and waiting for another AI to help create examples.");
     } else {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic learning is ready for " + widen(selected_training_skill()) + L" and never changes targets.");
+            L"Automatic learning is on and will run only while the app is idle.");
     }
 
     if (checked(id::learning_auto) &&
@@ -5981,7 +6168,7 @@ void MainWindow::update_chat_result() {
     }
 
     if (!result->tool_events.empty()) {
-        execution_details += L"\r\n\r\nMCP tool activity\r\n";
+        execution_details += L"\r\n\r\nOptional tool activity\r\n";
         for (const auto& event : result->tool_events) {
             execution_details += L"• " + widen(event) + L"\r\n";
         }
@@ -6135,7 +6322,7 @@ void MainWindow::update_mcp_result() {
            << L" connected • " << result->tools.size() << L" tool"
            << (result->tools.size() == 1U ? L"" : L"s");
     set_control_text(id::models_mcp_status, status.str());
-    set_control_text(id::chat_mcp_status, L"MCP tools: " + status.str());
+    set_control_text(id::chat_mcp_status, L"Optional tools: " + status.str());
     try {
         write_text(
             paths_.root / "config" / "mcp-endpoint.txt",

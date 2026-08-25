@@ -137,10 +137,10 @@ private:
     void browse_custom_training_data();
     void import_custom_training_data();
     void stop_training_pass();
-    void create_internal_model(bool bootstrap);
-    void install_backend();
-    void verify_backend();
-    void start_backend();
+    void create_internal_model(bool bootstrap, bool automatic = false);
+    void install_backend(bool automatic = false);
+    void verify_backend(bool automatic = false);
+    void start_backend(bool automatic = false);
     void stop_backend();
     void browse_python();
     void load_models_editor();
@@ -220,8 +220,8 @@ private:
     runtime::BackendServer backend_server_;
     util::AsyncOperation backend_operation_;
     LifecycleAction lifecycle_action_{LifecycleAction::none};
-    bool automatic_lifecycle_enabled_{false};
-    bool automatic_training_enabled_{false};
+    bool automatic_lifecycle_enabled_{true};
+    bool automatic_training_enabled_{true};
     bool backend_verified_{false};
     bool backend_repair_required_{false};
     std::size_t lifecycle_failures_{0};

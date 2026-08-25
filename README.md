@@ -1,8 +1,8 @@
 # ThreadSpire
 
-ThreadSpire is a local task workbench: describe one outcome, choose a capability, and run it through a compatible local model or tool harness. Text, code help, optional repository work, MCP tools, image generation, and speech generation share one **Chat** surface with a task selector. Connections, verified learning, detailed runs, and storage are supporting surfaces rather than separate competing products.
+ThreadSpire is a local task workbench: describe one outcome and run it through a compatible local AI or tool. Text, code help, optional repository work, optional tools, image generation, and speech generation share one **Chat** surface. Chat always shows which AI is handling requests and whether the built-in AI is ready, starting, or learning automatically.
 
-ThreadSpire can also run and continuously improve a **locally initialized internal language model** through an explicitly installed capability pack. The native base application does not require Python or PyTorch. Installing or selecting a pack never starts training, changes the selected model, or interrupts an active task.
+ThreadSpire can also run and continuously improve a **locally initialized built-in AI**. The native base application does not require Python or PyTorch. When the optional built-in AI files are available, ThreadSpire installs them transactionally, checks them, creates or resumes the model, completes the bounded learning target, and starts it automatically while yielding to active tasks.
 
 The internal model does not load Qwen, Llama, OpenAI, LM Studio, Ollama, or Hugging Face model weights. Its transformer weights are created from random initialization on the user's machine, trained by the private PyTorch worker, evaluated as shadow generations, and promoted only when the candidate passes the configured gates.
 
@@ -14,7 +14,7 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 - Dark native Windows interface, including a dark title bar and dark controls
 - Eleven named C++23 modules built through CMake `FILE_SET CXX_MODULES`
 - Native base executable with no Python/PyTorch runtime dependency and a 100 MiB installed-size ceiling
-- Explicit transactional capability packs for compact native inference, internal PyTorch training, Transformers/PEFT, image, and audio engines
+- Transactional optional AI packages with automatic setup and backup-only repair controls
 - Live phase, overall progress, verified-token count, elapsed time, measured ETA, heartbeat, and exact failure reporting
 - Optional custom decoder-only transformer supplied by the internal-training pack
 - Deterministic UTF-8 byte tokenizer owned by ThreadSpire
@@ -75,13 +75,13 @@ Application state is stored under:
 %LOCALAPPDATA%\ThreadSpire
 ```
 
-## Capability packs and internal-model lifecycle
+## Automatic built-in AI setup
 
-Launch starts the native workbench only. **Connections** lists optional capability packs with projected download and installed sizes. Installation is an explicit transaction: files are staged, verified, committed atomically, and rolled back on cancellation or failure. Pack installation does not verify/start an engine, initialize a model, enqueue training, or modify source selection.
+Launch immediately starts Chat, discovers compatible AI apps, and coordinates the built-in AI in the background. A complete optional setup payload supplied beside the application or in ThreadSpire's setup inbox is discovered automatically. Its files are staged, checked, committed atomically, and rolled back on cancellation or failure. The file transaction never changes the chosen AI or interrupts a task; the idle-safe coordinator performs later setup steps separately.
 
-After the internal PyTorch training pack is installed, the user may explicitly verify it and initialize, resume, or train the internal model. Training is a durable serialized queue with `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, and `recoverable-failed` states. Duplicate jobs coalesce and interrupted work resumes from an atomic checkpoint. Foreground inference owns priority.
+After the optional files are ready, ThreadSpire automatically checks them, creates or resumes the built-in AI, and starts it after all quality checks pass. Training is a durable serialized queue with `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, and `recoverable-failed` states. Duplicate jobs coalesce, interrupted work resumes from an atomic checkpoint, and anything the user is doing has priority.
 
-Micro bootstrap targets 24,000 cumulative steps by default, Standard targets 36,000, and Large targets 50,000. Each target stops boundedly at its cap with diagnostics. Curated seeds retain provenance, normalized records are deduplicated, validation is deterministic and disjoint, and an independent verifier—not the teacher model—controls admission and promotion.
+New automatic setups choose the smallest profile and its 24,000-step target. Existing Medium and Large models retain their 36,000- and 50,000-step targets. Each target stops boundedly at its cap with diagnostics. Curated seeds retain provenance, normalized records are deduplicated, validation is deterministic and disjoint, and an independent verifier—not the teacher model—controls admission and promotion.
 
 A shadow candidate is served by its own isolated host. The working host and `active.json` remain untouched until checksum, health, inference-canary, deterministic-validation, and regression checks all pass and a compare-and-swap promotion commits the candidate.
 
@@ -118,11 +118,11 @@ Each generation records:
 
 The AI source selector is authoritative:
 
-- **ThreadSpire internal model** — uses only ThreadSpire's active local generation.
-- **Connected local LLM** — sends the request to a selected LM Studio, Ollama, llama.cpp, or compatible server.
-- **Automatic** — may select any ready source according to routing policy.
+- **Built-in AI only** — uses ThreadSpire's ready local model.
+- **Another AI app only** — uses a selected compatible AI app running on the computer.
+- **Automatic** — uses the fastest ready AI that fits the task.
 
-At launch, a stale internal-only preference falls back to Automatic for that session instead of hiding a responding connected model. An already-created internal model whose verified capability pack is present starts its host automatically; this startup path never installs a pack, starts training, or changes the selected model.
+At launch, a stale built-in-only preference falls back to Automatic instead of hiding another working AI app. Chat shows both connected-AI availability and built-in-AI progress without switching tabs. Automatic setup, recovery, learning, and startup yield to active work and never silently change the user's chosen AI.
 
 A connected model can be marked as a teacher or verifier. Teacher output becomes candidate data only; it never becomes the internal inference model directly. Unverified generated examples remain quarantined. Compiler/test-confirmed results, explicit user corrections, and accepted answers can become verified internal training evidence.
 
@@ -170,12 +170,12 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 ## Interface
 
 1. **Chat** — choose Ask/write, Code help, optional Repository task, Generate image, Generate speech, or Use tools; then select a compatible source/model and run it from the same prompt/output surface. Ordinary use does not require a repository.
-2. **Connections** — local-server discovery, capability declarations, MCP, internal-model lifecycle/progress, and advanced recovery controls.
-3. **Learning** — persistent target selection, automatic/manual verified evidence, trusted JSONL import, shadow updates, and live training status.
+2. **AI Setup** — a plain automatic readiness view; manual addresses, optional tools, file replacement, checks, rebuilding, and saved-list editing stay hidden under **Backup and repair options**.
+3. **Learning** — automatic by default, with target choice, trusted-file import, and recovery controls available as backup.
 4. **Skills** — internal skill generations, optional LoRA candidates, promotion, and rollback.
 5. **Storage & Logs** — the six live storage cards, detailed disk accounting, and backend/compiler/training/trajectory logs.
 
-Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Chat task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
+Backup-only AI connection entries can declare what an AI can do, such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Chat task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
 
 ## Storage limits
 

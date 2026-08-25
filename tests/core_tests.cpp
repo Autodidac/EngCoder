@@ -849,15 +849,16 @@ void test_windows_ui_source_contract() {
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
     require(ui.find("L\"Chat\", Page::chat") != std::string::npos &&
-                ui.find("L\"Connections\", Page::models") != std::string::npos &&
+                ui.find("L\"AI Setup\", Page::models") != std::string::npos &&
                 ui.find("L\"Run Details\", Page::long_horizon") == std::string::npos &&
                 ui.find("L\"Storage & Logs\", Page::logs") != std::string::npos &&
                 ui.find("L\"Coding Agent\", Page::coding") == std::string::npos,
             "primary navigation must keep chat and creation clear while repository automation remains an execution profile instead of a duplicate console");
     require(ui.find("ThreadSpire — local evolving AI") != std::string::npos,
             "the user-facing application source must use the ThreadSpire product name");
-    require(ui.find("L\"Connected local LLM\"") != std::string::npos &&
-                ui.find("L\"ThreadSpire internal model\"") != std::string::npos &&
+    require(ui.find("L\"Automatic — fastest ready AI\"") != std::string::npos &&
+                ui.find("L\"Another AI app only\"") != std::string::npos &&
+                ui.find("L\"Built-in AI only\"") != std::string::npos &&
                 ui.find("update_inference_source") != std::string::npos &&
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
@@ -917,7 +918,7 @@ void test_windows_ui_source_contract() {
     require(ui.find("has_available_teacher") != std::string::npos &&
                 ui.find("if (interactive_model_verified_ &&") == std::string::npos &&
                 ui.find("piggyback_operation_.cancel()") != std::string::npos &&
-                ui.find("Foreground inference active. Background learning is paused.") != std::string::npos,
+                ui.find("Answering now. Automatic learning is waiting.") != std::string::npos,
             "automatic learning must start from an available teacher and yield to foreground requests");
     require(ui.find("!models::is_internal_model(model)") != std::string::npos &&
                 ui.find("settings.policy.lora_microbatch = internal_base ? 8U : 4U") != std::string::npos &&
@@ -964,31 +965,55 @@ void test_windows_ui_source_contract() {
                 default_models.find("Qwen/") == std::string::npos &&
                 default_models.find("model=threadspire://coder") != std::string::npos,
             "the private runtime must own a random-initialized model, stream it directly, and promote or roll back generations atomically without external base weights");
-    require(ui.find("Create random model") != std::string::npos &&
-                ui.find("Create + bootstrap train") != std::string::npos &&
-                ui.find("external base weights: none") != std::string::npos,
-            "the Local AI page must expose explicit internal-model creation, bootstrap training, and provenance");
-    require(ui.find("Installing a pack never starts training, changes the selected model, or interrupts a task") != std::string::npos &&
-                ui.find("runtime::CapabilityPackManager") != std::string::npos &&
+    require(ui.find("Rebuild from scratch") != std::string::npos &&
+                ui.find("Continue setup") != std::string::npos &&
+                ui.find("uses only local model files") != std::string::npos,
+            "plain-language backup controls must retain model repair and local provenance");
+
+    const auto install_begin = ui.find("void MainWindow::install_backend(const bool automatic)");
+    const auto install_end = ui.find("void MainWindow::verify_backend", install_begin);
+    require(install_begin != std::string::npos && install_end > install_begin,
+            "the optional built-in AI file transaction must remain inspectable");
+    const auto install_body = ui.substr(install_begin, install_end - install_begin);
+    require(ui.find("runtime::CapabilityPackManager") != std::string::npos &&
                 ui.find("install_transactional") != std::string::npos &&
-                ui.find("install_backend(const bool automatic)") == std::string::npos &&
-                ui.find("install_backend(true)") == std::string::npos &&
-                ui.find("automatic_lifecycle_enabled_ = false") != std::string::npos &&
-                ui.find("Legacy automatic-lifecycle preferences are intentionally ignored") != std::string::npos,
-            "capability-pack selection and installation must be explicit, transactional, and isolated from model or task state");
-    require(ui.find("Show capability-pack and model controls") != std::string::npos &&
-                ui.find("advanced_model_controls") != std::string::npos &&
-                ui.find("show_advanced_model_controls ? SW_SHOW : SW_HIDE") != std::string::npos,
-            "explicit capability-pack and model controls must remain available without enabling automatic lifecycle actions");
-    require(ui.find("automatic_lifecycle_enabled_ && !internal_model_ready(paths_)") == std::string::npos &&
-                ui.find("case id::models_automation_toggle") == std::string::npos &&
+                ui.find("automatic_training_pack_source") != std::string::npos &&
+                install_body.find("create_internal_model") == std::string::npos &&
+                install_body.find("start_backend") == std::string::npos &&
+                install_body.find("inference_source_") == std::string::npos,
+            "automatic optional-file installation must stay transactional and isolated from training, startup, and model selection");
+    require(ui.find("Backup and repair options") != std::string::npos &&
+                ui.find("backup_model_controls") != std::string::npos &&
+                ui.find("show_backup_controls ? SW_SHOW : SW_HIDE") != std::string::npos &&
+                ui.find("id::models_manual_endpoint") != std::string::npos &&
+                ui.find("L\"BUTTON\", L\"Install pack\"") == std::string::npos &&
+                ui.find("L\"BUTTON\", L\"Verify\"") == std::string::npos &&
+                ui.find("L\"BUTTON\", L\"Create + bootstrap train\"") == std::string::npos,
+            "manual connection and repair fields must stay hidden as backup-only controls with plain labels");
+    require(ui.find("automatic_lifecycle_enabled_ = lifecycle_setting != \"off\"") != std::string::npos &&
+                ui.find("automatic_training_enabled_ = training_setting != \"off\"") != std::string::npos &&
+                ui.find("case id::models_automation_toggle") != std::string::npos &&
+                ui.find("install_backend(true)") != std::string::npos &&
+                ui.find("verify_backend(true)") != std::string::npos &&
+                ui.find("create_internal_model(true, true)") != std::string::npos &&
+                ui.find("start_backend(true)") != std::string::npos &&
                 ui.find("page == page_ ? WS_VISIBLE : 0U") != std::string::npos,
-            "legacy automatic setup preferences must not install packs, start training, or force navigation");
+            "setup, checking, learning, recovery, and startup must default to one idle-safe automatic coordinator without forcing tab navigation");
+    require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
+                ui.find("Using: fastest ready AI") != std::string::npos &&
+                ui.find("Built-in AI: ") != std::string::npos &&
+                ui.find("NOT READY — learning automatically") != std::string::npos &&
+                ui.find("built_in_status = L\"READY\"") != std::string::npos &&
+                ui.find("Improving the built-in AI automatically from approved examples") != std::string::npos &&
+                ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
+            "Chat must show built-in AI readiness and automatic progress while new setups use the minimum 24k profile");
     require(ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
-                ui.find("Starting an already-verified host is safe at boot") != std::string::npos &&
-                ui.find("return L\"not installed\"") != std::string::npos,
-            "startup must fall back to connected inference, report missing internal weights honestly, and start only an already-installed ready host");
+                ui.find("never prevents Chat from using another connected AI") != std::string::npos &&
+                ui.find("waiting for optional setup files") != std::string::npos &&
+                ui.find("automatic_learning_limit_reached") != std::string::npos &&
+                ui.find("no unapproved model was activated") != std::string::npos,
+            "startup must keep connected inference usable while automatic built-in AI setup continues honestly");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -1104,7 +1129,7 @@ void test_worker_and_resource_contract() {
                 internal_model.find("_next_generation(state_root, parent)") != std::string::npos &&
                 worker.find("A rejected shadow candidate is a recoverable training outcome") != std::string::npos &&
                 lifecycle_ui.find("an explicit repair retry must continue from the saved candidate") != std::string::npos &&
-                lifecycle_ui.find("saved repair candidate") != std::string::npos,
+                lifecycle_ui.find("create_internal_model(true, true)") != std::string::npos,
             "automatic and manual bootstrap repair must continue the strongest rejected lineage and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
