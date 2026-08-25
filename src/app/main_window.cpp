@@ -590,6 +590,48 @@ void draw_dark_text(
     const auto focused = (item.itemState & ODS_FOCUS) != 0U;
     const auto foreground = disabled ? disabled_text_color : text_color;
 
+    if (item.CtlType == ODT_STATIC &&
+        (item.CtlID == id::chat_training_data_size ||
+         item.CtlID == id::chat_active_model_size ||
+         item.CtlID == id::chat_installed_packs_size ||
+         item.CtlID == id::chat_outputs_cache_size ||
+         item.CtlID == id::chat_total_usage_size ||
+         item.CtlID == id::chat_free_disk_size)) {
+        auto rectangle = item.rcItem;
+        fill_solid_rect(item.hDC, rectangle, edit_color);
+        frame_solid_rect(item.hDC, rectangle, border_color);
+        ::InflateRect(&rectangle, -10, -5);
+
+        const auto text = window_text(item.hwndItem);
+        const auto separator = text.find_first_of(L"\r\n");
+        const auto title = text.substr(0, separator);
+        auto value = separator == std::wstring::npos
+            ? std::wstring{}
+            : text.substr(separator + 1U);
+        while (!value.empty() && (value.front() == L'\r' || value.front() == L'\n')) {
+            value.erase(value.begin());
+        }
+
+        const auto middle = rectangle.top + (rectangle.bottom - rectangle.top) / 2;
+        auto title_rectangle = rectangle;
+        title_rectangle.bottom = middle;
+        auto value_rectangle = rectangle;
+        value_rectangle.top = middle;
+        draw_dark_text(
+            item.hDC,
+            title_rectangle,
+            title,
+            muted_text_color,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        draw_dark_text(
+            item.hDC,
+            value_rectangle,
+            value,
+            foreground,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        return true;
+    }
+
     if (item.CtlType == ODT_BUTTON) {
         auto rectangle = item.rcItem;
         fill_solid_rect(
@@ -674,6 +716,10 @@ void draw_dark_text(
 
 [[nodiscard]] bool internal_model_ready(const AppPaths& paths) {
     return runtime::inspect_internal_model_state(paths).bootstrap_complete;
+}
+
+[[nodiscard]] bool internal_host_startable(const AppPaths& paths) {
+    return internal_model_ready(paths) && runtime::backend_files_present(paths);
 }
 
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
@@ -854,13 +900,14 @@ void move_control(
     const int width,
     const int height) {
     if (control != nullptr) {
-        static_cast<void>(::MoveWindow(
+        static_cast<void>(::SetWindowPos(
             control,
+            nullptr,
             x,
             y,
             std::max(1, width),
             std::max(1, height),
-            TRUE));
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS));
     }
 }
 
@@ -1081,6 +1128,12 @@ MainWindow::MainWindow(const HINSTANCE instance)
     } else {
         inference_source_ = InferenceSource::automatic;
     }
+    if (inference_source_ == InferenceSource::custom_model &&
+        !internal_host_startable(paths_)) {
+        // A stale internal-only preference must never hide a working connected model.
+        // Keep installation and training explicit, but run this session in Automatic.
+        inference_source_ = InferenceSource::automatic;
+    }
 
     const auto saved_training_target = trim_line_endings(read_text(
         paths_.root / "config" / "training-target.txt"));
@@ -1299,6 +1352,19 @@ LRESULT MainWindow::handle_message(
     }
     case WM_SIZE:
         layout_controls();
+        static_cast<void>(::RedrawWindow(
+            window_,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN));
+        return 0;
+    case WM_EXITSIZEMOVE:
+        static_cast<void>(::RedrawWindow(
+            window_,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+                RDW_ALLCHILDREN | RDW_UPDATENOW));
         return 0;
     case WM_DPICHANGED: {
         dpi_ = HIWORD(wparam);
@@ -1430,7 +1496,9 @@ HWND MainWindow::create_control(
     const auto is_combo =
         class_name != nullptr && ::lstrcmpiW(class_name, L"COMBOBOX") == 0;
     if (is_static && text != nullptr && text[0] != L'\0' &&
-        (effective_style & SS_EDITCONTROL) == 0U) {
+        (effective_style & SS_TYPEMASK) == SS_LEFT &&
+        (effective_style & SS_EDITCONTROL) == 0U &&
+        std::wstring_view{text}.find_first_of(L"\r\n") == std::wstring_view::npos) {
         effective_style |= SS_LEFTNOWORDWRAP | SS_CENTERIMAGE | SS_ENDELLIPSIS;
     }
     if (is_button) {
@@ -1487,7 +1555,7 @@ void MainWindow::create_controls() {
         WC_TABCONTROLW,
         L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS |
-            TCS_OWNERDRAWFIXED,
+            TCS_FIXEDWIDTH | TCS_OWNERDRAWFIXED,
         0,
         id::tabs,
         window_);
@@ -1497,11 +1565,10 @@ void MainWindow::create_controls() {
         0,
         MAKELPARAM(scaled(150, dpi_), scaled(30, dpi_))));
     const std::array tabs_and_pages{
-        std::pair{L"Task", Page::chat},
+        std::pair{L"Chat", Page::chat},
         std::pair{L"Connections", Page::models},
         std::pair{L"Learning", Page::learning},
         std::pair{L"Skills", Page::skills},
-        std::pair{L"Run Details", Page::long_horizon},
         std::pair{L"Storage & Logs", Page::logs},
     };
     auto selected_tab = 0;
@@ -1567,6 +1634,12 @@ void MainWindow::create_controls() {
     load_models_editor();
     update_skill_report();
     update_learning_report();
+    if (inference_source_ != InferenceSource::local_bridge &&
+        internal_host_startable(paths_)) {
+        // Starting an already-verified host is safe at boot. This never installs a
+        // pack, starts training, changes the selected model, or interrupts a task.
+        start_backend();
+    }
     discover_local_ai();
     if (!saved_mcp.empty()) {
         connect_mcp();
@@ -1624,30 +1697,6 @@ void MainWindow::create_chat_page() {
     create_control(
         L"STATIC", L"AI source: connected local LLM • no responding model discovered yet",
         WS_CHILD | WS_VISIBLE, 0, id::chat_backend, parent);
-    create_control(
-        L"STATIC", L"TRAINING DATA\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_training_data_size, parent);
-    create_control(
-        L"STATIC", L"ACTIVE MODEL\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_active_model_size, parent);
-    create_control(
-        L"STATIC", L"INSTALLED PACKS\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_installed_packs_size, parent);
-    create_control(
-        L"STATIC", L"OUTPUTS / CACHE\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_outputs_cache_size, parent);
-    create_control(
-        L"STATIC", L"TOTAL USAGE\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_total_usage_size, parent);
-    create_control(
-        L"STATIC", L"FREE DISK\r\nMeasuring…",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_CENTER,
-        0, id::chat_free_disk_size, parent);
 
     create_control(
         L"STATIC", L"Repository",
@@ -2158,6 +2207,31 @@ void MainWindow::create_logs_page() {
         L"STATIC", L"Live application-data footprint (refreshes every 5 seconds)",
         WS_CHILD | WS_VISIBLE, 0, id::logs_storage_header, parent);
     create_control(
+        L"STATIC", L"TRAINING DATA\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_training_data_size, parent);
+    create_control(
+        L"STATIC", L"ACTIVE MODEL\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_active_model_size, parent);
+    create_control(
+        L"STATIC", L"INSTALLED PACKS\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_installed_packs_size, parent);
+    create_control(
+        L"STATIC", L"OUTPUTS / CACHE\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_outputs_cache_size, parent);
+    create_control(
+        L"STATIC", L"TOTAL USAGE\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_total_usage_size, parent);
+    create_control(
+        L"STATIC", L"FREE DISK\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_free_disk_size, parent);
+
+    create_control(
         L"BUTTON", L"Open active log", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::logs_open, parent);
     create_control(
@@ -2194,6 +2268,19 @@ void MainWindow::layout_controls() {
         margin,
         client_width - margin * 2,
         client_height - status_height - margin * 2);
+    const auto tab_count = TabCtrl_GetItemCount(tabs);
+    if (tab_count > 0) {
+        RECT tab_client{};
+        static_cast<void>(::GetClientRect(tabs, &tab_client));
+        const auto tab_width = std::max(
+            1,
+            static_cast<int>(tab_client.right - tab_client.left) / tab_count);
+        static_cast<void>(::SendMessageW(
+            tabs,
+            TCM_SETITEMSIZE,
+            0,
+            MAKELPARAM(tab_width, scaled(30, dpi_))));
+    }
 
     RECT page_rect{};
     ::GetClientRect(tabs, &page_rect);
@@ -2222,7 +2309,7 @@ void MainWindow::layout_controls() {
             page_top,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER));
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOCOPYBITS));
     }
 
     const auto gap = scaled(8, dpi_);
@@ -2272,26 +2359,7 @@ void MainWindow::layout_controls() {
         workspace_settings_width,
         row);
 
-    const auto workspace_storage_y = workspace_status_y + row + gap;
-    const auto workspace_storage_height = scaled(52, dpi_);
-    const auto workspace_storage_card_width = (width - gap * 2) / 3;
-    const auto workspace_storage_second_y =
-        workspace_storage_y + workspace_storage_height + gap;
-    const auto place_storage_card = [&](const int identifier, const int column, const int y) {
-        const auto x = column * (workspace_storage_card_width + gap);
-        const auto card_width = column == 2
-            ? width - x
-            : workspace_storage_card_width;
-        move_control(control(identifier), x, y, card_width, workspace_storage_height);
-    };
-    place_storage_card(id::chat_active_model_size, 0, workspace_storage_y);
-    place_storage_card(id::chat_training_data_size, 1, workspace_storage_y);
-    place_storage_card(id::chat_installed_packs_size, 2, workspace_storage_y);
-    place_storage_card(id::chat_outputs_cache_size, 0, workspace_storage_second_y);
-    place_storage_card(id::chat_total_usage_size, 1, workspace_storage_second_y);
-    place_storage_card(id::chat_free_disk_size, 2, workspace_storage_second_y);
-    const auto workspace_repository_y =
-        workspace_storage_second_y + workspace_storage_height + gap;
+    const auto workspace_repository_y = workspace_status_y + row + gap;
     const auto show_workspace_repository = workspace_coding_mode();
     for (const auto identifier : {
              id::chat_repository_label,
@@ -3001,8 +3069,25 @@ void MainWindow::layout_controls() {
     move_control(control(id::logs_open_root), button + gap, 0, scaled(180, dpi_), row);
     move_control(control(id::logs_refresh_storage), button + gap + scaled(188, dpi_), 0, scaled(130, dpi_), row);
     move_control(control(id::logs_storage_header), 0, row + gap, width, row);
-    const auto storage_y = row * 2 + gap;
-    const auto storage_height = std::max(scaled(180, dpi_), height * 44 / 100);
+
+    const auto storage_card_height = scaled(56, dpi_);
+    const auto storage_card_width = (width - gap * 2) / 3;
+    const auto storage_cards_first_y = row * 2 + gap * 2;
+    const auto storage_cards_second_y = storage_cards_first_y + storage_card_height + gap;
+    const auto place_storage_card = [&](const int identifier, const int column, const int y) {
+        const auto x = column * (storage_card_width + gap);
+        const auto card_width = column == 2 ? width - x : storage_card_width;
+        move_control(control(identifier), x, y, card_width, storage_card_height);
+    };
+    place_storage_card(id::chat_active_model_size, 0, storage_cards_first_y);
+    place_storage_card(id::chat_training_data_size, 1, storage_cards_first_y);
+    place_storage_card(id::chat_installed_packs_size, 2, storage_cards_first_y);
+    place_storage_card(id::chat_outputs_cache_size, 0, storage_cards_second_y);
+    place_storage_card(id::chat_total_usage_size, 1, storage_cards_second_y);
+    place_storage_card(id::chat_free_disk_size, 2, storage_cards_second_y);
+
+    const auto storage_y = storage_cards_second_y + storage_card_height + gap;
+    const auto storage_height = std::max(scaled(150, dpi_), (height - storage_y) * 55 / 100);
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
     const auto log_y = storage_y + storage_height + gap;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
@@ -3659,9 +3744,31 @@ std::wstring MainWindow::runtime_summary(
     const auto bootstrap_training =
         lifecycle_action_ == LifecycleAction::bootstrap_model &&
         backend_operation_.running();
-    const auto host_state = custom_host_running
-        ? L"running"
-        : (bootstrap_training ? L"paused for bootstrap training" : L"stopped");
+    const auto host_starting =
+        lifecycle_action_ == LifecycleAction::start_host &&
+        backend_operation_.running();
+    const auto internal_state = runtime::inspect_internal_model_state(paths_);
+    const auto internal_status = [&]() -> const wchar_t* {
+        if (custom_host_running) {
+            return L"running";
+        }
+        if (bootstrap_training) {
+            return L"training; connected models stay available";
+        }
+        if (host_starting) {
+            return L"starting";
+        }
+        if (!internal_state.exists) {
+            return L"not installed";
+        }
+        if (!internal_state.manifest_valid || !internal_state.bootstrap_complete) {
+            return L"not ready";
+        }
+        if (!runtime::backend_files_present(paths_)) {
+            return L"ready, but its capability pack is not installed";
+        }
+        return L"stopped";
+    }();
 
     std::wostringstream stream;
     switch (inference_source_) {
@@ -3670,15 +3777,15 @@ std::wstring MainWindow::runtime_summary(
                << L" model" << (bridged_ready == 1U ? L"" : L"s") << L" available";
         break;
     case InferenceSource::custom_model:
-        stream << L"AI source: ThreadSpire internal model • host "
-               << host_state
-               << L" • " << custom_configured << L" model"
+        stream << L"AI source: ThreadSpire internal model • internal model "
+               << internal_status
+               << L" • " << custom_configured << L" profile"
                << (custom_configured == 1U ? L"" : L"s") << L" configured";
         break;
     case InferenceSource::automatic:
         stream << L"AI source: automatic • " << bridged_ready << L" connected model"
-               << (bridged_ready == 1U ? L"" : L"s") << L" available • internal-model host "
-               << host_state;
+               << (bridged_ready == 1U ? L"" : L"s") << L" available • internal model "
+               << internal_status;
         break;
     }
 
@@ -5291,7 +5398,7 @@ void MainWindow::start_long_horizon() {
     if (long_horizon_from_coding_) {
         set_control_text(
             id::chat_response,
-            widen(workspace_transcript_ + "\r\nProgress and advanced controls are available in Run Details.\r\n"));
+            widen(workspace_transcript_ + "\r\nRepository progress is shown in Execution details.\r\n"));
     }
     set_status(L"Repository task started; background weight learning is yielding");
     learning_service_->set_interactive_busy(true);

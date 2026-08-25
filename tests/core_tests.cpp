@@ -848,12 +848,12 @@ void test_windows_ui_source_contract() {
                 ui.find("Start the model server on the Models page first") == std::string::npos &&
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
-    require(ui.find("L\"Task\", Page::chat") != std::string::npos &&
+    require(ui.find("L\"Chat\", Page::chat") != std::string::npos &&
                 ui.find("L\"Connections\", Page::models") != std::string::npos &&
-                ui.find("L\"Run Details\", Page::long_horizon") != std::string::npos &&
+                ui.find("L\"Run Details\", Page::long_horizon") == std::string::npos &&
                 ui.find("L\"Storage & Logs\", Page::logs") != std::string::npos &&
                 ui.find("L\"Coding Agent\", Page::coding") == std::string::npos,
-            "the primary navigation must expose one Task surface with supporting connections, run details, and storage pages");
+            "primary navigation must keep chat and creation clear while repository automation remains an execution profile instead of a duplicate console");
     require(ui.find("ThreadSpire — local evolving AI") != std::string::npos,
             "the user-facing application source must use the ThreadSpire product name");
     require(ui.find("L\"Connected local LLM\"") != std::string::npos &&
@@ -984,6 +984,11 @@ void test_windows_ui_source_contract() {
                 ui.find("case id::models_automation_toggle") == std::string::npos &&
                 ui.find("page == page_ ? WS_VISIBLE : 0U") != std::string::npos,
             "legacy automatic setup preferences must not install packs, start training, or force navigation");
+    require(ui.find("internal_host_startable") != std::string::npos &&
+                ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
+                ui.find("Starting an already-verified host is safe at boot") != std::string::npos &&
+                ui.find("return L\"not installed\"") != std::string::npos,
+            "startup must fall back to connected inference, report missing internal weights honestly, and start only an already-installed ready host");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -995,11 +1000,18 @@ void test_windows_ui_source_contract() {
                 ui.find("choose_training_dataset") != std::string::npos,
             "the training interface must default to English, persist target selection, and expose understandable custom JSONL import");
     require(ui.find("TCS_OWNERDRAWFIXED") != std::string::npos &&
+                ui.find("TCS_FIXEDWIDTH") != std::string::npos &&
                 ui.find("CBS_OWNERDRAWFIXED") != std::string::npos &&
                 ui.find("BS_OWNERDRAW") != std::string::npos &&
+                ui.find("SS_OWNERDRAW") != std::string::npos &&
+                ui.find("item.CtlType == ODT_STATIC") != std::string::npos &&
                 ui.find("PBM_SETBKCOLOR") != std::string::npos &&
                 ui.find("draw_dark_control_item") != std::string::npos,
-            "tabs, selectors, push buttons, and progress surfaces must use one coherent dark palette rather than white native islands");
+            "tabs, selectors, push buttons, storage cards, and progress surfaces must use one coherent dark palette rather than white native islands");
+    require(ui.find("SWP_NOCOPYBITS") != std::string::npos &&
+                ui.find("case WM_EXITSIZEMOVE") != std::string::npos &&
+                ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos,
+            "live resizing must repaint the complete dark child tree without stretching stale control pixels");
 
     const auto launcher = read_text_file(source / "BUILD_AND_RUN.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&

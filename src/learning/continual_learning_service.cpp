@@ -720,16 +720,57 @@ void ContinualLearningService::worker_loop(const std::stop_token stop_token) {
             request = std::move(queue_.front());
             queue_.pop_front();
         }
-        if (!request.job_id.empty()) {
-            const auto prepared = persistent_queue_.transition(
-                request.job_id, TrainingState::queued, TrainingState::preparing) ||
-                persistent_queue_.transition(
-                    request.job_id, TrainingState::recoverable_failed, TrainingState::preparing);
-            if (!prepared) {
+        try {
+            if (!request.job_id.empty()) {
+                const auto prepared = persistent_queue_.transition(
+                    request.job_id, TrainingState::queued, TrainingState::preparing) ||
+                    persistent_queue_.transition(
+                        request.job_id, TrainingState::recoverable_failed, TrainingState::preparing);
+                if (!prepared) {
+                    continue;
+                }
+            }
+            process_request(request, stop_token);
+        } catch (const std::exception& error) {
+            if (request.job_id.empty()) {
                 continue;
             }
+            const auto message = std::string{
+                "serialized training worker recovered from an unexpected failure: "} + error.what();
+            try {
+                static_cast<void>(persistent_queue_.transition(
+                    request.job_id, TrainingState::queued, TrainingState::preparing));
+                for (const auto expected : {
+                         TrainingState::preparing,
+                         TrainingState::training,
+                         TrainingState::evaluating,
+                         TrainingState::promoting}) {
+                    if (persistent_queue_.transition(
+                            request.job_id,
+                            expected,
+                            TrainingState::recoverable_failed,
+                            {},
+                            message)) {
+                        break;
+                    }
+                }
+            } catch (...) {
+                // The worker remains alive and the last promoted model keeps serving.
+                // A later restart can recover any still-inflight durable record.
+            }
+        } catch (...) {
+            if (!request.job_id.empty()) {
+                try {
+                    static_cast<void>(persistent_queue_.transition(
+                        request.job_id,
+                        TrainingState::training,
+                        TrainingState::recoverable_failed,
+                        {},
+                        "serialized training worker recovered from a non-standard failure"));
+                } catch (...) {
+                }
+            }
         }
-        process_request(request, stop_token);
     }
 }
 

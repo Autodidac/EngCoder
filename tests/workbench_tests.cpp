@@ -354,6 +354,55 @@ void test_persistent_serialized_training_resume_and_coalescing() {
     std::filesystem::remove_all(root);
 }
 
+void test_persistent_queue_survives_concurrent_readers() {
+    using namespace threadspire::ai::learning;
+    const auto root = temporary_root();
+    const auto state_file = root / "jobs" / "training-state.json";
+    PersistentTrainingQueue queue(state_file);
+    queue.load();
+    std::atomic_bool partial_read{false};
+    {
+        std::jthread reader([&](const std::stop_token stop_token) {
+            while (!stop_token.stop_requested()) {
+                std::ifstream stream(state_file, std::ios::binary);
+                const std::string snapshot{
+                    std::istreambuf_iterator<char>(stream),
+                    std::istreambuf_iterator<char>()};
+                const auto last = snapshot.find_last_not_of("\r\n\t ");
+                if (!snapshot.empty() &&
+                    (snapshot.front() != '[' || last == std::string::npos || snapshot[last] != ']')) {
+                    partial_read.store(true, std::memory_order_release);
+                    return;
+                }
+            }
+        });
+        for (auto index = 0U; index < 32U; ++index) {
+            const auto submitted = queue.submit(
+                "reader-stress:" + std::to_string(index),
+                "english-core");
+            const auto claimed = queue.claim_next();
+            require(claimed.has_value() && claimed->id == submitted.job.id,
+                    "concurrent status readers must not prevent serialized job claiming");
+            require(queue.transition(
+                        claimed->id,
+                        TrainingState::preparing,
+                        TrainingState::rejected,
+                        {},
+                        "intentional test terminal"),
+                    "concurrent status readers must not prevent atomic terminal publication");
+        }
+        reader.request_stop();
+        reader.join();
+    }
+    require(!partial_read.load(std::memory_order_acquire),
+            "atomic queue publication must never expose a partial JSON document to readers");
+    PersistentTrainingQueue reloaded(state_file);
+    reloaded.load();
+    require(reloaded.snapshot().size() == 32U,
+            "all state transitions must remain durable while status readers are active");
+    std::filesystem::remove_all(root);
+}
+
 void test_service_recovers_serialized_job_before_candidate_creation() {
     using namespace threadspire::ai::learning;
     const auto root = temporary_root();
@@ -590,6 +639,7 @@ int main() {
         test_unified_cancellation();
         test_pack_transaction_rollback_and_selection_isolation();
         test_persistent_serialized_training_resume_and_coalescing();
+        test_persistent_queue_survives_concurrent_readers();
         test_service_recovers_serialized_job_before_candidate_creation();
         test_atomic_promotion_keeps_working_host_until_candidate_passes();
         test_storage_cards_growth_projections_quotas_and_cleanup();

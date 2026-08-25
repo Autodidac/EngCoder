@@ -1,6 +1,6 @@
 # ThreadSpire
 
-ThreadSpire is a local task workbench: describe one outcome, choose a capability, and run it through a compatible local model or tool harness. Text, code help, repository work, MCP tools, image generation, and speech generation share one **Task** interface. Connections, verified learning, detailed runs, and storage are supporting surfaces rather than separate competing products.
+ThreadSpire is a local task workbench: describe one outcome, choose a capability, and run it through a compatible local model or tool harness. Text, code help, optional repository work, MCP tools, image generation, and speech generation share one **Chat** surface with a task selector. Connections, verified learning, detailed runs, and storage are supporting surfaces rather than separate competing products.
 
 ThreadSpire can also run and continuously improve a **locally initialized internal language model** through an explicitly installed capability pack. The native base application does not require Python or PyTorch. Installing or selecting a pack never starts training, changes the selected model, or interrupts an active task.
 
@@ -36,7 +36,7 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 - Trusted custom JSONL import with an embedded template, automatic shadow updates, and manual queue/retry
 - Fully dark owner-drawn Win32 tabs, buttons, selectors, edits, progress, and status surfaces
 - Optional external-model LoRA and FFN-delta tools retained under the advanced skill workflow
-- One capability-aware Task surface for chat, code, repositories, MCP tools, OpenAI-compatible image generation, and speech generation
+- One capability-aware Chat surface for text, code, optional repositories, MCP tools, OpenAI-compatible image generation, and speech generation
 - Compiler/test-backed repository trajectories with bounded history and rollback
 - Six live storage cards, growth deltas, largest-file/directory reporting, pack-size projections, quotas, and safe cleanup
 
@@ -122,6 +122,8 @@ The AI source selector is authoritative:
 - **Connected local LLM** — sends the request to a selected LM Studio, Ollama, llama.cpp, or compatible server.
 - **Automatic** — may select any ready source according to routing policy.
 
+At launch, a stale internal-only preference falls back to Automatic for that session instead of hiding a responding connected model. An already-created internal model whose verified capability pack is present starts its host automatically; this startup path never installs a pack, starts training, or changes the selected model.
+
 A connected model can be marked as a teacher or verifier. Teacher output becomes candidate data only; it never becomes the internal inference model directly. Unverified generated examples remain quarantined. Compiler/test-confirmed results, explicit user corrections, and accepted answers can become verified internal training evidence.
 
 ## Continuous learning
@@ -167,18 +169,17 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 
 ## Interface
 
-1. **Task** — choose Ask/write, Code help, Repository task, Generate image, Generate speech, or Use tools; then select a compatible source/model and run it from the same prompt/output surface.
+1. **Chat** — choose Ask/write, Code help, optional Repository task, Generate image, Generate speech, or Use tools; then select a compatible source/model and run it from the same prompt/output surface. Ordinary use does not require a repository.
 2. **Connections** — local-server discovery, capability declarations, MCP, internal-model lifecycle/progress, and advanced recovery controls.
 3. **Learning** — persistent target selection, automatic/manual verified evidence, trusted JSONL import, shadow updates, and live training status.
 4. **Skills** — internal skill generations, optional LoRA candidates, promotion, and rollback.
-5. **Run Details** — advanced build/test commands and progress for repository tasks started from Task.
-6. **Storage & Logs** — live disk accounting plus backend, compiler, training, and trajectory logs.
+5. **Storage & Logs** — the six live storage cards, detailed disk accounting, and backend/compiler/training/trajectory logs.
 
-Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Task.
+Manual endpoints declare comma-separated capabilities such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Chat task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
 
 ## Storage limits
 
-The main **Task** page keeps six live cards in view: **Current Model**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), and **Free Disk**. **Storage & Logs** adds largest files/directories, projected pack download/install sizes, and category quotas.
+**Storage & Logs** keeps six dark live cards in view: **Current Model**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), and **Free Disk**. It also reports largest files/directories, projected pack download/install sizes, and category quotas without cluttering Chat.
 
 Cleanup is restricted to no-follow ThreadSpire-owned logs, unpromoted candidates, checkpoints, outputs, and caches. Active model lineage and paths outside the application root are protected. The base installed tree excludes models and optional packs and must remain at or below 100 MiB; large PyTorch dependencies belong in an explicit pack and are reported separately.
 

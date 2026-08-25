@@ -34,13 +34,27 @@ void atomic_replace(
     const std::filesystem::path& temporary,
     const std::filesystem::path& destination) {
 #ifdef _WIN32
-    if (::MoveFileExW(
-            temporary.c_str(), destination.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-        throw std::system_error(
-            static_cast<int>(::GetLastError()), std::system_category(),
-            "unable to atomically replace state file");
+    constexpr auto maximum_attempts = 100U;
+    DWORD last_error = ERROR_SUCCESS;
+    for (auto attempt = 0U; attempt < maximum_attempts; ++attempt) {
+        if (::MoveFileExW(
+                temporary.c_str(), destination.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            return;
+        }
+        last_error = ::GetLastError();
+        const auto transient_reader = last_error == ERROR_SHARING_VIOLATION ||
+            last_error == ERROR_LOCK_VIOLATION || last_error == ERROR_ACCESS_DENIED;
+        if (!transient_reader || attempt + 1U == maximum_attempts) {
+            break;
+        }
+        // CRT readers can briefly omit FILE_SHARE_DELETE. Wait boundedly instead
+        // of terminating the serialized training worker during a status poll.
+        ::Sleep(5U);
     }
+    throw std::system_error(
+        static_cast<int>(last_error), std::system_category(),
+        "unable to atomically replace state file");
 #else
     std::filesystem::rename(temporary, destination);
 #endif
@@ -175,7 +189,12 @@ SubmitTrainingResult PersistentTrainingQueue::submit(
         .updated_unix_ms = timestamp,
     };
     jobs_.push_back(job);
-    persist_locked();
+    try {
+        persist_locked();
+    } catch (...) {
+        jobs_.pop_back();
+        throw;
+    }
     return {.job = std::move(job), .coalesced = false};
 }
 
@@ -192,13 +211,19 @@ std::optional<SerializedTrainingJob> PersistentTrainingQueue::claim_next() {
     if (next == jobs_.end()) {
         return std::nullopt;
     }
+    const auto previous = *next;
     next->state = TrainingState::preparing;
     ++next->attempts;
     next->updated_unix_ms = now_ms();
     next->message = next->checkpoint_path.empty()
         ? "preparing shadow candidate"
         : "preparing exact checkpoint resume";
-    persist_locked();
+    try {
+        persist_locked();
+    } catch (...) {
+        *next = previous;
+        throw;
+    }
     return *next;
 }
 
@@ -214,18 +239,25 @@ bool PersistentTrainingQueue::transition(
         !valid_training_transition(expected, next)) {
         return false;
     }
+    const auto previous = *job;
     job->state = next;
     if (!checkpoint_path.empty()) {
         job->checkpoint_path = std::move(checkpoint_path);
     }
     job->message = std::move(message);
     job->updated_unix_ms = now_ms();
-    persist_locked();
+    try {
+        persist_locked();
+    } catch (...) {
+        *job = previous;
+        throw;
+    }
     return true;
 }
 
 std::size_t PersistentTrainingQueue::recover_inflight(std::string message) {
     std::lock_guard lock(mutex_);
+    const auto previous = jobs_;
     std::size_t recovered = 0U;
     for (auto& job : jobs_) {
         if (!inflight(job.state)) {
@@ -237,7 +269,12 @@ std::size_t PersistentTrainingQueue::recover_inflight(std::string message) {
         ++recovered;
     }
     if (recovered > 0U) {
-        persist_locked();
+        try {
+            persist_locked();
+        } catch (...) {
+            jobs_ = previous;
+            throw;
+        }
     }
     return recovered;
 }
