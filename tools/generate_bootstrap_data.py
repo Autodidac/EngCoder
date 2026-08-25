@@ -60,6 +60,28 @@ def record(
     return item
 
 
+def conversation_record(
+    identifier: str,
+    messages: Sequence[dict[str, str]],
+    tags: Iterable[str],
+    *,
+    curriculum_weight: int = 1,
+) -> dict:
+    item = {
+        "id": identifier,
+        "domain": "english",
+        "kind": "sft",
+        "messages": [dict(message) for message in messages],
+        "score": SCORE,
+        "accepted": True,
+        "tags": list(tags),
+        "provenance": "threadspire-deterministic-bootstrap",
+    }
+    if curriculum_weight > 1:
+        item["curriculum_weight"] = min(4, int(curriculum_weight))
+    return item
+
+
 def _slug(value: str) -> str:
     result = []
     hyphen = False
@@ -76,6 +98,32 @@ def _slug(value: str) -> str:
 def _normalize_message_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value))
     return " ".join(text.strip().split()).casefold()
+
+
+# These prompts belong exclusively to the independent readiness verifier. A
+# generated record with the same user request is held out even when its system
+# wording differs, so a gate cannot pass through direct answer memorization.
+VERIFIER_RESERVED_USER_PROMPTS = frozenset(
+    _normalize_message_text(value)
+    for value in (
+        "Hi. Are you ready to help?",
+        "Convert this to lowercase: THREAD AND CHECKPOINT",
+        "The application don't respond.",
+        "Describe throughput without an analogy.",
+        "Reply with exactly these two words: Ready now",
+        "What should I inspect first?",
+    )
+)
+
+
+def _reserved_for_verifier(item: dict) -> bool:
+    return any(
+        _normalize_message_text(message.get("content", ""))
+        in VERIFIER_RESERVED_USER_PROMPTS
+        for message in item.get("messages", [])
+        if isinstance(message, dict)
+        and _normalize_message_text(message.get("role", "")) == "user"
+    )
 
 
 def _fingerprint(item: dict) -> str:
@@ -120,6 +168,7 @@ def english_records() -> list[dict]:
     ]
     contexts = [
         "Reply naturally and directly in English.",
+        "Reply naturally in plain English.",
         "Use a calm, concise English response.",
         "Acknowledge the request without adding unrelated material.",
         "Respond as a practical local assistant.",
@@ -139,6 +188,28 @@ def english_records() -> list[dict]:
                     curriculum_weight=3,
                 ))
                 index += 1
+
+    readiness_greetings = (
+        ("Hello, are you ready to assist?", "Hello. Yes, I'm ready to assist."),
+        ("Hi there. Can you help me?", "Hi. Yes, tell me what you need."),
+        ("Good morning. Are you available to help?", "Hello. Yes, I'm available to help."),
+        ("Hello. Can we get started?", "Hello. Yes, we can get started."),
+        ("Hi, are you ready for a task?", "Hi. Yes, provide the task."),
+        ("Are you ready to help me today?", "Hello. Yes, I'm ready to help."),
+        ("Can you help with something now?", "Hi. Yes, what do you need?"),
+        ("Hello there. Are you available?", "Hello. Yes, I'm available."),
+    )
+    for system_index, system in enumerate(contexts):
+        for prompt_index, (prompt, answer) in enumerate(readiness_greetings):
+            out.append(record(
+                f"boot-eng-ready-greeting-{system_index:02d}-{prompt_index:03d}",
+                "english",
+                system,
+                prompt,
+                answer,
+                ("english", "conversation", "greeting", "readiness"),
+                curriculum_weight=2,
+            ))
 
     grounded_exchanges = [
         ("The build stopped at the first compiler error.", "What should I inspect first?", "Inspect the first compiler error and the command that produced it."),
@@ -169,6 +240,74 @@ def english_records() -> list[dict]:
                 answer,
                 ("english", "conversation", "context", "foundation"),
                 curriculum_weight=2,
+            ))
+
+    # Real multi-turn records teach role transitions and follow-up grounding.
+    build_conversations = (
+        (
+            "The compiler stopped after my edit.",
+            "Show me the first compiler error and the exact build command.",
+            "Which evidence should I check before changing code?",
+            "Inspect the first compiler error, its file and line, and the build command that produced it.",
+        ),
+        (
+            "My build failed after changing a header.",
+            "Paste the earliest diagnostic and the command used to compile.",
+            "Where do I begin?",
+            "Begin with the first compiler diagnostic and confirm the build command and configuration.",
+        ),
+        (
+            "The project no longer compiles.",
+            "Give me the first error from the compiler log.",
+            "What matters most initially?",
+            "The first compiler error matters most; later errors may only be consequences.",
+        ),
+        (
+            "A clean rebuild reports several failures.",
+            "Share the first failure and the full build command.",
+            "What should be inspected before the later messages?",
+            "Inspect the first error, the compiler log around it, and the command before reviewing later messages.",
+        ),
+        (
+            "The build broke after one source change.",
+            "Show the first error and identify the changed file.",
+            "What is the safest first check?",
+            "Check the first compiler error against the changed file and the exact build command.",
+        ),
+        (
+            "Compilation failed in Release mode.",
+            "Paste the first diagnostic and confirm the selected configuration.",
+            "Which log entry should I start from?",
+            "Start from the earliest compiler error in the Release build log.",
+        ),
+        (
+            "The compiler emitted many cascading errors.",
+            "Provide the earliest error and the command line.",
+            "How should I narrow this down?",
+            "Use the first compiler error and its command line; fix that before interpreting cascading errors.",
+        ),
+        (
+            "My local build stopped unexpectedly.",
+            "Show me the build command and the first reported error.",
+            "What evidence comes first?",
+            "The build command and first compiler error come first.",
+        ),
+    )
+    for system_index, system in enumerate(grounded_systems):
+        for conversation_index, (opening, first_answer, follow_up, final_answer) in enumerate(
+            build_conversations
+        ):
+            out.append(conversation_record(
+                f"boot-eng-multiturn-build-{system_index:02d}-{conversation_index:03d}",
+                (
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": opening},
+                    {"role": "assistant", "content": first_answer},
+                    {"role": "user", "content": follow_up},
+                    {"role": "assistant", "content": final_answer},
+                ),
+                ("english", "conversation", "context", "multiturn"),
+                curriculum_weight=3,
             ))
 
     # Ordinary profanity and frustration must not trigger irrelevant refusals.
@@ -250,12 +389,18 @@ def english_records() -> list[dict]:
         ("Give me a concise technical definition of {term}.", "technical"),
         ("Describe {term} without an analogy.", "precise"),
     ]
-    for term, answer in definitions.items():
+    definition_systems = (
+        "Answer in precise, plain English. Do not add unrelated material.",
+        "Answer in precise, plain English.",
+        "Give a direct plain-English answer without unrelated details.",
+        "Explain the requested term precisely and concisely.",
+    )
+    for term_index, (term, answer) in enumerate(definitions.items()):
         for form_index, (form, angle) in enumerate(forms):
             out.append(record(
                 f"boot-eng-definition-{_slug(term)}-{form_index:02d}",
                 "english",
-                "Answer in precise, plain English. Do not add unrelated material.",
+                definition_systems[(term_index + form_index) % len(definition_systems)],
                 form.format(term=term),
                 answer,
                 ("english", "definition", angle),
@@ -326,6 +471,12 @@ def english_records() -> list[dict]:
     nouns = ["model", "resource", "pointer", "checkpoint", "candidate", "module", "thread", "result"]
     states = ["ready", "valid", "broken", "active", "safe", "complete"]
     pasts = ["stopped", "resumed", "failed", "completed", "recovered", "responded"]
+    grammar_systems = (
+        "Correct the English while preserving the intended meaning. Return only the corrected sentence.",
+        "Correct the English and return only the sentence.",
+        "Fix the grammar without changing the meaning; output only the corrected sentence.",
+        "Return only a grammatical version of the user's sentence.",
+    )
     index = 0
     for wrong, right in grammar_templates:
         for subject in subjects:
@@ -345,18 +496,46 @@ def english_records() -> list[dict]:
                     out.append(record(
                         f"boot-eng-grammar-{index:05d}",
                         "english",
-                        "Correct the English while preserving the intended meaning. Return only the corrected sentence.",
+                        grammar_systems[index % len(grammar_systems)],
                         wrong.format(**mapping),
                         right.format(**mapping),
                         ("english", "grammar", "correction"),
                     ))
                     index += 1
 
+    grammar_slot_cases = (
+        ("This application don't respond.", "This application doesn't respond."),
+        ("The application don't respond quickly.", "The application doesn't respond quickly."),
+        ("The application don't respond now.", "The application doesn't respond now."),
+        ("My application don't respond.", "My application doesn't respond."),
+        ("The local application don't respond.", "The local application doesn't respond."),
+        ("The application don't respond to input.", "The application doesn't respond to input."),
+        ("The application don't compile.", "The application doesn't compile."),
+        ("The application don't resume.", "The application doesn't resume."),
+    )
+    for system_index, system in enumerate(grammar_systems):
+        for case_index, (wrong, right) in enumerate(grammar_slot_cases):
+            out.append(record(
+                f"boot-eng-grammar-slot-{system_index:02d}-{case_index:03d}",
+                "english",
+                system,
+                wrong,
+                right,
+                ("english", "grammar", "correction", "slot-preserving"),
+                curriculum_weight=2,
+            ))
+
     # Simple deterministic transformations and bounded reasoning.
     words = [
         "model", "training", "compiler", "resource", "thread", "module", "memory", "router",
         "candidate", "checkpoint", "latency", "throughput", "ownership", "lifetime", "context",
     ]
+    transform_systems = (
+        "Follow the requested deterministic text operation exactly and return only the result.",
+        "Return only the requested transformed text.",
+        "Carry out the text operation exactly; output only its result.",
+        "Follow the user's format exactly.",
+    )
     index = 0
     for first in words:
         for second in words:
@@ -373,14 +552,53 @@ def english_records() -> list[dict]:
                 out.append(record(
                     f"boot-eng-transform-{index:05d}",
                     "english",
-                    "Follow the requested deterministic text operation exactly and return only the result.",
+                    transform_systems[index % len(transform_systems)],
                     prompt,
                     answer,
                     ("english", "instruction-following", tag),
                 ))
                 index += 1
 
+    # Teach exact-format copying as an operation instead of memorizing one
+    # special phrase. The readiness phrase "Ready now" is intentionally absent.
+    copy_first = (
+        "System", "Model", "Checks", "Build", "Training", "Memory",
+        "Router", "Candidate", "Ready", "Continue", "Start", "Stop",
+    )
+    copy_second = (
+        "ready", "stable", "passed", "complete", "saved", "available",
+        "selected", "valid", "now", "safely", "first", "next",
+    )
+    copy_frames = (
+        "Reply with exactly these two words: {phrase}",
+        "Return only these two words: {phrase}",
+        "Use exactly this two-word response: {phrase}",
+    )
+    copy_index = 0
+    for first in copy_first:
+        for second in copy_second:
+            phrase = f"{first} {second}"
+            if phrase.casefold() == "ready now":
+                continue
+            for frame in copy_frames:
+                out.append(record(
+                    f"boot-eng-exact-copy-{copy_index:05d}",
+                    "english",
+                    transform_systems[copy_index % len(transform_systems)],
+                    frame.format(phrase=phrase),
+                    phrase,
+                    ("english", "instruction-following", "exact-copy"),
+                    curriculum_weight=2,
+                ))
+                copy_index += 1
+
     # Small arithmetic and comparison tasks teach structured language and exact answers.
+    reasoning_systems = (
+        "Answer the bounded reasoning task exactly and concisely.",
+        "Give only the concise answer to this bounded question.",
+        "Solve the small deterministic question and answer directly.",
+        "Return the exact result without an explanation.",
+    )
     index = 0
     for left in range(-12, 33):
         for right in range(-7, 18, 5):
@@ -394,7 +612,7 @@ def english_records() -> list[dict]:
                 out.append(record(
                     f"boot-eng-reason-{index:05d}",
                     "english",
-                    "Answer the bounded reasoning task exactly and concisely.",
+                    reasoning_systems[index % len(reasoning_systems)],
                     prompt,
                     answer,
                     ("english", "reasoning", tag),
@@ -1078,9 +1296,11 @@ def split_train_anchors(records: Sequence[dict], anchor_count: int) -> tuple[lis
         by_id[identifier] = item
         by_fingerprint[fingerprint] = item
     unique = list(by_id.values())
+    reserved = [item for item in unique if _reserved_for_verifier(item)]
+    eligible = [item for item in unique if not _reserved_for_verifier(item)]
 
     groups: dict[str, list[dict]] = defaultdict(list)
-    for item in unique:
+    for item in eligible:
         tags = [str(tag) for tag in item.get("tags", [])]
         key = ":".join(tags[:2]) if tags else str(item.get("domain", "general"))
         groups[key].append(item)
@@ -1089,7 +1309,7 @@ def split_train_anchors(records: Sequence[dict], anchor_count: int) -> tuple[lis
     for group in groups.values():
         randomizer.shuffle(group)
 
-    anchors: list[dict] = []
+    anchors: list[dict] = list(reserved)
     # Give every capability group at least one held-out example, then fill the
     # remaining slots round-robin so broad categories cannot dominate anchors.
     ordered_keys = sorted(groups)

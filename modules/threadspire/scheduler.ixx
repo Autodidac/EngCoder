@@ -110,10 +110,12 @@ struct InternalModelProgress final {
     bool bootstrap_complete{false};
     bool full_backbone_trained{false};
     bool generation_ready{false};
+    bool bootstrap_policy_current{false};
     std::string phase;
     std::string message;
     std::string error;
     std::string generation;
+    std::string bootstrap_policy;
     std::size_t step{0};
     std::size_t maximum_steps{0};
     std::size_t prior_total_steps{0};

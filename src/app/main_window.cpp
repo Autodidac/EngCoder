@@ -797,8 +797,12 @@ void draw_dark_text(
     const runtime::InternalModelState& state) noexcept {
     const auto configured = runtime::default_bootstrap_target(state);
     const auto progress = runtime::read_internal_model_progress(paths);
-    if (!progress.available || !terminal_learning_phase(progress.phase)) {
+    if (!state.bootstrap_policy_current &&
+        (!progress.available || !progress.bootstrap_policy_current)) {
         return configured;
+    }
+    if (!progress.available || !terminal_learning_phase(progress.phase)) {
+        return std::max(configured, progress.bootstrap_target_steps);
     }
     const auto completed = saved_learning_steps(progress);
     for (const auto target : automatic_bootstrap_targets) {
@@ -816,6 +820,10 @@ void draw_dark_text(
         return false;
     }
     const auto progress = runtime::read_internal_model_progress(paths);
+    if (!state.bootstrap_policy_current &&
+        (!progress.available || !progress.bootstrap_policy_current)) {
+        return false;
+    }
     return progress.available && terminal_learning_phase(progress.phase) &&
         saved_learning_steps(progress) >= automatic_bootstrap_targets.back();
 }

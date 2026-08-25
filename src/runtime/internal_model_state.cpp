@@ -17,7 +17,7 @@ import threadspire.core;
 namespace threadspire::ai::runtime {
 namespace {
 
-constexpr std::string_view current_bootstrap_policy = "full-backbone-english-v2";
+constexpr std::string_view current_bootstrap_policy = "full-backbone-english-v4";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -195,6 +195,9 @@ InternalModelProgress read_internal_model_progress(const app::AppPaths& paths) n
         progress.message = core::json::string_or(value->find("message"));
         progress.error = core::json::string_or(value->find("error"));
         progress.generation = core::json::string_or(value->find("generation"));
+        progress.bootstrap_policy = core::json::string_or(value->find("bootstrap_policy"));
+        progress.bootstrap_policy_current =
+            progress.bootstrap_policy == current_bootstrap_policy;
         progress.step = size_or(value->find("step"));
         progress.maximum_steps = size_or(value->find("maximum_steps"));
         progress.prior_total_steps = size_or(value->find("prior_total_steps"));

@@ -45,7 +45,7 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
-BOOTSTRAP_POLICY = "full-backbone-english-v2"
+BOOTSTRAP_POLICY = "full-backbone-english-v4"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
@@ -153,6 +153,7 @@ def write_progress(
         return
     payload: dict[str, Any] = {
         "format": "threadspire.internal-progress.v1",
+        "bootstrap_policy": BOOTSTRAP_POLICY,
         "phase": phase,
         "message": message,
         "heartbeat_unix_ms": int(time.time() * 1000),
@@ -1516,6 +1517,20 @@ def load_training_sequences(
     return sequences
 
 
+def training_sequences_fingerprint(sequences: Sequence[TrainingSequence]) -> str:
+    """Identify the exact ordered curriculum represented by a checkpoint."""
+
+    digest = hashlib.sha256()
+    for tokens, labels, routes in sequences:
+        digest.update(json.dumps(
+            [tokens, labels, list(routes)],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def collate_batch(
     batch: Sequence[TrainingSequence],
     device: torch.device,
@@ -1602,6 +1617,8 @@ def save_training_checkpoint(
     order: list[int],
     cursor: int,
     accumulation_steps: int,
+    training_data_fingerprint: str,
+    anchor_data_fingerprint: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -1622,6 +1639,9 @@ def save_training_checkpoint(
             "order": order,
             "cursor": cursor,
             "accumulation_steps": accumulation_steps,
+            "training_data_fingerprint": training_data_fingerprint,
+            "anchor_data_fingerprint": anchor_data_fingerprint,
+            "bootstrap_policy": BOOTSTRAP_POLICY,
             "gradients": gradients,
             "python_rng": random.getstate(),
             "torch_rng": torch.get_rng_state(),
@@ -1754,6 +1774,8 @@ def train_candidate(
     )
     if not sequences:
         raise RuntimeError("no verified internal-model training examples were available")
+    training_data_fingerprint = training_sequences_fingerprint(sequences)
+    anchor_data_fingerprint = training_sequences_fingerprint(anchors)
     parameters = configure_training_scope(model, optimizer_scope)
     prior_bootstrap_target = int(loaded.manifest.get("bootstrap_target_steps", 0))
     initial_learning_rate = bounded_bootstrap_learning_rate(
@@ -1798,6 +1820,9 @@ def train_candidate(
             and checkpoint.get("parent") == parent
             and checkpoint.get("scope") == optimizer_scope
             and int(checkpoint.get("accumulation_steps", accumulation_steps)) == accumulation_steps
+            and checkpoint.get("bootstrap_policy") == BOOTSTRAP_POLICY
+            and checkpoint.get("training_data_fingerprint") == training_data_fingerprint
+            and checkpoint.get("anchor_data_fingerprint") == anchor_data_fingerprint
         ):
             model.load_state_dict(checkpoint["model"], strict=True)
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1876,6 +1901,8 @@ def train_candidate(
                     order=order,
                     cursor=cursor,
                     accumulation_steps=accumulation_steps,
+                    training_data_fingerprint=training_data_fingerprint,
+                    anchor_data_fingerprint=anchor_data_fingerprint,
                 )
                 write_progress(
                     progress_file,
@@ -1979,6 +2006,8 @@ def train_candidate(
                     order=order,
                     cursor=cursor,
                     accumulation_steps=accumulation_steps,
+                    training_data_fingerprint=training_data_fingerprint,
+                    anchor_data_fingerprint=anchor_data_fingerprint,
                 )
     finally:
         if active_marker is not None:

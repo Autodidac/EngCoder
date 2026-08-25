@@ -755,6 +755,7 @@ void test_internal_model_lifecycle_state_and_progress() {
         progress << "{\n"
                  << "  \"phase\": \"training\",\n"
                  << "  \"message\": \"resuming\",\n"
+                 << "  \"bootstrap_policy\": \"full-backbone-english-v4\",\n"
                  << "  \"heartbeat_unix_ms\": " << now_ms << ",\n"
                  << "  \"step\": 6,\n"
                  << "  \"maximum_steps\": 1196,\n"
@@ -773,8 +774,9 @@ void test_internal_model_lifecycle_state_and_progress() {
             "a stale bootstrap policy must upgrade to the stronger micro target");
 
     const auto progress = threadspire::ai::runtime::read_internal_model_progress(paths);
-    require(progress.available && !progress.stale && progress.step == 6U,
-            "live progress heartbeat and exact checkpoint step must be readable");
+    require(progress.available && !progress.stale && progress.step == 6U &&
+                progress.bootstrap_policy_current,
+            "live progress heartbeat, policy, and exact checkpoint step must be readable");
     require(progress.percent > 0.8 && progress.percent < 0.9,
             "overall bootstrap percent must include prior promoted steps");
     std::filesystem::remove_all(root);

@@ -95,7 +95,7 @@ def main() -> int:
                 "english_foundation": {
                     "evaluation_passed": True,
                     "established": True,
-                    "bootstrap_policy": "full-backbone-english-v2",
+                    "bootstrap_policy": "full-backbone-english-v4",
                 }
             }),
             encoding="utf-8",

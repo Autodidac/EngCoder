@@ -28,6 +28,63 @@ def main() -> int:
     import internal_model as model  # pylint: disable=import-outside-toplevel
     import model_worker as worker  # pylint: disable=import-outside-toplevel
 
+    training_records = [
+        json.loads(line)
+        for line in (source_root / "resources" / "bootstrap.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+    anchor_records = [
+        json.loads(line)
+        for line in (source_root / "resources" / "bootstrap_anchors.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+    normalize = lambda value: " ".join(str(value).strip().casefold().split())
+    reserved = {
+        normalize("Hi. Are you ready to help?"),
+        normalize("Convert this to lowercase: THREAD AND CHECKPOINT"),
+        normalize("The application don't respond."),
+        normalize("Describe throughput without an analogy."),
+        normalize("Reply with exactly these two words: Ready now"),
+        normalize("What should I inspect first?"),
+    }
+    training_users = {
+        normalize(message["content"])
+        for record in training_records
+        for message in record.get("messages", [])
+        if message.get("role") == "user"
+    }
+    anchor_users = {
+        normalize(message["content"])
+        for record in anchor_records
+        for message in record.get("messages", [])
+        if message.get("role") == "user"
+    }
+    assert training_users.isdisjoint(reserved)
+    assert {
+        normalize("Convert this to lowercase: THREAD AND CHECKPOINT"),
+        normalize("The application don't respond."),
+        normalize("Describe throughput without an analogy."),
+    }.issubset(anchor_users)
+    instruction_systems = {
+        normalize(record["messages"][0]["content"])
+        for record in training_records
+        if "instruction-following" in record.get("tags", [])
+    }
+    assert len(instruction_systems) >= 4
+    assert sum(
+        "exact-copy" in record.get("tags", [])
+        for record in training_records
+    ) >= 100
+    assert sum(
+        "multiturn" in record.get("tags", [])
+        and len(record.get("messages", [])) >= 5
+        for record in training_records
+    ) >= 20
+
     assert model.canonical_training_scope("english-foundation") == "english-core"
     assert model.canonical_training_scope("cpp23-core") == "cpp23-core"
     initial_rate = 3.0e-4
@@ -219,6 +276,9 @@ def main() -> int:
         )
         assert checkpoint_payload["gradients"]
         assert checkpoint_payload["accumulation_steps"] == 2
+        assert checkpoint_payload["bootstrap_policy"] == model.BOOTSTRAP_POLICY
+        assert len(checkpoint_payload["training_data_fingerprint"]) == 64
+        assert len(checkpoint_payload["anchor_data_fingerprint"]) == 64
         marker.unlink()
         resumed = model.train_candidate(
             resumed_root,
