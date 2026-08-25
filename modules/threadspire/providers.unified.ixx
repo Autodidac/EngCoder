@@ -81,6 +81,7 @@ struct UnifiedTaskRequest final {
     std::size_t maximum_iterations{8};
     std::size_t maximum_output_tokens{512};
     bool stream{true};
+    bool allow_automatic_fallback{true};
     bool require_clean_worktree{true};
     bool rollback_on_failure{true};
     TaskEventCallback on_event;

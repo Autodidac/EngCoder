@@ -156,6 +156,30 @@ void test_immediate_memory_retrieval() {
             "orchestration must answer exact verified knowledge without contacting an endpoint");
     std::filesystem::remove_all(root);
 }
+void test_manual_model_choice_disables_fallback() {
+    const auto root = temporary_root();
+    threadspire::ai::memory::EpisodeStore store(root / "memory");
+
+    auto registry = threadspire::ai::models::ModelRegistry::defaults();
+    threadspire::ai::backend::AgentOrchestrator orchestrator(registry, {}, store);
+    const auto result = orchestrator.execute(
+        {},
+        "Say hello without using stored memory.",
+        threadspire::ai::backend::AgentExecutionOptions{
+            .allow_automatic_fallback = false,
+        });
+
+    require(!result.succeeded, "an unavailable manually selected model must report failure");
+    require(result.models_used.size() == 1U,
+            "a locked model request must attempt exactly one model");
+    require(result.plan.stages.size() == 1U &&
+                result.plan.stages.front().role != "automatic-fallback",
+            "a locked model request must never add an automatic fallback stage");
+    require(result.error.find("No other AI was used") != std::string::npos,
+            "the locked-model failure must clearly say that ThreadSpire did not switch AIs");
+
+    std::filesystem::remove_all(root);
+}
 
 void test_expert_lifecycle_thresholds() {
     const auto root = temporary_root();
@@ -899,7 +923,7 @@ void test_windows_ui_source_contract() {
                 ui.find("std::max(1, metrics.tmHeight + metrics.tmExternalLeading)") == std::string::npos &&
                 ui.find("std::max(1, (formatting.bottom - formatting.top) / line_height)") == std::string::npos,
             "Win32 text metrics must be normalized from LONG before std::max template deduction");
-    require(ui.find("No connected local LLM is responding") != std::string::npos &&
+    require(ui.find("No connected AI is ready.") != std::string::npos &&
                 ui.find("Start the model server on the Models page first") == std::string::npos &&
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
@@ -913,7 +937,7 @@ void test_windows_ui_source_contract() {
             "the user-facing application source must use the ThreadSpire product name");
     require(ui.find("L\"Automatic — fastest ready AI\"") != std::string::npos &&
                 ui.find("L\"Another AI app only\"") != std::string::npos &&
-                ui.find("L\"Built-in AI first (safe backup)\"") != std::string::npos &&
+                ui.find("L\"Built-in AI only\"") != std::string::npos &&
                 ui.find("update_inference_source") != std::string::npos &&
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
@@ -946,7 +970,7 @@ void test_windows_ui_source_contract() {
                 ui.find("SS_ENDELLIPSIS") != std::string::npos &&
                 ui.find("YOU — CODING REQUEST\\r\\n\\r\\n") != std::string::npos &&
                 ui.find("ASSISTANT — CONNECTED LOCAL LLM") != std::string::npos &&
-                ui.find("Answer source") != std::string::npos,
+                ui.find("Used: built-in AI — ") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
     require(ui.find("MSFTEDIT_CLASS") != std::string::npos &&
                 ui.find("EM_SETBKGNDCOLOR") != std::string::npos &&
@@ -963,12 +987,12 @@ void test_windows_ui_source_contract() {
     require(ui.find("L\"How it will run\"") != std::string::npos &&
                 ui.find("L\"Check choices\"") != std::string::npos &&
                 ui.find("L\"AI choices\\r\\n\"") != std::string::npos &&
-                ui.find("Approach: ") != std::string::npos &&
+                ui.find("Approach: ") == std::string::npos &&
                 ui.find("L\"Show plan\"") == std::string::npos &&
                 ui.find("L\"Complexity: \"") == std::string::npos &&
                 ui.find("L\"Output budget: \"") == std::string::npos &&
                 ui.find("L\"Risk: \"") == std::string::npos,
-            "visible request details must use plain labels and hide internal routing scores and token budgets");
+            "visible request details must avoid routing jargon, scores, and token budgets");
     require(ui.find("stream_timer") != std::string::npos &&
                 ui.find("capture_edit_viewport") != std::string::npos &&
                 ui.find("EM_GETFIRSTVISIBLELINE") != std::string::npos &&
@@ -1005,8 +1029,8 @@ void test_windows_ui_source_contract() {
                 ui.find("The current pass keeps its captured target") != std::string::npos &&
                 ui.find("std::chrono::minutes(10)") != std::string::npos,
             "the internal model must never teach itself; evidence must coalesce without package-selection cancellation or rapid retrigger loops");
-    require(ui.find("No route is available until a model in the selected AI source responds.") != std::string::npos &&
-                ui.find("details are shown in the conversation") != std::string::npos,
+    require(ui.find("The selected AI is not ready.") != std::string::npos &&
+                ui.find("The selected AI could not answer") != std::string::npos,
             "connection and generation failures must be actionable in the visible workspace");
 
     require(ui.find("const auto workspace_learning_y") != std::string::npos &&
@@ -1091,26 +1115,24 @@ void test_windows_ui_source_contract() {
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
             "Chat and AI Setup must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
     require(ui.find("internal_host_startable") != std::string::npos &&
-                ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
-                ui.find("never prevents Chat from using another connected AI") != std::string::npos &&
-                ui.find("const auto unavailable_internal") != std::string::npos &&
-                ui.find("Built-in AI is still learning and cannot answer yet, so Chat kept using the ready AI") != std::string::npos &&
-                ui.find("Built-in AI has no saved model yet") != std::string::npos &&
-                ui.find("Built-in AI is not installed, so Chat kept using the ready AI") == std::string::npos &&
-                ui.find("update_inference_source(id::chat_source)") != std::string::npos &&
+                ui.find("A stale internal-only preference must never hide a working connected model") == std::string::npos &&
+                ui.find("Using: built-in AI only • not ready") != std::string::npos &&
+                ui.find("set_status(runtime_summary(snapshot, backend_server_.running()))") != std::string::npos &&
                 ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
                 ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
                 ui.find("waiting for optional setup files") == std::string::npos &&
                 ui.find("show_progress ? SW_SHOW : SW_HIDE") != std::string::npos &&
                 ui.find("automatic_learning_limit_reached") != std::string::npos &&
                 ui.find("no unapproved model was activated") != std::string::npos,
-            "an unavailable built-in AI must fall back and continue through a ready source without pretending setup is running");
-    require(ui.find("const auto built_in_first") != std::string::npos &&
-                ui.find("Connected models stay") != std::string::npos &&
-                ui.find("model.priority = std::max(model.priority, 50000)") != std::string::npos &&
-                ui.find("safe backup will take over automatically") != std::string::npos &&
-                ui.find("Built-in AI first (safe backup)") != std::string::npos,
-            "preferring the built-in AI must retain connected candidates as an automatic safe fallback after any rejected live draft");
+            "an unavailable manually selected built-in AI must remain selected while automatic setup continues honestly");
+    require(ui.find("apply_source_filter(snapshot)") != std::string::npos &&
+                ui.find("model.enabled = model.id == *selected && model.enabled") != std::string::npos &&
+                ui.find("inference_source_ == InferenceSource::automatic &&") != std::string::npos &&
+                ui.find("!selected_model_id().has_value()") != std::string::npos &&
+                ui.find(".allow_automatic_fallback = allow_automatic_fallback") != std::string::npos &&
+                ui.find("Built-in AI only") != std::string::npos &&
+                ui.find("safe backup") == std::string::npos,
+            "a manual source or exact AI choice must disable automatic switching while Automatic mode retains it");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -1153,9 +1175,10 @@ void test_windows_ui_source_contract() {
     const auto orchestrator = read_text_file(source / "src/backend/agent_orchestrator.cpp");
     require(orchestrator.find("Interactive minimum-compute route") != std::string::npos &&
                 orchestrator.find("automatic-fallback") != std::string::npos &&
-                orchestrator.find("Every eligible local model failed") != std::string::npos &&
+                orchestrator.find("active_options_.allow_automatic_fallback") != std::string::npos &&
+                orchestrator.find("No other AI was used") != std::string::npos &&
                 orchestrator.find("model.model_name != \"threadspire://fast\"") != std::string::npos,
-            "interactive routing must prefer minimum compute and fail over between local endpoints");
+            "interactive routing may fail over only when the request explicitly allows automatic switching");
     require(orchestrator.find("memory_context(prompt, active_analysis_)") != std::string::npos &&
                 orchestrator.find("Background context follows") != std::string::npos &&
                 orchestrator.find("const auto augmented = prompt") != std::string::npos &&
@@ -1405,6 +1428,7 @@ int main() {
         test_router_builds_agentic_code_loop();
         test_model_registry_round_trip();
         test_immediate_memory_retrieval();
+        test_manual_model_choice_disables_fallback();
         test_expert_lifecycle_thresholds();
         test_learning_service_stores_before_training();
         test_interactive_priority_uses_nested_leases();

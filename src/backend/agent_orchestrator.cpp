@@ -329,6 +329,7 @@ AgentResult AgentOrchestrator::execute(
 
         if (!completion.succeeded &&
             completion.content.empty() &&
+            active_options_.allow_automatic_fallback &&
             !(active_options_.should_stop && active_options_.should_stop())) {
             auto alternatives = fallback_models(models_, active_analysis_, attempted);
             constexpr std::size_t maximum_fallbacks = 3U;
@@ -360,12 +361,30 @@ AgentResult AgentOrchestrator::execute(
         }
 
         if (!completion.succeeded) {
-            std::ostringstream error_stream;
-            error_stream << "Every eligible local model failed.";
-            for (const auto& error : errors) {
-                error_stream << "\n- " << error;
+            if (std::ranges::any_of(errors, [](const std::string& error) {
+                    return error.find("generation cancelled") != std::string::npos;
+                })) {
+                result.error = "generation cancelled";
+                return result;
             }
-            result.error = error_stream.str();
+            const auto corrupt_draft = std::ranges::any_of(
+                errors,
+                [](const std::string& error) {
+                    return error.find("repetitive or structurally corrupt") != std::string::npos;
+                });
+            const auto empty_answer = std::ranges::any_of(
+                errors,
+                [](const std::string& error) {
+                    return error.find("no generated content") != std::string::npos;
+                });
+            result.error = active_options_.allow_automatic_fallback
+                ? "No available AI produced a usable answer."
+                : "The selected AI could not produce a usable answer. No other AI was used.";
+            if (corrupt_draft) {
+                result.error += " Its draft was incomplete or corrupted.";
+            } else if (empty_answer) {
+                result.error += " It returned no answer.";
+            }
             return result;
         }
         // Feedback belongs to the model that produced the accepted answer, not to failed

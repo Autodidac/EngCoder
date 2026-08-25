@@ -78,6 +78,7 @@ UnifiedTaskResult AgentTaskProvider::execute(
         AgentExecutionOptions{
             .force_coding_agent = request.profile == ExecutionProfile::coding_agent,
             .prefer_minimum_compute = request.profile == ExecutionProfile::interactive,
+            .allow_automatic_fallback = request.allow_automatic_fallback,
             .analysis_prompt = request.analysis_prompt,
             .context = request.context,
             .on_token = [&request, stop_token](const std::string_view token) {

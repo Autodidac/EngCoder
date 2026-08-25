@@ -1241,43 +1241,6 @@ LRESULT CALLBACK page_host_subclass(
     return "general";
 }
 
-[[nodiscard]] std::wstring plain_task_name(const routing::TaskKind kind) {
-    switch (kind) {
-    case routing::TaskKind::conversation:
-        return L"Conversation";
-    case routing::TaskKind::explanation:
-        return L"Explanation";
-    case routing::TaskKind::transformation:
-        return L"Text change";
-    case routing::TaskKind::translation:
-        return L"Translation";
-    case routing::TaskKind::planning:
-        return L"Planning";
-    case routing::TaskKind::code_generation:
-        return L"Coding";
-    case routing::TaskKind::code_debugging:
-        return L"Code repair";
-    case routing::TaskKind::repository_task:
-        return L"Repository work";
-    case routing::TaskKind::tool_action:
-        return L"Tool use";
-    }
-    return L"Request";
-}
-
-[[nodiscard]] std::wstring plain_route_name(const routing::RouteMode mode) {
-    switch (mode) {
-    case routing::RouteMode::direct:
-        return L"One AI answers";
-    case routing::RouteMode::cascade:
-        return L"Try one AI, then a backup if needed";
-    case routing::RouteMode::hedged:
-        return L"Compare two answers";
-    case routing::RouteMode::agentic:
-        return L"Plan, answer, and check";
-    }
-    return L"Automatic";
-}
 
 [[nodiscard]] std::wstring plain_stage_name(const std::string_view role) {
     if (role == "answer" || role == "draft" || role == "execute") {
@@ -1308,8 +1271,6 @@ LRESULT CALLBACK page_host_subclass(
     const routing::RoutingPlan& plan,
     const models::ModelRegistry* registry = nullptr) {
     std::wostringstream stream;
-    stream << L"Request: " << plain_task_name(plan.analysis.kind)
-           << L"\r\nApproach: " << plain_route_name(plan.mode) << L"\r\n\r\n";
     if (plan.stages.empty()) {
         stream << L"No ready AI can handle this message. Start another local AI app or repair the built-in AI.";
         return stream.str();
@@ -1339,13 +1300,13 @@ LRESULT CALLBACK page_host_subclass(
     const auto used_backup = std::ranges::any_of(
         plan.stages,
         [](const routing::RouteStage& stage) { return stage.role == "automatic-fallback"; });
-    stream << L"\r\n" << (used_backup
-        ? L"The first choice could not answer safely, so ThreadSpire used the backup automatically."
-        : plan.stages.size() > 1U
-            ? L"ThreadSpire will move to the next choice automatically if an earlier choice cannot answer safely."
-            : plan.stages.front().model_id == "verified-memory"
-                ? L"ThreadSpire found an exact independently verified answer locally; no model generation was needed."
-            : L"ThreadSpire will use this AI and will switch to a safe backup if it fails.");
+    if (used_backup) {
+        stream << L"\r\nAutomatic used another AI after the first one could not answer.";
+    } else if (plan.stages.size() > 1U) {
+        stream << L"\r\nAutomatic may try these AIs in order.";
+    } else if (plan.stages.front().model_id == "verified-memory") {
+        stream << L"\r\nUsed an exact independently verified answer.";
+    }
     return stream.str();
 }
 
@@ -1651,16 +1612,6 @@ MainWindow::MainWindow(const HINSTANCE instance)
         inference_source_ = InferenceSource::local_bridge;
     } else {
         inference_source_ = InferenceSource::automatic;
-    }
-    if (inference_source_ == InferenceSource::custom_model &&
-        !internal_host_startable(paths_)) {
-        // A stale internal-only preference must never hide a working connected model.
-        // Automatic setup can continue in the background while Chat uses what is ready.
-        inference_source_ = InferenceSource::automatic;
-        try {
-            write_text(paths_.root / "config" / "preferred-source.txt", "automatic");
-        } catch (...) {
-        }
     }
 
     const auto saved_training_target = trim_line_endings(read_text(
@@ -2207,7 +2158,7 @@ void MainWindow::create_chat_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI first (safe backup)")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2327,7 +2278,7 @@ void MainWindow::create_coding_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI first (safe backup)")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -4101,19 +4052,19 @@ void MainWindow::refresh_model_selectors() {
         switch (inference_source_) {
         case InferenceSource::local_bridge:
             return available.empty()
-                ? L"Automatic — waiting for another AI app"
-                : L"Automatic — fastest ready AI app";
+                ? L"Choose a connected AI — waiting"
+                : L"Choose a connected AI for me";
         case InferenceSource::custom_model:
             if (custom_host_running) {
-                return L"Automatic — built-in AI is ready";
+                return L"Choose a built-in AI for me";
             }
             return bootstrap_training
-                ? L"Automatic — built-in AI is learning"
-                : L"Automatic — built-in AI is unavailable";
+                ? L"Choose a built-in AI — still learning"
+                : L"Choose a built-in AI — unavailable";
         case InferenceSource::automatic:
             return available.empty()
-                ? L"Automatic — waiting for an AI"
-                : L"Automatic — fastest ready AI";
+                ? L"Choose any AI — waiting"
+                : L"Choose any ready AI for me";
         }
         return L"Automatic";
     }();
@@ -4212,13 +4163,6 @@ void MainWindow::update_inference_source(const int source_identifier) {
         0));
     inference_source_ = static_cast<InferenceSource>(std::clamp(selection, 0, 2));
 
-    const auto unavailable_internal =
-        inference_source_ == InferenceSource::custom_model &&
-        !backend_server_.running();
-    if (unavailable_internal) {
-        inference_source_ = InferenceSource::automatic;
-    }
-
     for (const auto identifier : {id::chat_source, id::coding_source}) {
         static_cast<void>(::SendMessageW(
             control(identifier),
@@ -4254,22 +4198,7 @@ void MainWindow::update_inference_source(const int source_identifier) {
 
     refresh_model_selectors();
     const auto snapshot = runtime_model_snapshot();
-    const auto internal_state = runtime::inspect_internal_model_state(paths_);
-    const auto unavailable_internal_message = [&]() -> std::wstring {
-        if (!internal_state.exists) {
-            return L"Built-in AI has no saved model yet, so Chat kept using the ready AI.";
-        }
-        if (!internal_state.manifest_valid) {
-            return L"Built-in AI setup needs repair, so Chat kept using the ready AI.";
-        }
-        if (!internal_state.bootstrap_complete) {
-            return L"Built-in AI is still learning and cannot answer yet, so Chat kept using the ready AI.";
-        }
-        return L"Built-in AI could not start, so Chat kept using the ready AI.";
-    }();
-    set_status(unavailable_internal
-        ? unavailable_internal_message
-        : runtime_summary(snapshot, backend_server_.running()));
+    set_status(runtime_summary(snapshot, backend_server_.running()));
 }
 
 void MainWindow::update_model_selection(const int source_identifier) {
@@ -4299,10 +4228,10 @@ void MainWindow::update_model_selection(const int source_identifier) {
 
     if (preferred_model_id_.empty()) {
         set_status(inference_source_ == InferenceSource::custom_model
-            ? L"Built-in AI will answer first; a connected AI is the automatic safety backup"
+            ? L"Built-in AI only; another AI will not be used"
             : inference_source_ == InferenceSource::local_bridge
-                ? L"Automatic selection among connected local LLMs"
-                : L"Automatic selection across every ready AI source");
+                ? L"Choose a connected AI automatically"
+                : L"Choose any ready AI automatically");
         return;
     }
     const auto snapshot = runtime_model_snapshot();
@@ -4312,9 +4241,9 @@ void MainWindow::update_model_selection(const int source_identifier) {
         return;
     }
     const auto prefix = models::is_internal_model(*selected)
-        ? std::string{"Selected ThreadSpire internal model: "}
-        : std::string{"Selected connected local LLM: "};
-    set_status(widen(prefix + selected->display_name));
+        ? std::string{"Locked to built-in AI: "}
+        : std::string{"Locked to connected AI: "};
+    set_status(widen(prefix + selected->display_name + ". No other AI will be used."));
 }
 
 void MainWindow::stop_active_request() {
@@ -4494,8 +4423,8 @@ std::wstring MainWindow::runtime_summary(
         break;
     case InferenceSource::custom_model:
         stream << (custom_host_running
-            ? L"Using: built-in AI first • safe backup is automatic"
-            : L"Built-in AI not ready • using a connected AI automatically");
+            ? L"Using: built-in AI only"
+            : L"Using: built-in AI only • not ready");
         break;
     case InferenceSource::automatic:
         stream << L"Using: fastest ready AI";
@@ -4834,31 +4763,8 @@ void MainWindow::send_request(const RequestSurface surface) {
             L"Background teacher generation is yielding to this request.");
     }
 
-    if (inference_source_ == InferenceSource::custom_model &&
-        !backend_server_.running()) {
-        static_cast<void>(::SendMessageW(
-            control(id::chat_source),
-            CB_SETCURSEL,
-            static_cast<WPARAM>(InferenceSource::automatic),
-            0));
-        update_inference_source(id::chat_source);
-    }
-
     auto snapshot = runtime_model_snapshot();
-    const auto built_in_first = inference_source_ == InferenceSource::custom_model;
-    if (built_in_first) {
-        // A passed built-in generation gets the first attempt. Connected models stay
-        // eligible as an automatic safety backup if the live response gate rejects it.
-        for (auto& model : snapshot.models()) {
-            if (model.enabled && models::is_internal_model(model)) {
-                model.quality = std::max(model.quality, 0.82);
-                model.reliability = std::max(model.reliability, 0.90);
-                model.priority = std::max(model.priority, 50000);
-            }
-        }
-    } else {
-        apply_source_filter(snapshot);
-    }
+    apply_source_filter(snapshot);
     if (workspace) {
         for (auto& model : snapshot.models()) {
             model.enabled = model.enabled && model_supports_workspace_task(model);
@@ -4875,13 +4781,7 @@ void MainWindow::send_request(const RequestSurface surface) {
             return;
         }
         for (auto& model : snapshot.models()) {
-            if (built_in_first && models::is_internal_model(*selected_profile)) {
-                if (models::is_internal_model(model)) {
-                    model.enabled = model.id == *selected && model.enabled;
-                }
-            } else {
-                model.enabled = model.id == *selected && model.enabled;
-            }
+            model.enabled = model.id == *selected && model.enabled;
         }
     }
 
@@ -4889,13 +4789,13 @@ void MainWindow::send_request(const RequestSurface surface) {
         snapshot.models(),
         [](const models::ModelProfile& model) { return model.enabled; });
     if (!has_usable_model) {
-        const auto error = inference_source_ == InferenceSource::local_bridge
-            ? L"No connected local LLM is responding. Start LM Studio, Ollama, llama.cpp, "
-              L"or LocalAI, then select Discover."
-            : L"No usable AI source is responding. Start a connected local LLM server or the "
-              L"ThreadSpire internal-model host, then select Discover.";
+        const auto error = inference_source_ == InferenceSource::custom_model
+            ? L"The built-in AI is not ready. No other AI was used."
+            : inference_source_ == InferenceSource::local_bridge
+                ? L"No connected AI is ready."
+                : L"No AI is ready.";
         set_control_text(response_id, error);
-        set_control_text(plan_id, L"No route is available until a model in the selected AI source responds.");
+        set_control_text(plan_id, L"The selected AI is not ready.");
         set_status(error);
         return;
     }
@@ -4967,8 +4867,8 @@ void MainWindow::send_request(const RequestSurface surface) {
 
     const auto request_status = inference_source_ == InferenceSource::custom_model
         ? (coding
-            ? L"Trying the built-in coding AI first; a safe backup will take over automatically if needed…"
-            : L"Trying the built-in AI first; a safe backup will take over automatically if needed…")
+            ? L"Running the selected built-in coding AI…"
+            : L"Running the selected built-in AI…")
         : inference_source_ == InferenceSource::local_bridge
             ? (coding
                 ? L"Sending through the selected connected local LLM for coding…"
@@ -4999,6 +4899,9 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto execution_profile = coding
         ? backend::ExecutionProfile::coding_agent
         : backend::ExecutionProfile::interactive;
+    const auto allow_automatic_fallback =
+        inference_source_ == InferenceSource::automatic &&
+        !selected_model_id().has_value();
     const auto started = chat_operation_.start(
         [this,
          surface,
@@ -5012,7 +4915,8 @@ void MainWindow::send_request(const RequestSurface surface) {
          mcp_client,
          response_id,
          task_modality,
-         execution_profile](const std::stop_token stop_token) mutable {
+         execution_profile,
+         allow_automatic_fallback](const std::stop_token stop_token) mutable {
             struct BusyReset final {
                 learning::ContinualLearningService* service;
                 ~BusyReset() { service->set_interactive_busy(false); }
@@ -5034,6 +4938,7 @@ void MainWindow::send_request(const RequestSurface surface) {
                     .analysis_prompt = std::move(analysis_prompt),
                     .context = std::move(execution_context),
                     .stream = true,
+                    .allow_automatic_fallback = allow_automatic_fallback,
                     .on_event = [this, response_id, stop_token](const backend::TaskEvent& event) {
                         if (event.kind == backend::TaskEventKind::text_delta) {
                             std::lock_guard lock(stream_mutex_);
@@ -6626,7 +6531,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     } else if (!setup_files_ready && setup_source_ready) {
         detail << L"Built-in AI files were found. ThreadSpire will finish setup automatically.";
     } else if (!setup_files_ready) {
-        detail << L"No setup is running because the built-in AI package is not installed. Chat is using another ready AI.";
+        detail << L"No setup is running because the built-in AI package is not installed. Choose Automatic yourself to use another ready AI.";
     } else if (!backend_verified_) {
         detail << L"ThreadSpire is checking the built-in AI before using it.";
     } else if (!state.bootstrap_complete) {
@@ -6787,7 +6692,7 @@ void MainWindow::update_chat_result() {
     if (!result->succeeded) {
         if (workspace) {
             if (pending_transcript_heading_offset_ != std::string::npos) {
-                const auto error_heading = std::string{"ERROR | MODEL REQUEST"};
+                const auto error_heading = std::string{"ERROR — AI COULD NOT ANSWER"};
                 workspace_transcript_.replace(
                     pending_transcript_heading_offset_,
                     pending_transcript_heading_length_,
@@ -6813,7 +6718,7 @@ void MainWindow::update_chat_result() {
             L"Foreground request ended. Background learning may resume.");
         set_status(result->error == "generation cancelled"
             ? L"AI request cancelled"
-            : L"AI request failed — details are shown in the conversation");
+            : L"The selected AI could not answer");
         return;
     }
 
@@ -6833,18 +6738,23 @@ void MainWindow::update_chat_result() {
         ? "unknown"
         : result->models_used.back();
 
-    auto execution_details = format_plan(result->plan, &route_models);
-    execution_details += L"\r\n\r\nAnswer source\r\n";
+    std::wstring execution_details;
     if (last_model_id_ == "verified-memory") {
-        execution_details += L"Used: built-in verified knowledge\r\n"
-                             L"Source: independently accepted local training data";
+        execution_details = L"Used: built-in verified knowledge";
     } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
-        execution_details += models::is_internal_model(*model)
-            ? L"Used: built-in AI\r\n"
-            : L"Used: another AI app\r\n";
-        execution_details += L"AI: " + widen(model->display_name);
+        execution_details = models::is_internal_model(*model)
+            ? L"Used: built-in AI — "
+            : L"Used: another AI app — ";
+        execution_details += widen(model->display_name);
     } else {
-        execution_details += widen(actual_runtime_heading(last_model_id_));
+        execution_details = widen(actual_runtime_heading(last_model_id_));
+    }
+    if (std::ranges::any_of(
+            result->plan.stages,
+            [](const routing::RouteStage& stage) {
+                return stage.role == "automatic-fallback";
+            })) {
+        execution_details += L"\r\nAutomatic switched after the first AI could not answer.";
     }
 
     if (workspace) {

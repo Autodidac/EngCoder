@@ -20,6 +20,7 @@ namespace threadspire::ai::backend {
 struct AgentExecutionOptions final {
     bool force_coding_agent{false};
     bool prefer_minimum_compute{true};
+    bool allow_automatic_fallback{true};
     std::string analysis_prompt;
     std::string context;
     TokenCallback on_token;
