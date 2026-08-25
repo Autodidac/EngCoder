@@ -790,7 +790,7 @@ def _internal_draft(
             attempt_temperature,
             on_progress,
         )
-        last_quality = internal.assess_generation_quality(last_content, trusted_dataset)
+        last_quality = internal.assess_generation_quality(last_content, trusted_dataset, messages)
         if last_quality.accepted:
             return InternalDraft(
                 content=last_content,

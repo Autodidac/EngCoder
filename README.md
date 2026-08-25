@@ -118,11 +118,11 @@ Each generation records:
 
 The AI source selector is authoritative:
 
-- **Built-in AI only** — uses ThreadSpire's ready local model.
+- **Built-in AI first (safe backup)** — tries a fully approved ThreadSpire model first and automatically uses a connected AI if the live answer is rejected.
 - **Another AI app only** — uses a selected compatible AI app running on the computer.
 - **Automatic** — uses the fastest ready AI that fits the task.
 
-At launch, a stale built-in-only preference falls back to Automatic instead of hiding another working AI app. Chat shows both connected-AI availability and built-in-AI progress without switching tabs. Automatic setup, recovery, learning, and startup yield to active work and never silently change the user's chosen AI.
+At launch, an unavailable built-in preference falls back to Automatic instead of hiding another working AI app. Chat shows both connected-AI availability and built-in-AI progress without switching tabs. Automatic setup, recovery, learning, and startup yield to active work; training never changes the selected model, and a rejected built-in draft never reaches the conversation.
 
 A connected model can be marked as a teacher or verifier. Teacher output becomes candidate data only; it never becomes the internal inference model directly. Unverified generated examples remain quarantined. Compiler/test-confirmed results, explicit user corrections, and accepted answers can become verified internal training evidence.
 

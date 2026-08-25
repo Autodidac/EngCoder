@@ -2,6 +2,7 @@ module;
 #include "module_prelude.hpp"
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <Richedit.h>
 #include <Dwmapi.h>
 #include <ShObjIdl.h>
 #include <Shellapi.h>
@@ -44,6 +45,11 @@ constexpr COLORREF accent_color = RGB(92, 155, 255);
 constexpr COLORREF text_color = RGB(236, 239, 244);
 constexpr COLORREF muted_text_color = RGB(171, 177, 190);
 constexpr COLORREF disabled_text_color = RGB(112, 118, 130);
+constexpr COLORREF transcript_user_color = RGB(124, 181, 255);
+constexpr COLORREF transcript_internal_color = RGB(115, 214, 157);
+constexpr COLORREF transcript_connected_color = RGB(120, 201, 255);
+constexpr COLORREF transcript_error_color = RGB(255, 121, 135);
+constexpr COLORREF transcript_output_color = RGB(125, 220, 160);
 constexpr DWORD immersive_dark_mode_attribute = 20U;
 constexpr std::array<std::size_t, 3> automatic_bootstrap_targets{24000U, 36000U, 50000U};
 
@@ -402,6 +408,19 @@ constexpr int custom_training_target_index =
     return result;
 }
 
+[[nodiscard]] bool is_rich_edit_control(const HWND handle) noexcept {
+    if (handle == nullptr) {
+        return false;
+    }
+    std::array<wchar_t, 32> class_name{};
+    const auto length = ::GetClassNameW(
+        handle,
+        class_name.data(),
+        static_cast<int>(class_name.size()));
+    return length > 0 && std::wstring_view(
+        class_name.data(), static_cast<std::size_t>(length)).starts_with(L"RICHEDIT");
+}
+
 [[nodiscard]] bool is_edit_control(const HWND handle) noexcept {
     if (handle == nullptr) {
         return false;
@@ -411,7 +430,85 @@ constexpr int custom_training_target_index =
         handle,
         class_name.data(),
         static_cast<int>(class_name.size()));
-    return length > 0 && ::lstrcmpiW(class_name.data(), L"EDIT") == 0;
+    return length > 0 && (
+        ::lstrcmpiW(class_name.data(), L"EDIT") == 0 ||
+        std::wstring_view(
+            class_name.data(), static_cast<std::size_t>(length)).starts_with(L"RICHEDIT"));
+}
+
+[[nodiscard]] const wchar_t* transcript_control_class() noexcept {
+    static const HMODULE rich_edit_module = ::LoadLibraryW(L"Msftedit.dll");
+    return rich_edit_module != nullptr ? MSFTEDIT_CLASS : L"EDIT";
+}
+
+void format_rich_range(
+    const HWND handle,
+    const LONG start,
+    const LONG end,
+    const COLORREF color,
+    const bool bold) noexcept {
+    CHARRANGE range{.cpMin = start, .cpMax = end};
+    static_cast<void>(::SendMessageW(
+        handle, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range)));
+    CHARFORMAT2W format{};
+    format.cbSize = sizeof(format);
+    format.dwMask = CFM_COLOR | CFM_BOLD;
+    format.dwEffects = bold ? CFE_BOLD : 0U;
+    format.crTextColor = color;
+    static_cast<void>(::SendMessageW(
+        handle, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format)));
+}
+
+void style_chat_transcript(
+    const HWND handle,
+    const std::wstring_view text) noexcept {
+    if (!is_rich_edit_control(handle)) {
+        return;
+    }
+
+    static_cast<void>(::SendMessageW(handle, EM_SETBKGNDCOLOR, 0, edit_color));
+    format_rich_range(handle, 0, -1, text_color, false);
+
+    std::size_t line_start = 0;
+    while (line_start <= text.size()) {
+        const auto newline = text.find(L'\n', line_start);
+        auto line_end = newline == std::wstring_view::npos ? text.size() : newline;
+        if (line_end > line_start && text[line_end - 1U] == L'\r') {
+            --line_end;
+        }
+        const auto line = text.substr(line_start, line_end - line_start);
+        COLORREF color = text_color;
+        bool styled = true;
+        if (line == L"YOU" || line.starts_with(L"YOU —")) {
+            color = transcript_user_color;
+        } else if (line.starts_with(L"ASSISTANT — THREADSPIRE")) {
+            color = transcript_internal_color;
+        } else if (line.starts_with(L"ASSISTANT — CONNECTED") ||
+                   line.starts_with(L"ASSISTANT — AUTOMATIC")) {
+            color = transcript_connected_color;
+        } else if (line.starts_with(L"ERROR")) {
+            color = transcript_error_color;
+        } else if (line.starts_with(L"OUTPUT")) {
+            color = transcript_output_color;
+        } else if (!line.empty() && std::ranges::all_of(
+                       line, [](const wchar_t character) { return character == L'-'; })) {
+            color = muted_text_color;
+        } else {
+            styled = false;
+        }
+        if (styled && line_end > line_start) {
+            format_rich_range(
+                handle,
+                static_cast<LONG>(line_start),
+                static_cast<LONG>(line_end),
+                color,
+                color != muted_text_color);
+        }
+        if (newline == std::wstring_view::npos) {
+            break;
+        }
+        line_start = newline + 1U;
+    }
 }
 
 struct EditViewport final {
@@ -1904,6 +2001,9 @@ HWND MainWindow::create_control(
     if (!is_button || (effective_style & BS_TYPEMASK) != BS_OWNERDRAW) {
         static_cast<void>(::SetWindowTheme(handle, L"DarkMode_Explorer", nullptr));
     }
+    if (is_rich_edit_control(handle)) {
+        static_cast<void>(::SendMessageW(handle, EM_SETBKGNDCOLOR, 0, edit_color));
+    }
     if (is_edit_control(handle)) {
         const auto margin = static_cast<LPARAM>(MAKELONG(
             scaled(6, dpi_),
@@ -2045,7 +2145,7 @@ void MainWindow::create_chat_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI first (safe backup)")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2081,7 +2181,7 @@ void MainWindow::create_chat_page() {
         L"STATIC", L"Conversation", WS_CHILD | WS_VISIBLE,
         0, id::chat_response_label, parent);
     create_control(
-        L"EDIT",
+        transcript_control_class(),
         L"Type a message below. ThreadSpire automatically uses the best AI that is ready.\r\n\r\n"
         L"OTHER AI APPS\r\n"
         L"ThreadSpire finds and uses compatible AI apps already running on this computer.\r\n\r\n"
@@ -2165,7 +2265,7 @@ void MainWindow::create_coding_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Another AI app only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in AI first (safe backup)")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2237,7 +2337,7 @@ void MainWindow::create_coding_page() {
         L"STATIC", L"Coding response", WS_CHILD | WS_VISIBLE,
         0, id::coding_response_label, parent);
     create_control(
-        L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
+        transcript_control_class(), L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::coding_response, parent);
 }
@@ -4124,7 +4224,7 @@ void MainWindow::update_model_selection(const int source_identifier) {
 
     if (preferred_model_id_.empty()) {
         set_status(inference_source_ == InferenceSource::custom_model
-            ? L"Automatic selection within the ThreadSpire internal-model runtime"
+            ? L"Built-in AI will answer first; a connected AI is the automatic safety backup"
             : inference_source_ == InferenceSource::local_bridge
                 ? L"Automatic selection among connected local LLMs"
                 : L"Automatic selection across every ready AI source");
@@ -4161,6 +4261,20 @@ void MainWindow::stop_active_request() {
     {
         set_status(L"No foreground model request is running");
     }
+}
+
+void MainWindow::yield_automatic_bootstrap_to_foreground() {
+    if (lifecycle_action_ != LifecycleAction::bootstrap_model ||
+        !backend_operation_.running()) {
+        return;
+    }
+    // A foreground request owns the machine now. Cancellation preserves the latest
+    // atomic checkpoint; the automatic coordinator resumes only after the request.
+    lifecycle_retry_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    backend_operation_.cancel();
+    set_control_text(
+        id::chat_learning_status,
+        L"Saving built-in AI learning progress and yielding to your request…");
 }
 
 void MainWindow::clear_workspace() {
@@ -4305,8 +4419,8 @@ std::wstring MainWindow::runtime_summary(
         break;
     case InferenceSource::custom_model:
         stream << (custom_host_running
-            ? L"Using: built-in AI"
-            : L"Selected: built-in AI (not ready)");
+            ? L"Using: built-in AI first • safe backup is automatic"
+            : L"Built-in AI not ready • using a connected AI automatically");
         break;
     case InferenceSource::automatic:
         stream << L"Using: fastest ready AI";
@@ -4479,6 +4593,8 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
         return;
     }
 
+    yield_automatic_bootstrap_to_foreground();
+
     auto snapshot = runtime_model_snapshot();
     apply_source_filter(snapshot);
     for (auto& model : snapshot.models()) {
@@ -4629,6 +4745,8 @@ void MainWindow::send_request(const RequestSurface surface) {
         return;
     }
 
+    yield_automatic_bootstrap_to_foreground();
+
     // User inference always wins over synthetic teacher-data generation.
     if (piggyback_operation_.running()) {
         piggyback_operation_.cancel();
@@ -4648,7 +4766,20 @@ void MainWindow::send_request(const RequestSurface surface) {
     }
 
     auto snapshot = runtime_model_snapshot();
-    apply_source_filter(snapshot);
+    const auto built_in_first = inference_source_ == InferenceSource::custom_model;
+    if (built_in_first) {
+        // A passed built-in generation gets the first attempt. Connected models stay
+        // eligible as an automatic safety backup if the live response gate rejects it.
+        for (auto& model : snapshot.models()) {
+            if (model.enabled && models::is_internal_model(model)) {
+                model.quality = std::max(model.quality, 0.82);
+                model.reliability = std::max(model.reliability, 0.90);
+                model.priority = std::max(model.priority, 50000);
+            }
+        }
+    } else {
+        apply_source_filter(snapshot);
+    }
     if (workspace) {
         for (auto& model : snapshot.models()) {
             model.enabled = model.enabled && model_supports_workspace_task(model);
@@ -4665,7 +4796,13 @@ void MainWindow::send_request(const RequestSurface surface) {
             return;
         }
         for (auto& model : snapshot.models()) {
-            model.enabled = model.id == *selected;
+            if (built_in_first && models::is_internal_model(*selected_profile)) {
+                if (models::is_internal_model(model)) {
+                    model.enabled = model.id == *selected && model.enabled;
+                }
+            } else {
+                model.enabled = model.id == *selected && model.enabled;
+            }
         }
     }
 
@@ -4749,8 +4886,8 @@ void MainWindow::send_request(const RequestSurface surface) {
 
     const auto request_status = inference_source_ == InferenceSource::custom_model
         ? (coding
-            ? L"Sending to the selected ThreadSpire internal coding model…"
-            : L"Sending to the selected ThreadSpire internal model…")
+            ? L"Trying the built-in coding AI first; a safe backup will take over automatically if needed…"
+            : L"Trying the built-in AI first; a safe backup will take over automatically if needed…")
         : inference_source_ == InferenceSource::local_bridge
             ? (coding
                 ? L"Sending through the selected connected local LLM for coding…"
@@ -5937,6 +6074,8 @@ void MainWindow::start_long_horizon() {
         return;
     }
     maximum_iterations = std::clamp<std::size_t>(maximum_iterations, 1U, 32U);
+
+    yield_automatic_bootstrap_to_foreground();
 
     const auto repair_model = best_coding_model();
     if (!repair_model.has_value()) {
@@ -7251,6 +7390,9 @@ void MainWindow::set_control_text(const int identifier, std::wstring text) const
     const auto viewport = capture_edit_viewport(handle);
     static_cast<void>(::SendMessageW(handle, WM_SETREDRAW, FALSE, 0));
     static_cast<void>(::SetWindowTextW(handle, text.c_str()));
+    if (identifier == id::chat_response || identifier == id::coding_response) {
+        style_chat_transcript(handle, text);
+    }
     restore_edit_viewport(handle, viewport);
     static_cast<void>(::SendMessageW(handle, WM_SETREDRAW, TRUE, 0));
     redraw_control(handle);
@@ -7282,6 +7424,9 @@ void MainWindow::append_control_text(const int identifier, const std::wstring_vi
         EM_REPLACESEL,
         FALSE,
         reinterpret_cast<LPARAM>(owned.c_str())));
+    if (identifier == id::chat_response || identifier == id::coding_response) {
+        style_chat_transcript(handle, window_text(handle));
+    }
     restore_edit_viewport(handle, viewport);
     static_cast<void>(::SendMessageW(handle, WM_SETREDRAW, TRUE, 0));
     redraw_control(handle);

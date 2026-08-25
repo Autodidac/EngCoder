@@ -119,6 +119,7 @@ private:
     void update_inference_source(int source_identifier);
     void update_model_selection(int source_identifier);
     void stop_active_request();
+    void yield_automatic_bootstrap_to_foreground();
     void clear_workspace();
     void open_local_ai_page();
     void recreate_ui_font();

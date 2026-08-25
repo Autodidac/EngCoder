@@ -755,7 +755,7 @@ void test_internal_model_lifecycle_state_and_progress() {
         progress << "{\n"
                  << "  \"phase\": \"training\",\n"
                  << "  \"message\": \"resuming\",\n"
-                 << "  \"bootstrap_policy\": \"full-backbone-english-v4\",\n"
+                 << "  \"bootstrap_policy\": \"independent-conversation-v5\",\n"
                  << "  \"heartbeat_unix_ms\": " << now_ms << ",\n"
                  << "  \"step\": 6,\n"
                  << "  \"maximum_steps\": 1196,\n"
@@ -866,7 +866,7 @@ void test_windows_ui_source_contract() {
             "the user-facing application source must use the ThreadSpire product name");
     require(ui.find("L\"Automatic — fastest ready AI\"") != std::string::npos &&
                 ui.find("L\"Another AI app only\"") != std::string::npos &&
-                ui.find("L\"Built-in AI only\"") != std::string::npos &&
+                ui.find("L\"Built-in AI first (safe backup)\"") != std::string::npos &&
                 ui.find("update_inference_source") != std::string::npos &&
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
@@ -899,6 +899,15 @@ void test_windows_ui_source_contract() {
                 ui.find("ASSISTANT — CONNECTED LOCAL LLM") != std::string::npos &&
                 ui.find("Actual execution") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
+    require(ui.find("MSFTEDIT_CLASS") != std::string::npos &&
+                ui.find("EM_SETBKGNDCOLOR") != std::string::npos &&
+                ui.find("CHARFORMAT2W") != std::string::npos &&
+                ui.find("style_chat_transcript") != std::string::npos &&
+                ui.find("transcript_user_color") != std::string::npos &&
+                ui.find("transcript_internal_color") != std::string::npos &&
+                ui.find("transcript_connected_color") != std::string::npos &&
+                ui.find("transcript_error_color") != std::string::npos,
+            "the conversation must stay dark and visibly distinguish user, internal, connected, and error blocks while streaming or resizing");
     require(ui.find("stream_timer") != std::string::npos &&
                 ui.find("capture_edit_viewport") != std::string::npos &&
                 ui.find("EM_GETFIRSTVISIBLELINE") != std::string::npos &&
@@ -1033,6 +1042,12 @@ void test_windows_ui_source_contract() {
                 ui.find("automatic_learning_limit_reached") != std::string::npos &&
                 ui.find("no unapproved model was activated") != std::string::npos,
             "an unavailable built-in AI must fall back and continue through a ready source without pretending setup is running");
+    require(ui.find("const auto built_in_first") != std::string::npos &&
+                ui.find("Connected models stay") != std::string::npos &&
+                ui.find("model.priority = std::max(model.priority, 50000)") != std::string::npos &&
+                ui.find("safe backup will take over automatically") != std::string::npos &&
+                ui.find("Built-in AI first (safe backup)") != std::string::npos,
+            "preferring the built-in AI must retain connected candidates as an automatic safe fallback after any rejected live draft");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -1176,8 +1191,11 @@ void test_worker_and_resource_contract() {
                 lifecycle_ui.find("an explicit repair retry must continue from the saved candidate") != std::string::npos &&
                 lifecycle_ui.find("create_internal_model(true, true)") != std::string::npos &&
                 lifecycle_ui.find("bootstrap_priority_lease_") != std::string::npos &&
-                lifecycle_ui.find("interactive_lease_count() > reserved_bootstrap_lease") != std::string::npos,
-            "automatic and manual bootstrap repair must continue the strongest rejected lineage, reserve startup priority before recovered jobs run, and never start an unready host");
+                lifecycle_ui.find("interactive_lease_count() > reserved_bootstrap_lease") != std::string::npos &&
+                lifecycle_ui.find("yield_automatic_bootstrap_to_foreground") != std::string::npos &&
+                lifecycle_ui.find("Saving built-in AI learning progress and yielding") != std::string::npos &&
+                lifecycle_ui.find("backend_operation_.cancel()") != std::string::npos,
+            "automatic and manual bootstrap repair must resume the strongest rejected lineage, yield saved training immediately to foreground work, and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&
@@ -1213,8 +1231,14 @@ void test_worker_and_resource_contract() {
         source / "src/backend/completion_client.cpp");
     require(completion.find("result.finish_reason == \"low_confidence\"") != std::string::npos &&
                 completion.find("repetitive or structurally corrupt") != std::string::npos &&
+                worker.find("assess_generation_quality(last_content, trusted_dataset, messages)") != std::string::npos &&
+                internal_model.find("independent-conversation-v5") != std::string::npos &&
+                internal_model.find("vague-question-repair") != std::string::npos &&
+                internal_model.find("grounded-summary") != std::string::npos &&
+                internal_model.find("safe-replacement-reasoning") != std::string::npos &&
+                internal_model.find("passed_count == len(canaries)") != std::string::npos &&
                 worker.find("reference_verified") != std::string::npos,
-            "corrupt internal drafts must be withheld from the user, trigger route fallback, and trusted verified evidence must reach weight training");
+            "nonsense and terse internal drafts must be withheld from the user, trigger route fallback, and only an independently probed generation may become ready");
 
     const auto resources = read_text_file(source / "resources/ThreadSpire.rc.in");
     const auto cmake = read_text_file(source / "CMakeLists.txt");

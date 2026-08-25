@@ -17,7 +17,7 @@ import threadspire.core;
 namespace threadspire::ai::runtime {
 namespace {
 
-constexpr std::string_view current_bootstrap_policy = "full-backbone-english-v4";
+constexpr std::string_view current_bootstrap_policy = "independent-conversation-v5";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);

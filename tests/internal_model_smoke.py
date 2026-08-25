@@ -101,6 +101,28 @@ def main() -> int:
         assert model.assess_generation_quality(
             "A clear, ordinary English answer should pass the structural gate."
         ).accepted
+        open_conversation = [
+            {"role": "system", "content": "Reply naturally in plain English."},
+            {"role": "user", "content": "What do you mean by that?"},
+        ]
+        assert not model.assess_generation_quality(
+            "-1", messages=open_conversation
+        ).accepted
+        assert not model.assess_generation_quality(
+            "Yes. Resource ready.", messages=open_conversation
+        ).accepted
+        assert not model.assess_generation_quality(
+            "In the prerorerevin ghe correcteante.", messages=open_conversation
+        ).accepted
+        assert model.assess_generation_quality(
+            "Tell me which part you want me to clarify.", messages=open_conversation
+        ).accepted
+        arithmetic_request = [
+            {"role": "user", "content": "Calculate 17 + 25."},
+        ]
+        assert model.assess_generation_quality(
+            "42", messages=arithmetic_request
+        ).accepted
         assert model.assess_generation_quality(
             "```cpp\n#include <vector>\nint main() { std::vector<int> values{1, 2, 3}; return values.size(); }\n```"
         ).accepted

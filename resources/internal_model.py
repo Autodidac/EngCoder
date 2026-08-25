@@ -45,7 +45,7 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
-BOOTSTRAP_POLICY = "full-backbone-english-v4"
+BOOTSTRAP_POLICY = "independent-conversation-v5"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
@@ -1051,6 +1051,7 @@ def english_vocabulary_ratio(
 def assess_generation_quality(
     text: str,
     trusted_dataset: Path | None = None,
+    messages: Sequence[dict[str, str]] | None = None,
 ) -> GenerationQuality:
     """Reject obvious corruption and repetition before a draft reaches the UI.
 
@@ -1076,6 +1077,32 @@ def assess_generation_quality(
     code_like = _looks_like_code(stripped)
     raw_words = re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", stripped)
     words = [word.lower() for word in raw_words]
+    latest_user_message = ""
+    if messages:
+        latest_user_message = next(
+            (
+                str(message.get("content", "")).strip().lower()
+                for message in reversed(messages)
+                if str(message.get("role", "")).strip().lower() == "user"
+            ),
+            "",
+        )
+    terse_requested = bool(
+        latest_user_message
+        and (
+            re.search(
+                r"\b(exactly|only|one word|two words|yes or no|true or false|"
+                r"calculate|compute|convert|lowercase|uppercase|sum|difference|product|quotient|how many)\b",
+                latest_user_message,
+            )
+            or re.search(r"\d\s*[-+*/]\s*\d", latest_user_message)
+        )
+    )
+    if messages and not code_like and not terse_requested:
+        if len(words) < 4:
+            return GenerationQuality(False, "answer is too short for an open conversational request")
+        if len(words) <= 10 and english_vocabulary_ratio(stripped, trusted_dataset) < 0.50:
+            return GenerationQuality(False, "short answer contains untrusted or malformed English")
     if not code_like and re.search(r"(?<!\d)\.\d+[A-Za-z]*", stripped):
         return GenerationQuality(False, "malformed sentence-number fragment")
     if words:
@@ -1235,29 +1262,34 @@ def evaluate_generation_readiness(
         manifest=manifest,
         device=device,
     )
+    # These prompts are intentionally absent from the training corpus. They span
+    # transformation, dialogue repair, grounded reading, reasoning, and arithmetic
+    # so a model cannot become READY by memorizing a few bootstrap-shaped answers.
     canaries = (
         {
             "name": "greeting",
             "critical": True,
             "messages": [
                 {"role": "system", "content": "Reply naturally in plain English."},
-                {"role": "user", "content": "Hi. Are you ready to help?"},
+                {"role": "user", "content": "Hello there. Can you help me think through a problem?"},
             ],
-            "required_any": ("hello", "hi"),
+            "required_any": ("help", "sure", "yes", "problem"),
             "required_all": (),
             "exact": (),
-            "minimum_vocabulary_ratio": 0.75,
+            "minimum_words": 4,
+            "minimum_vocabulary_ratio": 0.90,
         },
         {
             "name": "lowercase",
             "critical": True,
             "messages": [
                 {"role": "system", "content": "Return only the requested transformed text."},
-                {"role": "user", "content": "Convert this to lowercase: THREAD AND CHECKPOINT"},
+                {"role": "user", "content": "Convert this to lowercase: CANDIDATE STAYS SEPARATE"},
             ],
             "required_any": (),
             "required_all": (),
-            "exact": ("thread and checkpoint",),
+            "exact": ("candidate stays separate",),
+            "minimum_words": 3,
             "minimum_vocabulary_ratio": 1.0,
         },
         {
@@ -1265,53 +1297,132 @@ def evaluate_generation_readiness(
             "critical": True,
             "messages": [
                 {"role": "system", "content": "Correct the English and return only the sentence."},
-                {"role": "user", "content": "The application don't respond."},
+                {"role": "user", "content": "Those result is not ready yet."},
             ],
             "required_any": (),
             "required_all": (),
-            "exact": (
-                "the application doesn't respond",
-                "the application does not respond",
-            ),
+            "exact": ("those results are not ready yet",),
+            "minimum_words": 6,
             "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "vague-question-repair",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Respond as a patient practical assistant."},
+                {"role": "user", "content": "What do you mean by that?"},
+            ],
+            "required_any": ("clarify", "which", "refer", "mean", "part"),
+            "required_all": (),
+            "exact": (),
+            "minimum_words": 5,
+            "minimum_vocabulary_ratio": 0.90,
+        },
+        {
+            "name": "misunderstanding-recovery",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Respond helpfully without pretending the user understood."},
+                {"role": "user", "content": "I still do not understand your last explanation."},
+            ],
+            "required_any": ("clarify", "explain", "differently", "part", "question"),
+            "required_all": (),
+            "exact": (),
+            "minimum_words": 6,
+            "minimum_vocabulary_ratio": 0.90,
+        },
+        {
+            "name": "grounded-summary",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Summarize only the supplied facts in one sentence."},
+                {"role": "user", "content": "Mara copied nine reports into the archive, checked the copies, and kept the originals. Summarize what happened."},
+            ],
+            "required_any": (),
+            "required_all": ("mara", "nine", "reports", "archive"),
+            "exact": (),
+            "minimum_words": 8,
+            "minimum_vocabulary_ratio": 0.90,
+        },
+        {
+            "name": "safe-replacement-reasoning",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Answer the question directly in plain English."},
+                {"role": "user", "content": "Why should a working model stay active while a replacement is being checked?"},
+            ],
+            "required_any": ("fail", "failure", "safe", "ready", "passes"),
+            "required_all": ("working", "replacement"),
+            "exact": (),
+            "minimum_words": 9,
+            "minimum_vocabulary_ratio": 0.90,
+        },
+        {
+            "name": "format-following",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Follow the requested format exactly."},
+                {"role": "user", "content": "Reply with exactly these three words: Check before replace"},
+            ],
+            "required_any": (),
+            "required_all": (),
+            "exact": ("check before replace",),
+            "minimum_words": 3,
+            "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "arithmetic",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Return only the number."},
+                {"role": "user", "content": "Calculate 17 + 25."},
+            ],
+            "required_any": (),
+            "required_all": (),
+            "exact": ("42",),
+            "minimum_words": 0,
+            "minimum_vocabulary_ratio": 1.0,
+        },
+        {
+            "name": "conversation-context",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Use the conversation and answer the newest question."},
+                {"role": "user", "content": "The blue folder was empty yesterday."},
+                {"role": "assistant", "content": "Understood. The blue folder had no files yesterday."},
+                {"role": "user", "content": "It contains three logs now. What changed?"},
+            ],
+            "required_any": ("now", "added", "contains", "logs"),
+            "required_all": ("three",),
+            "exact": (),
+            "minimum_words": 6,
+            "minimum_vocabulary_ratio": 0.90,
+        },
+        {
+            "name": "troubleshooting",
+            "critical": True,
+            "messages": [
+                {"role": "system", "content": "Give one practical first troubleshooting step."},
+                {"role": "user", "content": "A service closes immediately after launch. What should I check first?"},
+            ],
+            "required_any": ("error", "log", "message", "exit", "event"),
+            "required_all": (),
+            "exact": (),
+            "minimum_words": 7,
+            "minimum_vocabulary_ratio": 0.90,
         },
         {
             "name": "definition",
             "critical": True,
             "messages": [
-                {"role": "system", "content": "Answer in precise, plain English."},
-                {"role": "user", "content": "Describe throughput without an analogy."},
+                {"role": "system", "content": "Define the term precisely in one sentence."},
+                {"role": "user", "content": "What does reversible mean for a software change?"},
             ],
-            "required_any": (),
-            "required_all": ("throughput", "work", "time"),
+            "required_any": ("undo", "restore", "return", "previous"),
+            "required_all": ("change",),
             "exact": (),
-            "minimum_vocabulary_ratio": 0.80,
-        },
-        {
-            "name": "direct-instruction",
-            "critical": False,
-            "messages": [
-                {"role": "system", "content": "Follow the user's format exactly."},
-                {"role": "user", "content": "Reply with exactly these two words: Ready now"},
-            ],
-            "required_any": (),
-            "required_all": (),
-            "exact": ("ready now",),
-            "minimum_vocabulary_ratio": 1.0,
-        },
-        {
-            "name": "conversation-context",
-            "critical": False,
-            "messages": [
-                {"role": "system", "content": "Respond as a practical local assistant."},
-                {"role": "user", "content": "The build failed after my change."},
-                {"role": "assistant", "content": "Show me the first error and the build command."},
-                {"role": "user", "content": "What should I inspect first?"},
-            ],
-            "required_any": ("error", "compiler", "log", "command"),
-            "required_all": (),
-            "exact": (),
-            "minimum_vocabulary_ratio": 0.75,
+            "minimum_words": 8,
+            "minimum_vocabulary_ratio": 0.90,
         },
     )
     samples: list[dict[str, Any]] = []
@@ -1324,7 +1435,7 @@ def evaluate_generation_readiness(
                 loaded, canary["messages"], "fast", 72, 0.0, top_p=1.0
             )
         ).strip()
-        quality = assess_generation_quality(output, trusted_dataset)
+        quality = assess_generation_quality(output, trusted_dataset, canary["messages"])
         normalized = re.sub(r"[^a-z0-9']+", " ", output.lower()).strip()
         exact = canary["exact"]
         required_all = canary["required_all"]
@@ -1335,9 +1446,11 @@ def evaluate_generation_readiness(
             and (not required_any or any(term in normalized for term in required_any))
         )
         vocabulary_ratio = english_vocabulary_ratio(output, trusted_dataset)
+        word_count = len(re.findall(r"[A-Za-z][A-Za-z0-9_'-]*", output))
         sample_passed = bool(
             quality.accepted
             and semantic_match
+            and word_count >= canary["minimum_words"]
             and vocabulary_ratio >= canary["minimum_vocabulary_ratio"]
         )
         passed_count += int(sample_passed)
@@ -1349,11 +1462,12 @@ def evaluate_generation_readiness(
             "structural_quality": quality.accepted,
             "semantic_match": semantic_match,
             "vocabulary_ratio": vocabulary_ratio,
+            "word_count": word_count,
             "reason": quality.reason,
             "output": output,
         })
     return GenerationReadiness(
-        passed=critical_passed and passed_count >= len(canaries) - 1,
+        passed=critical_passed and passed_count == len(canaries),
         score=passed_count / len(canaries),
         samples=tuple(samples),
     )
