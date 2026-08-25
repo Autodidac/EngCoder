@@ -69,6 +69,17 @@ namespace {
            analysis.kind == routing::TaskKind::repository_task;
 }
 
+[[nodiscard]] double generation_temperature(
+    const routing::TaskAnalysis& analysis) noexcept {
+    if (coding_task(analysis) || analysis.kind == routing::TaskKind::tool_action) {
+        return 0.05;
+    }
+    if (analysis.kind == routing::TaskKind::conversation) {
+        return analysis.tier == routing::ComplexityTier::deep ? 0.38 : 0.48;
+    }
+    return analysis.tier == routing::ComplexityTier::deep ? 0.12 : 0.20;
+}
+
 [[nodiscard]] bool can_execute(
     const models::ModelProfile& model,
     const routing::TaskAnalysis& analysis) {
@@ -244,33 +255,50 @@ AgentResult AgentOrchestrator::execute(
         [](const models::ModelProfile& model) {
             return model.enabled && models::is_internal_model(model);
         });
+    std::optional<memory::RetrievedEpisode> conversation_start;
     if (built_in_memory_enabled &&
         !active_options_.force_coding_agent &&
         !active_analysis_.needs_repository &&
         !active_analysis_.needs_tools) {
-        if (const auto verified = memory_.exact_verified(prompt); verified.has_value()) {
-            result.plan.mode = routing::RouteMode::direct;
-            result.plan.stages = {
-                routing::RouteStage{
-                    .role = "answer",
-                    .model_id = "verified-memory",
-                    .max_output_tokens = 0U,
-                    .parallel = false,
-                },
-            };
-            result.plan.rationale =
-                "An exact independently verified local answer was already available.";
-            result.models_used = {"verified-memory"};
-            result.response = verified->episode.response;
-            result.succeeded = !result.response.empty();
-            if (result.succeeded && active_options_.on_token) {
-                static_cast<void>(active_options_.on_token(result.response));
+        if (const auto verified = memory_.verified_match(prompt, skill_for(active_analysis_));
+            verified.has_value()) {
+            if (active_analysis_.kind == routing::TaskKind::conversation) {
+                conversation_start = verified;
+            } else {
+                result.plan.mode = routing::RouteMode::direct;
+                result.plan.stages = {
+                    routing::RouteStage{
+                        .role = "answer",
+                        .model_id = "verified-memory",
+                        .max_output_tokens = 0U,
+                        .parallel = false,
+                    },
+                };
+                result.plan.rationale =
+                    "An exact independently verified local answer was already available.";
+                result.models_used = {"verified-memory"};
+                result.response = verified->episode.response;
+                result.succeeded = !result.response.empty();
+                if (result.succeeded && active_options_.on_token) {
+                    static_cast<void>(active_options_.on_token(result.response));
+                }
+                return result;
             }
-            return result;
         }
     }
 
-    if (auto recalled = memory_context(prompt, active_analysis_); !recalled.empty()) {
+    if (conversation_start.has_value()) {
+        if (!active_options_.context.empty()) {
+            active_options_.context += "\n\n";
+        }
+        active_options_.context +=
+            "Approved local conversation example. Use its intent and tone as guidance, "
+            "but answer the current message naturally and do not repeat the wording mechanically.\n"
+            "Example user: " + conversation_start->episode.prompt +
+            "\nExample answer: " + conversation_start->episode.response;
+        result.plan.rationale +=
+            " A small approved conversation example is conditioning the chosen AI.";
+    } else if (auto recalled = memory_context(prompt, active_analysis_); !recalled.empty()) {
         if (!active_options_.context.empty()) {
             active_options_.context += "\n\n";
         }
@@ -652,7 +680,7 @@ CompletionResult AgentOrchestrator::run_stage(
                 .prompt = {},
                 .messages = messages,
                 .max_output_tokens = stage.max_output_tokens,
-                .temperature = active_analysis_.tier == routing::ComplexityTier::deep ? 0.15 : 0.25,
+                .temperature = generation_temperature(active_analysis_),
                 .adapter_path = adapter,
                 .module_path = module,
                 .tools_json = may_call_tools ? tools_json : std::string{},

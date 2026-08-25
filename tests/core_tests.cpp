@@ -154,6 +154,56 @@ void test_immediate_memory_retrieval() {
         "Fix a dangling std::string_view in C++23.");
     require(direct.succeeded && direct.models_used == std::vector<std::string>{"verified-memory"},
             "orchestration must answer exact verified knowledge without contacting an endpoint");
+
+    const auto append_conversation = [&store](
+                                         std::string id,
+                                         std::string prompt,
+                                         std::string response) {
+        store.append({
+            .id = std::move(id),
+            .skill = "english-conversation",
+            .prompt = std::move(prompt),
+            .response = std::move(response),
+            .model_id = "human-approved-memory",
+            .score = 0.92,
+            .compiler_passed = false,
+            .tests_passed = false,
+            .human_accepted = true,
+            .human_rejected = false,
+            .deterministic_verified = false,
+            .reference_verified = false,
+            .self_generated = false,
+            .eligible_for_training = false,
+            .verifier_model_id = "human",
+            .verification_notes = "accepted in test",
+            .provenance = "human-accepted",
+            .knowledge_destination = "retrieval-memory",
+            .content_hash = {},
+            .correction = {},
+            .tool_trace_hash = {},
+            .created_unix_ms = threadspire::ai::memory::now_unix_ms(),
+        });
+    };
+    append_conversation(
+        "conversation-1",
+        "What's up?",
+        "Not much. What is on your mind?");
+    const auto spelling_match = store.verified_match(
+        "want's up?",
+        "english-conversation");
+    require(spelling_match.has_value() &&
+                spelling_match->episode.response == "Not much. What is on your mind?" &&
+                spelling_match->relevance < 1.0,
+            "short conversation memory should tolerate one conservative spelling error");
+    require(!store.verified_match("want's up?", "cpp23-generation").has_value(),
+            "coding skills must never use fuzzy conversation memory");
+
+    append_conversation("conversation-2", "What is ready?", "The first item is ready.");
+    append_conversation("conversation-3", "When is ready?", "It is ready tomorrow.");
+    require(!store.verified_match("Whan is ready?", "english-conversation").has_value(),
+            "equally close approved prompts must be rejected as ambiguous");
+    require(store.human_acceptance_count_for_skill("english-conversation") == 3U,
+            "human approval counts must be separate from reference and deterministic evidence");
     std::filesystem::remove_all(root);
 }
 void test_manual_model_choice_disables_fallback() {
@@ -801,7 +851,7 @@ void test_reference_verified_evidence_can_incubate() {
         .correction = {},
         .tool_trace_hash = {},
         .created_unix_ms = 0,
-    }, 1U);
+    }, 0U);
     require(decision.eligible_for_weight_training &&
                 decision.destination == threadspire::ai::learning::KnowledgeDestination::lora_incubation,
             "independently reference-verified local teacher data must reach LoRA incubation");
@@ -1281,7 +1331,11 @@ void test_windows_ui_source_contract() {
                 orchestrator.find("const auto augmented = prompt") != std::string::npos &&
                 orchestrator.find("Never expose private reasoning") != std::string::npos,
             "conversation context must remain out of the current user turn and providers must forbid private reasoning output");
-    require(orchestrator.find("memory_.exact_verified(prompt)") != std::string::npos &&
+    require(orchestrator.find("memory_.verified_match(prompt, skill_for(active_analysis_))") != std::string::npos &&
+                orchestrator.find("generation_temperature(active_analysis_)") != std::string::npos &&
+                orchestrator.find("return 0.05") != std::string::npos &&
+                orchestrator.find("0.48") != std::string::npos &&
+                orchestrator.find("do not repeat the wording mechanically") != std::string::npos &&
                 orchestrator.find("verified-memory") != std::string::npos &&
                 orchestrator.find("completion.hidden_reasoning_only") != std::string::npos &&
                 orchestrator.find("stage.max_output_tokens * 4U") != std::string::npos,
@@ -1400,7 +1454,7 @@ void test_worker_and_resource_contract() {
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&
                 curriculum_guard.find("namespace.episodes = filter_dataset") != std::string::npos &&
                 internal_model.find("canonical_training_scope") != std::string::npos &&
-                internal_model.find("path = Path(path_value)") != std::string::npos &&
+                internal_model.find("path_values = [Path(path_value) for path_value in paths]") != std::string::npos &&
                 internal_model.find("_threadspire_curriculum_guard.english_record(record)") != std::string::npos &&
                 internal_model.find("curriculum-state.json") != std::string::npos,
             "English-first training must preserve Path values, avoid global argparse mutation, filter every evidence path, reject code-shaped records at the loader, map the UI target to english-core, and persist the gate state");
@@ -1449,7 +1503,9 @@ void test_worker_and_resource_contract() {
                 internal_model.find("grounded-summary") != std::string::npos &&
                 internal_model.find("safe-replacement-reasoning") != std::string::npos &&
                 internal_model.find("passed_count == len(canaries)") != std::string::npos &&
-                worker.find("reference_verified") != std::string::npos,
+                worker.find("reference_verified") != std::string::npos &&
+                worker.find("_MINIMUM_DIVERSE_HUMAN_APPROVALS = 4") != std::string::npos &&
+                internal_model.find("_human_approval_counts") != std::string::npos,
             "nonsense and terse internal drafts must be withheld from the user, trigger route fallback, and only an independently probed generation may become ready");
 
     const auto resources = read_text_file(source / "resources/ThreadSpire.rc.in");

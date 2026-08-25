@@ -5319,7 +5319,7 @@ std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
         ? turn.learning_weight_eligible
         : preview.eligible_for_weight_training && preview.would_store;
     const auto accepted_examples = already_saved
-        ? learning_service_->memory_store().count_for_skill(episode.skill)
+        ? learning_service_->memory_store().human_acceptance_count_for_skill(episode.skill)
         : preview.accepted_skill_examples;
     const auto destination = already_saved && !turn.learning_destination.empty()
         ? turn.learning_destination
@@ -5346,7 +5346,7 @@ std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
            << L"Eligible for background weight training: "
            << (weight_eligible ? L"YES" : L"NO")
            << L"\n"
-           << L"Unique approved examples in this skill after saving: "
+           << L"Unique human-approved examples in this skill after saving: "
            << accepted_examples << L"\n"
            << L"Destination: " << widen(destination)
            << L"\n"

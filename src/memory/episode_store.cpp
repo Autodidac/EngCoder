@@ -222,6 +222,79 @@ namespace {
     return result;
 }
 
+[[nodiscard]] std::vector<std::string_view> prompt_words(const std::string_view value) {
+    std::vector<std::string_view> result;
+    std::size_t begin = 0;
+    while (begin < value.size()) {
+        const auto end = value.find(' ', begin);
+        result.push_back(value.substr(
+            begin,
+            end == std::string_view::npos ? value.size() - begin : end - begin));
+        if (end == std::string_view::npos) {
+            break;
+        }
+        begin = end + 1U;
+    }
+    return result;
+}
+
+[[nodiscard]] bool safe_conversation_lookup(const std::string_view original) {
+    if (original.size() < 4U || original.size() > 56U) {
+        return false;
+    }
+    for (const unsigned char character : original) {
+        if (std::isdigit(character) != 0 ||
+            std::string_view("{}[]();=<>\\/" "\x60" "_+").find(static_cast<char>(character)) !=
+                std::string_view::npos) {
+            return false;
+        }
+        if (character >= 0x80U) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::size_t bounded_edit_distance(
+    const std::string_view left,
+    const std::string_view right,
+    const std::size_t maximum) {
+    if (left.size() > right.size() + maximum || right.size() > left.size() + maximum) {
+        return maximum + 1U;
+    }
+    std::vector<std::size_t> previous(right.size() + 1U);
+    std::vector<std::size_t> current(right.size() + 1U);
+    for (std::size_t column = 0; column <= right.size(); ++column) {
+        previous[column] = column;
+    }
+    for (std::size_t row = 1; row <= left.size(); ++row) {
+        current[0] = row;
+        auto row_minimum = current[0];
+        for (std::size_t column = 1; column <= right.size(); ++column) {
+            const auto substitution = previous[column - 1U] +
+                (left[row - 1U] == right[column - 1U] ? 0U : 1U);
+            current[column] = std::min({
+                previous[column] + 1U,
+                current[column - 1U] + 1U,
+                substitution,
+            });
+            row_minimum = std::min(row_minimum, current[column]);
+        }
+        if (row_minimum > maximum) {
+            return maximum + 1U;
+        }
+        previous.swap(current);
+    }
+    return previous.back();
+}
+
+[[nodiscard]] bool compatible_verified_skill(
+    const std::string_view candidate,
+    const std::string_view expected) noexcept {
+    return candidate == expected ||
+           (candidate.starts_with("cpp23-") && expected.starts_with("cpp23-"));
+}
+
 [[nodiscard]] std::string prompt_key(const Episode& episode) {
     return normalized_prompt(episode.skill) + '\n' + normalized_prompt(episode.prompt);
 }
@@ -261,6 +334,7 @@ void EpisodeStore::rebuild_index_unlocked() {
     exact_prompt_index_.clear();
     term_postings_.clear();
     accepted_counts_.clear();
+    human_accepted_counts_.clear();
     training_counts_.clear();
     if (!std::filesystem::is_regular_file(path_)) {
         return;
@@ -288,6 +362,9 @@ void EpisodeStore::index_episode_unlocked(const Episode& episode) {
     if (independently_validated && !episode.human_rejected) {
         positive_prompt_keys_.insert(prompt_key(episode));
         ++accepted_counts_[episode.skill];
+        if (episode.human_accepted) {
+            ++human_accepted_counts_[episode.skill];
+        }
     }
     if (episode.eligible_for_training && !episode.human_rejected) {
         ++training_counts_[episode.skill];
@@ -471,10 +548,106 @@ std::optional<RetrievedEpisode> EpisodeStore::exact_verified(
     };
 }
 
+std::optional<RetrievedEpisode> EpisodeStore::verified_match(
+    const std::string_view query,
+    const std::string_view expected_skill) const {
+    std::lock_guard lock(mutex_);
+    const auto normalized_query = normalized_prompt(query);
+    if (normalized_query.empty()) {
+        return std::nullopt;
+    }
+
+    const Episode* exact = nullptr;
+    for (const auto& episode : retrievable_episodes_) {
+        if (compatible_verified_skill(episode.skill, expected_skill) &&
+            normalized_prompt(episode.prompt) == normalized_query &&
+            (exact == nullptr || exact->score < episode.score)) {
+            exact = &episode;
+        }
+    }
+    if (exact != nullptr) {
+        return RetrievedEpisode{.episode = *exact, .relevance = 1.0};
+    }
+
+    if (expected_skill != "english-conversation" || !safe_conversation_lookup(query)) {
+        return std::nullopt;
+    }
+    const auto query_words = prompt_words(normalized_query);
+    if (query_words.empty() || query_words.size() > 6U) {
+        return std::nullopt;
+    }
+
+    const Episode* best = nullptr;
+    std::string best_prompt;
+    std::size_t best_distance = 3U;
+    bool ambiguous = false;
+    for (const auto& episode : retrievable_episodes_) {
+        if (episode.skill != expected_skill) {
+            continue;
+        }
+        const auto candidate_prompt = normalized_prompt(episode.prompt);
+        if (candidate_prompt == normalized_query) {
+            continue;
+        }
+        const auto candidate_words = prompt_words(candidate_prompt);
+        if (candidate_words.size() != query_words.size()) {
+            continue;
+        }
+        std::size_t differing_words = 0U;
+        std::size_t distance = 0U;
+        bool has_anchor = query_words.size() == 1U;
+        for (std::size_t index = 0; index < query_words.size(); ++index) {
+            if (query_words[index] == candidate_words[index]) {
+                has_anchor = has_anchor || query_words[index].size() >= 2U;
+                continue;
+            }
+            ++differing_words;
+            if (differing_words > 1U || query_words[index].size() < 4U ||
+                candidate_words[index].size() < 4U) {
+                distance = 3U;
+                break;
+            }
+            const auto word_limit = query_words.size() == 1U ? 1U : 2U;
+            distance = bounded_edit_distance(query_words[index], candidate_words[index], word_limit);
+            if (distance > word_limit) {
+                break;
+            }
+        }
+        if (differing_words != 1U || distance == 0U || distance > 2U || !has_anchor) {
+            continue;
+        }
+        if (distance < best_distance) {
+            best = &episode;
+            best_prompt = candidate_prompt;
+            best_distance = distance;
+            ambiguous = false;
+        } else if (distance == best_distance && candidate_prompt != best_prompt) {
+            ambiguous = true;
+        } else if (distance == best_distance && candidate_prompt == best_prompt &&
+                   best != nullptr && best->score < episode.score) {
+            best = &episode;
+        }
+    }
+    if (best == nullptr || ambiguous) {
+        return std::nullopt;
+    }
+    return RetrievedEpisode{
+        .episode = *best,
+        .relevance = best_distance == 1U ? 0.94 : 0.88,
+    };
+}
+
 std::size_t EpisodeStore::count_for_skill(const std::string_view skill) const {
     std::lock_guard lock(mutex_);
     const auto iterator = accepted_counts_.find(std::string(skill));
     return iterator == accepted_counts_.end() ? 0U : iterator->second;
+}
+
+std::size_t EpisodeStore::human_acceptance_count_for_skill(
+    const std::string_view skill) const {
+    std::lock_guard lock(mutex_);
+    const auto iterator = human_accepted_counts_.find(std::string(skill));
+    return iterator == human_accepted_counts_.end() ? 0U : iterator->second;
 }
 
 std::size_t EpisodeStore::training_count_for_skill(const std::string_view skill) const {

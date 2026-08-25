@@ -1224,6 +1224,22 @@ def serve(arguments: argparse.Namespace) -> int:
     return 0
 
 
+_MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
+
+
+def _normalized_learning_prompt(record: dict[str, Any]) -> str:
+    return re.sub(r"[^a-z0-9+_]+", " ", str(record.get("prompt", "")).lower()).strip()
+
+
+def _human_only_training_record(record: dict[str, Any]) -> bool:
+    return bool(
+        record.get("human_accepted", False)
+        and not record.get("human_rejected", False)
+        and not record.get("deterministic_verified", False)
+        and not record.get("reference_verified", False)
+    )
+
+
 def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as stream:
@@ -1254,6 +1270,17 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
             ).hexdigest()
         unique[fingerprint] = record
     records = list(unique.values())
+    distinct_human_prompts = {
+        _normalized_learning_prompt(record)
+        for record in records
+        if _human_only_training_record(record) and _normalized_learning_prompt(record)
+    }
+    if len(distinct_human_prompts) < _MINIMUM_DIVERSE_HUMAN_APPROVALS:
+        records = [
+            record
+            for record in records
+            if not _human_only_training_record(record)
+        ]
     return records
 
 

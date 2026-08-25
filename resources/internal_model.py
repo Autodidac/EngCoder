@@ -1773,6 +1773,49 @@ def _record_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
     return None
 
 
+_MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
+
+
+def _human_only_training_record(record: dict[str, Any]) -> bool:
+    return bool(
+        record.get("human_accepted", False)
+        and not record.get("human_rejected", False)
+        and not record.get("deterministic_verified", False)
+        and not record.get("reference_verified", False)
+    )
+
+
+def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
+    prompts: dict[str, set[str]] = {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        with path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not bool(record.get("eligible_for_training", False)) or not _human_only_training_record(record):
+                    continue
+                prompt = str(record.get("prompt", "")).strip()
+                if not prompt:
+                    messages = _record_messages(record) or []
+                    prompt = next(
+                        (
+                            message["content"]
+                            for message in reversed(messages)
+                            if message["role"].lower() == "user"
+                        ),
+                        "",
+                    )
+                normalized = re.sub(r"[^a-z0-9+_]+", " ", prompt.lower()).strip()
+                if normalized:
+                    skill = normalize_skill(str(record.get("skill", record.get("domain", "general"))))
+                    prompts.setdefault(skill, set()).add(normalized)
+    return {skill: len(values) for skill, values in prompts.items()}
+
+
 def _record_skills(record_capabilities: set[str]) -> tuple[str, ...]:
     """Map one training record onto the experts that should receive gradients.
 
@@ -1848,8 +1891,9 @@ def load_training_sequences(
     sequences: list[TrainingSequence] = []
     seen: set[str] = set()
     normalized_skill = normalize_skill(skill) if skill else None
-    for path_value in paths:
-        path = Path(path_value)
+    path_values = [Path(path_value) for path_value in paths]
+    human_approval_counts = _human_approval_counts(path_values)
+    for path in path_values:
         if not path.is_file():
             continue
         with path.open("r", encoding="utf-8") as stream:
@@ -1883,6 +1927,12 @@ def load_training_sequences(
                         bool(record.get("human_accepted", False))
                         or bool(record.get("deterministic_verified", False))
                         or bool(record.get("reference_verified", False))
+                    ):
+                        continue
+                    if (
+                        _human_only_training_record(record)
+                        and human_approval_counts.get(record_skill, 0)
+                        < _MINIMUM_DIVERSE_HUMAN_APPROVALS
                     ):
                         continue
                 elif "accepted" in record and not bool(record.get("accepted", False)):

@@ -384,7 +384,8 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
         episode.skill,
         episode.prompt,
         episode.response.empty() ? episode.correction : episode.response);
-    const auto current_accepted_examples = memory_store_.count_for_skill(episode.skill);
+    const auto current_accepted_examples =
+        memory_store_.human_acceptance_count_for_skill(episode.skill);
     const auto independently_validated =
         episode.human_accepted || episode.deterministic_verified || episode.reference_verified;
     const auto exact_duplicate = memory_store_.contains_hash(result.content_hash);
@@ -393,7 +394,7 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
         memory_store_.contains_positive_prompt(episode.skill, episode.prompt);
     const auto projected_accepted_examples =
         current_accepted_examples +
-        (independently_validated && !episode.human_rejected &&
+        (episode.human_accepted && !episode.human_rejected &&
          !exact_duplicate && !positive_prompt_duplicate ? 1U : 0U);
 
     auto decision = knowledge_classifier_.classify(

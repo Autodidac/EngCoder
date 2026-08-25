@@ -28,7 +28,7 @@ A live episode may enter positive weight training only when it has:
 - nonempty prompt and response;
 - unique normalized content;
 - no human rejection;
-- explicit human acceptance, deterministic verification, or trusted bundled provenance;
+- deterministic verification, trusted bundled provenance, or at least four distinct human-approved examples for the same behavior;
 - durable-skill classification rather than volatile state;
 - a supported skill label.
 
@@ -87,9 +87,20 @@ Published generations include a SafeTensors checksum and metrics. `active.json` 
 
 ## Immediate learning versus weight learning
 
-Immediate memory is the fastest learning path and remains active even when background weight training is paused. It stores user corrections, accepted context, and verified outcomes for retrieval in later prompts.
+Immediate memory is the fastest learning path and remains active even when background weight training is paused. It stores user corrections, accepted context, and verified outcomes for retrieval in later prompts. Short conversation prompts may use a unique conservative spelling match; code, tools, and repository prompts require exact verified matches. The original prompt is never rewritten and a typo match never creates synthetic training evidence.
 
-Weight learning is slower and more conservative. It consolidates repeated, verified behavior into internal experts. Turning off background learning stops candidate training but does not erase context or memory.
+Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off background learning stops candidate training but does not erase context or memory.
+
+## Conversation, coding, and self-iteration
+
+ThreadSpire keeps these concerns separate without exposing sampler jargon in the interface:
+
+- ordinary conversation uses modest response variation while retaining the structural corruption gate;
+- coding and tool execution use low-variance generation, exact memory, and compiler/test evidence;
+- the persistent verified-memory store is the small shared starter cache used before any provider route;
+- self-iteration is a repository transaction: propose a patch, validate it, build, test, and either retain the verified result or roll back.
+
+A successful repository trajectory is admitted as deterministic coding evidence and may queue a scoped shadow update. It does not grant the model permission to rewrite or replace the running executable. Source and model promotion remain separate atomic operations with independent rollback.
 
 ## Automatic teacher generation and immediate updates
 

@@ -61,7 +61,12 @@ public:
         std::size_t limit = 3) const;
     [[nodiscard]] std::optional<RetrievedEpisode> exact_verified(
         std::string_view query) const;
+    [[nodiscard]] std::optional<RetrievedEpisode> verified_match(
+        std::string_view query,
+        std::string_view expected_skill) const;
     [[nodiscard]] std::size_t count_for_skill(std::string_view skill) const;
+    [[nodiscard]] std::size_t human_acceptance_count_for_skill(
+        std::string_view skill) const;
     [[nodiscard]] std::size_t training_count_for_skill(std::string_view skill) const;
     [[nodiscard]] std::filesystem::path path() const;
 
@@ -79,6 +84,7 @@ private:
     std::unordered_map<std::string, std::size_t> exact_prompt_index_;
     std::unordered_map<std::string, std::vector<std::size_t>> term_postings_;
     std::unordered_map<std::string, std::size_t> accepted_counts_;
+    std::unordered_map<std::string, std::size_t> human_accepted_counts_;
     std::unordered_map<std::string, std::size_t> training_counts_;
 };
 

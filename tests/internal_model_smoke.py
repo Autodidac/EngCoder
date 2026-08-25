@@ -245,6 +245,55 @@ def main() -> int:
         )
         assert len(loaded_reference) == 1
 
+        human_episodes = temporary / "human-episodes.jsonl"
+        human_records = [
+            {
+                "skill": "english-conversation",
+                "eligible_for_training": True,
+                "human_accepted": True,
+                "human_rejected": False,
+                "deterministic_verified": False,
+                "reference_verified": False,
+                "prompt": "What is up?",
+                "response": "Not much. What is on your mind?",
+            },
+        ]
+        human_episodes.write_text(
+            "\n".join(json.dumps(record) for record in human_records) + "\n",
+            encoding="utf-8",
+        )
+        assert worker._load_episodes(  # pylint: disable=protected-access
+            human_episodes,
+            "english-conversation",
+        ) == []
+        assert model.load_training_sequences(
+            [human_episodes],
+            128,
+            "english-conversation",
+        ) == []
+
+        human_records.extend([
+            {
+                **human_records[0],
+                "prompt": f"Distinct approved conversation {index}",
+                "response": f"Distinct verified response {index}.",
+            }
+            for index in range(2, 5)
+        ])
+        human_episodes.write_text(
+            "\n".join(json.dumps(record) for record in human_records) + "\n",
+            encoding="utf-8",
+        )
+        assert len(worker._load_episodes(  # pylint: disable=protected-access
+            human_episodes,
+            "english-conversation",
+        )) == 4
+        assert len(model.load_training_sequences(
+            [human_episodes],
+            128,
+            "english-conversation",
+        )) == 4
+
         config = model.ModelConfig(
             name="ThreadSpire Internal Smoke",
             context_length=128,

@@ -128,11 +128,12 @@ KnowledgeDecision KnowledgeClassifier::classify(
     }
 
     constexpr std::size_t minimum_diverse_human_approvals = 4U;
-    const auto strong_evidence = episode.deterministic_verified ||
-                                 (episode.reference_verified && episode.score >= 0.86) ||
-                                 (episode.human_accepted && episode.score >= 0.88 &&
-                                  accepted_skill_examples >= minimum_diverse_human_approvals);
-    if (strong_evidence && accepted_skill_examples >= 1U) {
+    const auto independently_verified = episode.deterministic_verified ||
+                                        (episode.reference_verified && episode.score >= 0.86);
+    const auto diverse_human_validation =
+        episode.human_accepted && episode.score >= 0.88 &&
+        accepted_skill_examples >= minimum_diverse_human_approvals;
+    if (independently_verified || diverse_human_validation) {
         return {
             .destination = KnowledgeDestination::lora_incubation,
             .eligible_for_weight_training = true,
