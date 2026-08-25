@@ -53,6 +53,9 @@ public:
     void append(const Episode& episode);
     [[nodiscard]] bool append_if_new(Episode episode);
     [[nodiscard]] bool contains_hash(std::string_view content_hash) const;
+    [[nodiscard]] bool contains_positive_prompt(
+        std::string_view skill,
+        std::string_view prompt) const;
     [[nodiscard]] std::vector<RetrievedEpisode> retrieve(
         std::string_view query,
         std::size_t limit = 3) const;
@@ -71,6 +74,7 @@ private:
     mutable std::mutex mutex_;
     std::unordered_set<std::string> content_hashes_;
     std::unordered_set<std::string> provisional_prompt_keys_;
+    std::unordered_set<std::string> positive_prompt_keys_;
     std::vector<Episode> retrievable_episodes_;
     std::unordered_map<std::string, std::size_t> exact_prompt_index_;
     std::unordered_map<std::string, std::vector<std::size_t>> term_postings_;

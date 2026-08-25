@@ -321,6 +321,13 @@ void test_episode_dedup_and_negative_evidence() {
     };
     require(store.append_if_new(accepted), "first deterministic episode should be stored");
     require(!store.append_if_new(accepted), "duplicate evidence must be rejected");
+    auto competing_approval = accepted;
+    competing_approval.id = "accepted-competing-answer";
+    competing_approval.response = "Use a different approved answer for the same prompt.";
+    competing_approval.content_hash.clear();
+    require(!store.append_if_new(competing_approval),
+            "a second positive answer for one normalized skill and prompt must not add weight");
+
 
     auto provisional = accepted;
     provisional.id = "provisional-a";
@@ -353,6 +360,73 @@ void test_episode_dedup_and_negative_evidence() {
             "retrieval should use independently validated positive evidence only");
     std::filesystem::remove_all(root);
 }
+void test_learning_preview_blocks_errors_and_repetition() {
+    const auto root = temporary_root();
+    threadspire::ai::learning::LearningSettings settings{
+        .python_executable = root / "missing-python.exe",
+        .worker_script = root / "missing-worker.py",
+        .state_root = root,
+        .seed_dataset = {},
+        .anchor_dataset = {},
+        .base_model = "local-base",
+        .policy = {},
+        .lora_rank = 16,
+        .lora_alpha = 32,
+        .micro_steps = 12,
+        .learning_rate = 1.0e-4,
+        .require_cuda = true,
+        .automatic_consolidation = true,
+    };
+    settings.policy.lora_microbatch = 100;
+    threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+
+    const auto accepted_episode = [](const int index) {
+        threadspire::ai::memory::Episode episode{};
+        episode.skill = "conversation";
+        episode.prompt = "Unique approved message " + std::to_string(index);
+        episode.response = "Safe useful reply " + std::to_string(index);
+        episode.model_id = "internal-fast";
+        episode.score = 0.92;
+        episode.human_accepted = true;
+        episode.self_generated = true;
+        episode.provenance = "per-reply-test";
+        return episode;
+    };
+
+    auto unsafe = accepted_episode(0);
+    unsafe.response = "ERROR | MODEL REQUEST\nEvery eligible local model failed";
+    const auto unsafe_preview = service.preview(unsafe);
+    require(!unsafe_preview.would_store &&
+                unsafe_preview.accepted_skill_examples == 0U &&
+                unsafe_preview.destination ==
+                    threadspire::ai::learning::KnowledgeDestination::reject,
+            "visible model errors must never be accepted as learning material");
+    require(!service.submit(unsafe) && service.memory_store().count_for_skill("conversation") == 0U,
+            "blocked model errors must not touch persistent memory");
+
+    for (int index = 1; index <= 4; ++index) {
+        auto episode = accepted_episode(index);
+        const auto preview = service.preview(episode);
+        require(preview.would_store, "each unique approved reply should be stored once");
+        require(preview.eligible_for_weight_training == (index == 4),
+                "human approvals must stay memory-only until four unique prompts exist");
+        require(service.submit(std::move(episode)),
+                "a unique safe per-reply approval should pass the learning gate");
+    }
+
+    auto competing = accepted_episode(4);
+    competing.response = "A competing answer for the fourth prompt";
+    const auto duplicate_preview = service.preview(competing);
+    require(duplicate_preview.duplicate && !duplicate_preview.would_store &&
+                !service.submit(std::move(competing)),
+            "another answer for one approved prompt must be coalesced before storage");
+    require(service.memory_store().count_for_skill("conversation") == 4U &&
+                service.memory_store().training_count_for_skill("conversation") == 1U,
+            "four unique approvals should yield four memory records but only the gated weight record");
+    service.request_stop();
+    std::filesystem::remove_all(root);
+}
+
 
 void test_episode_index_recovers_after_restart() {
     const auto root = temporary_root();
@@ -966,6 +1040,24 @@ void test_windows_ui_source_contract() {
                 ui.find(".context = std::move(execution_context)") != std::string::npos &&
                 ui.find("Current user message:") == std::string::npos,
             "the workspace must keep the exact current user message separate from bounded background context and route analysis");
+    require(ui.find("L\"What will it learn?\"") != std::string::npos &&
+                ui.find("L\"Include earlier chat\"") != std::string::npos &&
+                ui.find("response_turns_.push_back") != std::string::npos &&
+                ui.find("copy_selected_response") != std::string::npos &&
+                ui.find("EARLIER CONVERSATION INCLUDED BY USER") != std::string::npos &&
+                ui.find("Other replies, routing details, status text, and error messages: NOT INCLUDED") !=
+                    std::string::npos,
+            "each completed reply must have exact copy, review, context, and learning-preview controls");
+    const auto learning_gate = read_text_file(source / "src/learning/knowledge_classifier.cpp");
+    const auto learning_service = read_text_file(source / "src/learning/continual_learning_service.cpp");
+    const auto episode_store = read_text_file(source / "src/memory/episode_store.cpp");
+    require(learning_gate.find("model errors, corrupt drafts, and private reasoning") !=
+                std::string::npos &&
+                learning_gate.find("minimum_diverse_human_approvals = 4U") != std::string::npos &&
+                learning_service.find("contains_positive_prompt") != std::string::npos &&
+                episode_store.find("positive_prompt_keys_") != std::string::npos,
+            "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
+
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
                 ui.find("SS_ENDELLIPSIS") != std::string::npos &&
@@ -1149,6 +1241,8 @@ void test_windows_ui_source_contract() {
     require(ui.find("Training Library —") != std::string::npos &&
                 ui.find("append_training_library_file") != std::string::npos &&
                 ui.find("Approved result") != std::string::npos &&
+                ui.find("Rejected results") != std::string::npos &&
+                ui.find("Weight training: eligible") != std::string::npos &&
                 ui.find("Held-out check") != std::string::npos &&
                 ui.find("Held out from training; used only to check the candidate") != std::string::npos &&
                 ui.find("No prompt or answer below is shortened") != std::string::npos &&
@@ -1436,6 +1530,7 @@ int main() {
         test_learning_service_stores_before_training();
         test_interactive_priority_uses_nested_leases();
         test_episode_dedup_and_negative_evidence();
+        test_learning_preview_blocks_errors_and_repetition();
         test_episode_index_recovers_after_restart();
         test_knowledge_classifier_routes_volatile_state_to_retrieval();
         test_resource_governor_prioritizes_inference();

@@ -74,6 +74,17 @@ struct LearningPipelineSnapshot final {
     std::size_t queued_updates{0};
     std::optional<LearningJobStatus> active_job;
 };
+struct LearningSubmissionPreview final {
+    bool would_store{false};
+    bool duplicate{false};
+    KnowledgeDestination destination{KnowledgeDestination::reject};
+    bool eligible_for_weight_training{false};
+    double confidence{0.0};
+    std::size_t accepted_skill_examples{0};
+    std::string content_hash;
+    std::string reason;
+};
+
 
 class ContinualLearningService final {
 public:
@@ -83,6 +94,7 @@ public:
     ContinualLearningService(const ContinualLearningService&) = delete;
     ContinualLearningService& operator=(const ContinualLearningService&) = delete;
 
+    [[nodiscard]] LearningSubmissionPreview preview(memory::Episode episode) const;
     [[nodiscard]] bool submit(memory::Episode episode);
     void request_skill_update(std::string skill);
     void pause(bool value);

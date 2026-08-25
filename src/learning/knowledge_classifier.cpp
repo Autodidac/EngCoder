@@ -28,6 +28,33 @@ namespace {
     });
 }
 
+[[nodiscard]] bool unsafe_generated_response(const std::string_view value) {
+    auto response = lower_ascii(value);
+    const auto first = response.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return true;
+    }
+    response.erase(0U, first);
+    if (response == "-1" || response == "null" || response == "none") {
+        return true;
+    }
+    if (response.starts_with("error | model request") ||
+        response.starts_with("error: local model request failed") ||
+        response.starts_with("we need to respond as assistant") ||
+        response.starts_with("the user said") ||
+        contains_any(response, {
+            "every eligible local model failed",
+            "the selected ai could not produce a usable answer",
+            "repetitive or structurally corrupt internal-model draft",
+            "private reasoning and returned no final answer",
+            "local model server returned no generated content",
+            "generation cancelled",
+        })) {
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 std::string_view to_string(const KnowledgeDestination destination) noexcept {
@@ -55,6 +82,15 @@ KnowledgeDecision KnowledgeClassifier::classify(
             .reason = "explicit rejection is retained as negative evidence but never positive training",
         };
     }
+    if (unsafe_generated_response(episode.response)) {
+        return {
+            .destination = KnowledgeDestination::reject,
+            .eligible_for_weight_training = false,
+            .confidence = 1.0,
+            .reason = "model errors, corrupt drafts, and private reasoning are never accepted as learning material",
+        };
+    }
+
     if (!episode.human_accepted && !episode.deterministic_verified &&
         !episode.reference_verified) {
         return {
@@ -91,16 +127,18 @@ KnowledgeDecision KnowledgeClassifier::classify(
         };
     }
 
+    constexpr std::size_t minimum_diverse_human_approvals = 4U;
     const auto strong_evidence = episode.deterministic_verified ||
                                  (episode.reference_verified && episode.score >= 0.86) ||
-                                 (episode.human_accepted && episode.score >= 0.88);
+                                 (episode.human_accepted && episode.score >= 0.88 &&
+                                  accepted_skill_examples >= minimum_diverse_human_approvals);
     if (strong_evidence && accepted_skill_examples >= 1U) {
         return {
             .destination = KnowledgeDestination::lora_incubation,
             .eligible_for_weight_training = true,
             .confidence = episode.deterministic_verified ? 0.98 :
                           (episode.reference_verified ? 0.90 : 0.88),
-            .reason = "stable behavior with independent or explicit human validation can incubate",
+            .reason = "stable behavior has enough independent or diverse human validation to incubate once",
         };
     }
 
@@ -108,7 +146,7 @@ KnowledgeDecision KnowledgeClassifier::classify(
         .destination = KnowledgeDestination::retrieval_memory,
         .eligible_for_weight_training = false,
         .confidence = 0.78,
-        .reason = "use immediately through retrieval until more verified evidence accumulates",
+        .reason = "use immediately through memory; weight learning waits for four unique approvals or independent verification",
     };
 }
 

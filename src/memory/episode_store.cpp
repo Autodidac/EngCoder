@@ -256,6 +256,7 @@ EpisodeStore::EpisodeStore(std::filesystem::path path) : path_(std::move(path)) 
 void EpisodeStore::rebuild_index_unlocked() {
     content_hashes_.clear();
     provisional_prompt_keys_.clear();
+    positive_prompt_keys_.clear();
     retrievable_episodes_.clear();
     exact_prompt_index_.clear();
     term_postings_.clear();
@@ -285,6 +286,7 @@ void EpisodeStore::index_episode_unlocked(const Episode& episode) {
         provisional_prompt_keys_.insert(prompt_key(episode));
     }
     if (independently_validated && !episode.human_rejected) {
+        positive_prompt_keys_.insert(prompt_key(episode));
         ++accepted_counts_[episode.skill];
     }
     if (episode.eligible_for_training && !episode.human_rejected) {
@@ -357,6 +359,10 @@ bool EpisodeStore::append_if_new(Episode episode) {
     }
     const auto independently_validated = episode.human_accepted || episode.deterministic_verified ||
                                          episode.reference_verified;
+    if (independently_validated && !episode.human_rejected &&
+        positive_prompt_keys_.contains(prompt_key(episode))) {
+        return false;
+    }
     if (!independently_validated && !episode.human_rejected &&
         provisional_prompt_keys_.contains(prompt_key(episode))) {
         return false;
@@ -404,6 +410,14 @@ bool EpisodeStore::contains_hash_unlocked(const std::string_view content_hash) c
 bool EpisodeStore::contains_hash(const std::string_view content_hash) const {
     std::lock_guard lock(mutex_);
     return contains_hash_unlocked(content_hash);
+}
+
+bool EpisodeStore::contains_positive_prompt(
+    const std::string_view skill,
+    const std::string_view prompt) const {
+    std::lock_guard lock(mutex_);
+    return positive_prompt_keys_.contains(
+        normalized_prompt(skill) + '\n' + normalized_prompt(prompt));
 }
 
 std::vector<RetrievedEpisode> EpisodeStore::retrieve(

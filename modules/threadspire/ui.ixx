@@ -78,6 +78,26 @@ private:
         bootstrap_model,
         start_host,
     };
+    enum class ResponseReview {
+        unreviewed,
+        accepted,
+        rejected,
+        blocked,
+    };
+
+    struct ResponseTurn final {
+        std::string prompt;
+        std::string response;
+        std::string earlier_context;
+        routing::TaskAnalysis analysis;
+        std::string model_id;
+        std::vector<std::string> models_used;
+        std::vector<std::string> tool_events;
+        RequestSurface surface{RequestSurface::assistant};
+        bool learning_weight_eligible{false};
+        std::string learning_destination;
+        ResponseReview review{ResponseReview::unreviewed};
+    };
 
     static LRESULT CALLBACK window_procedure(
         HWND window,
@@ -131,6 +151,16 @@ private:
     void send_request(RequestSurface surface);
     void accept_last_response();
     void reject_last_response();
+    void copy_selected_response();
+    void show_selected_learning_preview();
+    void update_response_turn_controls();
+    void select_response_turn();
+    [[nodiscard]] ResponseTurn* selected_response_turn();
+    [[nodiscard]] const ResponseTurn* selected_response_turn() const;
+    [[nodiscard]] memory::Episode learning_episode_for(
+        const ResponseTurn& turn,
+        bool accepted) const;
+    [[nodiscard]] std::wstring learning_preview_text(const ResponseTurn& turn) const;
     void discover_local_ai();
     void add_manual_local_ai();
     void connect_mcp();
@@ -259,6 +289,8 @@ private:
     std::string workspace_transcript_;
     std::vector<std::pair<std::string, std::string>> conversation_history_;
     std::size_t pending_transcript_heading_offset_{std::string::npos};
+    std::vector<ResponseTurn> response_turns_;
+    std::size_t selected_response_turn_index_{std::string::npos};
     std::size_t pending_transcript_heading_length_{0};
     bool interactive_model_verified_{false};
     bool backend_running_last_{false};

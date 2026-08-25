@@ -364,11 +364,89 @@ ContinualLearningService::~ContinualLearningService() {
     clear_training_markers(settings_.state_root);
 }
 
+LearningSubmissionPreview ContinualLearningService::preview(memory::Episode episode) const {
+    LearningSettings settings;
+    {
+        std::lock_guard lock(mutex_);
+        settings = settings_;
+    }
+
+    LearningSubmissionPreview result;
+    if (episode.prompt.empty() || (episode.response.empty() && !episode.human_rejected)) {
+        result.reason = "a learning record needs the exact user message and a completed reply";
+        return result;
+    }
+
+    episode.skill = normalize_skill(episode.skill);
+    episode.deterministic_verified = episode.deterministic_verified ||
+                                     (episode.compiler_passed && episode.tests_passed);
+    result.content_hash = memory::make_content_hash(
+        episode.skill,
+        episode.prompt,
+        episode.response.empty() ? episode.correction : episode.response);
+    const auto current_accepted_examples = memory_store_.count_for_skill(episode.skill);
+    const auto independently_validated =
+        episode.human_accepted || episode.deterministic_verified || episode.reference_verified;
+    const auto exact_duplicate = memory_store_.contains_hash(result.content_hash);
+    const auto positive_prompt_duplicate =
+        independently_validated && !episode.human_rejected &&
+        memory_store_.contains_positive_prompt(episode.skill, episode.prompt);
+    const auto projected_accepted_examples =
+        current_accepted_examples +
+        (independently_validated && !episode.human_rejected &&
+         !exact_duplicate && !positive_prompt_duplicate ? 1U : 0U);
+
+    auto decision = knowledge_classifier_.classify(
+        episode,
+        projected_accepted_examples);
+    if (decision.destination != KnowledgeDestination::reject &&
+        episode.score < settings.policy.minimum_episode_score) {
+        decision.eligible_for_weight_training = false;
+        if (decision.destination == KnowledgeDestination::lora_incubation) {
+            decision.destination = KnowledgeDestination::retrieval_memory;
+        }
+        decision.reason = "saved for memory only because its score is below the weight-training threshold";
+    }
+
+    result.destination = decision.destination;
+    result.eligible_for_weight_training = decision.eligible_for_weight_training;
+    result.confidence = decision.confidence;
+    result.accepted_skill_examples =
+        decision.destination == KnowledgeDestination::reject ||
+                exact_duplicate || positive_prompt_duplicate
+            ? current_accepted_examples
+            : projected_accepted_examples;
+    result.reason = decision.reason;
+    if (decision.destination == KnowledgeDestination::reject) {
+        return result;
+    }
+
+    if (exact_duplicate) {
+        result.duplicate = true;
+        result.reason = "this exact message and reply are already stored; repeated approval adds no weight";
+        return result;
+    }
+
+    if (positive_prompt_duplicate) {
+        result.duplicate = true;
+        result.reason =
+            "this skill and message already have an approved reply; another approval would overweight one prompt";
+        return result;
+    }
+
+    result.would_store = true;
+    return result;
+}
+
 bool ContinualLearningService::submit(memory::Episode episode) {
     LearningSettings settings;
     {
         std::lock_guard lock(mutex_);
         settings = settings_;
+    }
+    const auto inspection = preview(episode);
+    if (!inspection.would_store) {
+        return false;
     }
     if (episode.prompt.empty() || (episode.response.empty() && !episode.human_rejected)) {
         return false;
@@ -387,17 +465,8 @@ bool ContinualLearningService::submit(memory::Episode episode) {
         episode.prompt,
         episode.response.empty() ? episode.correction : episode.response);
 
-    const auto prior_examples = memory_store_.training_count_for_skill(episode.skill);
-    auto decision = knowledge_classifier_.classify(episode, prior_examples + 1U);
-    if (episode.score < settings.policy.minimum_episode_score) {
-        decision.eligible_for_weight_training = false;
-        if (decision.destination == KnowledgeDestination::lora_incubation) {
-            decision.destination = KnowledgeDestination::retrieval_memory;
-        }
-        decision.reason = "stored for memory, but below the configured weight-training score";
-    }
-    episode.eligible_for_training = decision.eligible_for_weight_training;
-    episode.knowledge_destination = std::string(to_string(decision.destination));
+    episode.eligible_for_training = inspection.eligible_for_weight_training;
+    episode.knowledge_destination = std::string(to_string(inspection.destination));
     if (!memory_store_.append_if_new(episode)) {
         return false;
     }
