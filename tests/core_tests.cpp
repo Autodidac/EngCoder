@@ -1010,10 +1010,16 @@ void test_windows_ui_source_contract() {
     require(ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") != std::string::npos &&
                 ui.find("never prevents Chat from using another connected AI") != std::string::npos &&
-                ui.find("waiting for optional setup files") != std::string::npos &&
+                ui.find("const auto unavailable_internal") != std::string::npos &&
+                ui.find("Built-in AI is not installed, so Chat kept using the ready AI") != std::string::npos &&
+                ui.find("update_inference_source(id::chat_source)") != std::string::npos &&
+                ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
+                ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
+                ui.find("waiting for optional setup files") == std::string::npos &&
+                ui.find("show_progress ? SW_SHOW : SW_HIDE") != std::string::npos &&
                 ui.find("automatic_learning_limit_reached") != std::string::npos &&
                 ui.find("no unapproved model was activated") != std::string::npos,
-            "startup must keep connected inference usable while automatic built-in AI setup continues honestly");
+            "an unavailable built-in AI must fall back and continue through a ready source without pretending setup is running");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
                 ui.find("RGB(22, 24, 29)") != std::string::npos,
@@ -1080,6 +1086,12 @@ void test_windows_ui_source_contract() {
 void test_worker_and_resource_contract() {
     const auto source = std::filesystem::path(THREADSPIRE_SOURCE_DIR);
     const auto worker = read_text_file(source / "resources/model_worker.py");
+    require(worker.find("optional_version(\"transformers\")") != std::string::npos &&
+                worker.find("optional_version(\"peft\")") != std::string::npos &&
+                worker.find("\"internal_training_ready\": True") != std::string::npos &&
+                worker.find("    import transformers") == std::string::npos &&
+                worker.find("    import peft") == std::string::npos,
+            "the internal PyTorch doctor must not require the separate optional Transformers/PEFT pack");
     require(worker.find("train-lora") != std::string::npos,
             "worker must implement low-rank incubation");
     require(worker.find("threadspire.external-skill-delta.v1") != std::string::npos,

@@ -797,7 +797,7 @@ void draw_dark_text(
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
     const auto state = runtime::inspect_internal_model_state(paths);
     if (!state.exists) {
-        return L"Built-in AI has not been set up yet.";
+        return L"Built-in AI is not installed.";
     }
     if (!state.manifest_valid) {
         return L"Built-in AI setup was interrupted. ThreadSpire will continue from the last safe point.";
@@ -1205,6 +1205,10 @@ MainWindow::MainWindow(const HINSTANCE instance)
         // A stale internal-only preference must never hide a working connected model.
         // Automatic setup can continue in the background while Chat uses what is ready.
         inference_source_ = InferenceSource::automatic;
+        try {
+            write_text(paths_.root / "config" / "preferred-source.txt", "automatic");
+        } catch (...) {
+        }
     }
 
     const auto saved_training_target = trim_line_endings(read_text(
@@ -1953,7 +1957,7 @@ void MainWindow::create_models_page() {
         0, id::models_automation_toggle, parent);
     set_checked(id::models_automation_toggle, automatic_lifecycle_enabled_);
     create_control(
-        L"STATIC", L"Built-in AI has not been set up yet.",
+        L"STATIC", L"Built-in AI is not installed.",
         WS_CHILD | WS_VISIBLE, 0, id::models_internal_status, parent);
     const auto progress = create_control(
         PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
@@ -3501,7 +3505,7 @@ void MainWindow::refresh_model_selectors() {
             }
             return bootstrap_training
                 ? L"Automatic — built-in AI is learning"
-                : L"Automatic — built-in AI setup is continuing";
+                : L"Automatic — built-in AI is unavailable";
         case InferenceSource::automatic:
             return available.empty()
                 ? L"Automatic — waiting for an AI"
@@ -3537,7 +3541,7 @@ void MainWindow::refresh_model_selectors() {
         if (models::is_internal_model(model) && !custom_host_running) {
             label += bootstrap_training
                 ? L" • learning automatically"
-                : L" • setup continuing";
+                : L" • not available";
         }
         for (const auto identifier : {id::chat_model, id::coding_model}) {
             static_cast<void>(::SendMessageW(
@@ -3579,7 +3583,7 @@ void MainWindow::refresh_model_selectors() {
             } else if (bootstrap_training) {
                 ready << L"Learning is running automatically. ThreadSpire will start it when ready.";
             } else {
-                ready << L"Setup is continuing automatically. Progress is shown above.";
+                ready << L"Required built-in AI files are not installed. Chat will use another ready AI.";
             }
         } else if (inference_source_ == InferenceSource::local_bridge) {
             ready << L"OTHER AI APP\r\n"
@@ -3604,14 +3608,20 @@ void MainWindow::update_inference_source(const int source_identifier) {
         0));
     inference_source_ = static_cast<InferenceSource>(std::clamp(selection, 0, 2));
 
-    const auto other = source_identifier == id::chat_source
-        ? id::coding_source
-        : id::chat_source;
-    static_cast<void>(::SendMessageW(
-        control(other),
-        CB_SETCURSEL,
-        static_cast<WPARAM>(inference_source_),
-        0));
+    const auto unavailable_internal =
+        inference_source_ == InferenceSource::custom_model &&
+        !backend_server_.running();
+    if (unavailable_internal) {
+        inference_source_ = InferenceSource::automatic;
+    }
+
+    for (const auto identifier : {id::chat_source, id::coding_source}) {
+        static_cast<void>(::SendMessageW(
+            control(identifier),
+            CB_SETCURSEL,
+            static_cast<WPARAM>(inference_source_),
+            0));
+    }
 
     if (!preferred_model_id_.empty()) {
         const auto snapshot = runtime_model_snapshot();
@@ -3640,7 +3650,9 @@ void MainWindow::update_inference_source(const int source_identifier) {
 
     refresh_model_selectors();
     const auto snapshot = runtime_model_snapshot();
-    set_status(runtime_summary(snapshot, backend_server_.running()));
+    set_status(unavailable_internal
+        ? L"Built-in AI is not installed, so Chat kept using the ready AI."
+        : runtime_summary(snapshot, backend_server_.running()));
 }
 
 void MainWindow::update_model_selection(const int source_identifier) {
@@ -3833,7 +3845,7 @@ std::wstring MainWindow::runtime_summary(
     } else if (automatic_learning_limit_reached(paths_, internal_state)) {
         built_in_status = L"NOT READY — quality limit reached; no unapproved model was used";
     } else if (!runtime::backend_files_present(paths_)) {
-        built_in_status = L"NOT READY — waiting for optional setup files";
+        built_in_status = L"NOT INSTALLED — required files are missing";
     } else if (!internal_state.exists) {
         built_in_status = L"NOT READY — automatic setup starting";
     } else if (!internal_state.manifest_valid) {
@@ -4183,22 +4195,22 @@ void MainWindow::send_request(const RequestSurface surface) {
             L"Background teacher generation is yielding to this request.");
     }
 
+    if (inference_source_ == InferenceSource::custom_model &&
+        !backend_server_.running()) {
+        static_cast<void>(::SendMessageW(
+            control(id::chat_source),
+            CB_SETCURSEL,
+            static_cast<WPARAM>(InferenceSource::automatic),
+            0));
+        update_inference_source(id::chat_source);
+    }
+
     auto snapshot = runtime_model_snapshot();
     apply_source_filter(snapshot);
     if (workspace) {
         for (auto& model : snapshot.models()) {
             model.enabled = model.enabled && model_supports_workspace_task(model);
         }
-    }
-    if (inference_source_ == InferenceSource::custom_model &&
-        !backend_server_.running()) {
-        const auto error =
-            L"Built-in AI is selected but is not ready yet. ThreadSpire will finish its setup "
-            L"automatically when the optional files are available; choose Automatic to work now.";
-        set_control_text(response_id, error);
-        set_control_text(plan_id, L"Built-in AI is still being prepared automatically.");
-        set_status(error);
-        return;
     }
     if (const auto selected = selected_model_id(); selected.has_value()) {
         const auto* selected_profile = snapshot.find(*selected);
@@ -5879,6 +5891,11 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     const auto setup_files_ready = runtime::backend_files_present(selected_paths);
     const auto setup_source_ready =
         automatic_training_pack_source(paths_, selected_pack_source_).has_value();
+    const auto show_progress =
+        backend_operation_.running() || state.exists || setup_source_ready;
+    static_cast<void>(::ShowWindow(
+        control(id::models_progress),
+        show_progress ? SW_SHOW : SW_HIDE));
 
     if (!automatic_lifecycle_enabled_) {
         detail << L"Automatic setup is paused. Backup and repair options can turn it back on.";
@@ -5935,7 +5952,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     } else if (!setup_files_ready && setup_source_ready) {
         detail << L"Built-in AI files were found. ThreadSpire will finish setup automatically.";
     } else if (!setup_files_ready) {
-        detail << L"Waiting for the optional built-in AI files. Chat keeps using any connected AI meanwhile.";
+        detail << L"No setup is running because the built-in AI package is not installed. Chat is using another ready AI.";
     } else if (!backend_verified_) {
         detail << L"ThreadSpire is checking the built-in AI before using it.";
     } else if (!state.bootstrap_complete) {

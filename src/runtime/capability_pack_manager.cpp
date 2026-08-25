@@ -58,7 +58,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
             .name = "Internal PyTorch Training",
             .version = "1",
             .kind = CapabilityPackKind::internal_pytorch_training,
-            .projected_download_bytes = 1800U * mib,
+            .projected_download_bytes = 2700U * mib,
             .projected_install_bytes = 4300U * mib,
             .required_files = {"runtime/Scripts/python.exe", "backend/model_worker.py", "backend/internal_model.py", "backend/curriculum_guard.py"},
         },

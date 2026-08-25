@@ -166,10 +166,16 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def doctor() -> int:
+    import importlib.metadata
+
     import torch
-    import transformers
-    import peft
     import safetensors
+
+    def optional_version(distribution: str) -> str | None:
+        try:
+            return importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            return None
 
     payload = {
         "python": sys.version.split()[0],
@@ -181,9 +187,10 @@ def doctor() -> int:
             if torch.cuda.is_available()
             else 0.0
         ),
-        "transformers": transformers.__version__,
-        "peft": peft.__version__,
+        "transformers": optional_version("transformers"),
+        "peft": optional_version("peft"),
         "safetensors": safetensors.__version__,
+        "internal_training_ready": True,
     }
     print(json.dumps(payload, indent=2), flush=True)
     return 0
