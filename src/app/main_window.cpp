@@ -836,20 +836,25 @@ void draw_dark_text(
         progress.phase != "complete" && progress.phase != "candidate-ready" &&
         progress.phase != "repair-required" && progress.phase != "rejected" &&
         progress.phase != "failed";
-    const auto target = progress_active && progress.bootstrap_target_steps > 0U
+    const auto progress_has_saved_work =
+        progress.available && saved_learning_steps(progress) > 0U;
+    const auto target = progress_has_saved_work && progress.bootstrap_target_steps > 0U
         ? progress.bootstrap_target_steps
         : runtime::default_bootstrap_target(state);
-    const auto completed = progress_active
-        ? (progress.total_steps > 0U
-            ? progress.total_steps
-            : progress.prior_total_steps + progress.step)
+    const auto completed = progress_has_saved_work
+        ? saved_learning_steps(progress)
         : state.steps;
     std::wostringstream stream;
-    stream << L"Built-in AI learning setup: ";
-    if (progress_active && completed == 0U) {
-        stream << L"starting";
+    if (progress.available && terminal_learning_phase(progress.phase)) {
+        stream << L"Built-in AI failed quality checks at "
+               << completed << L"/" << target;
     } else {
-        stream << completed << L"/" << target;
+        stream << L"Built-in AI learning setup: ";
+        if (progress_active && completed == 0U) {
+            stream << L"starting";
+        } else {
+            stream << completed << L"/" << target;
+        }
     }
     stream << L" • saved automatically • not used for answers until every check passes";
     return stream.str();
