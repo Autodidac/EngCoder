@@ -53,6 +53,7 @@ struct CompletionResult final {
     double tokens_per_second{0.0};
     std::chrono::milliseconds first_token_latency{0};
     std::chrono::milliseconds elapsed{0};
+    bool hidden_reasoning_only{false};
 };
 
 class CompletionClient final {

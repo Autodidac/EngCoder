@@ -173,9 +173,8 @@ void parse_openai_non_stream_response(const std::string_view body, CompletionRes
         const auto* message = choice->find("message");
         if (message != nullptr) {
             result.content = core::json::string_or(message->find("content"));
-            if (result.content.empty()) {
-                result.content = core::json::string_or(message->find("reasoning_content"));
-            }
+            result.hidden_reasoning_only =
+                !core::json::string_or(message->find("reasoning_content")).empty();
             std::map<std::size_t, ToolCall> calls;
             append_tool_calls(message->find("tool_calls"), calls);
             for (auto& [index, call] : calls) {
@@ -219,18 +218,16 @@ void parse_ollama_document(
     CompletionResult& result,
     std::map<std::size_t, ToolCall>& calls,
     const CompletionRequest& request,
-    std::chrono::steady_clock::time_point& first_token_at,
-    std::string& reasoning_fallback) {
+    std::chrono::steady_clock::time_point& first_token_at) {
     if (const auto server_error = response_error(document); !server_error.empty()) {
         result.error = server_error;
         return;
     }
     const auto* message = document.find("message");
     if (message != nullptr) {
+        result.hidden_reasoning_only = result.hidden_reasoning_only ||
+            !core::json::string_or(message->find("thinking")).empty();
         const auto token = core::json::string_or(message->find("content"));
-        if (token.empty()) {
-            reasoning_fallback += core::json::string_or(message->find("thinking"));
-        }
         if (!token.empty()) {
             if (first_token_at == std::chrono::steady_clock::time_point{}) {
                 first_token_at = std::chrono::steady_clock::now();
@@ -309,7 +306,6 @@ private:
     const auto started = std::chrono::steady_clock::now();
     auto first_token_at = std::chrono::steady_clock::time_point{};
     std::map<std::size_t, ToolCall> calls;
-    std::string reasoning_fallback;
     JsonLineDecoder decoder;
 
     const auto process = [&](const std::string_view line) {
@@ -328,8 +324,7 @@ private:
             result,
             calls,
             request,
-            first_token_at,
-            reasoning_fallback);
+            first_token_at);
         return result.error.empty();
     };
 
@@ -377,14 +372,7 @@ private:
             result,
             calls,
             request,
-            first_token_at,
-            reasoning_fallback);
-    }
-    if (result.content.empty() && !reasoning_fallback.empty()) {
-        result.content = std::move(reasoning_fallback);
-        if (request.on_token) {
-            static_cast<void>(request.on_token(result.content));
-        }
+            first_token_at);
     }
     for (auto& [index, call] : calls) {
         static_cast<void>(index);
@@ -398,10 +386,13 @@ private:
         result.tokens_per_second = static_cast<double>(result.completion_tokens) /
                                    static_cast<double>(result.elapsed.count()) * 1000.0;
     }
+    result.hidden_reasoning_only = result.hidden_reasoning_only && result.content.empty();
     result.succeeded = result.error.empty() &&
                        (!result.content.empty() || !result.tool_calls.empty());
     if (!result.succeeded && result.error.empty()) {
-        result.error = "Ollama returned no generated content";
+        result.error = result.hidden_reasoning_only
+            ? "local AI used its first answer budget for private reasoning and returned no final answer"
+            : "Ollama returned no generated content";
     }
     return result;
 }
@@ -502,13 +493,10 @@ CompletionResult CompletionClient::complete(
     std::map<std::size_t, ToolCall> streamed_calls;
     OpenAiSseDecoder decoder;
     bool saw_sse_event = false;
-    bool done = false;
-    std::string reasoning_fallback;
 
     const auto process_event = [&](const std::string_view event) {
         saw_sse_event = true;
         if (event == "[DONE]") {
-            done = true;
             return true;
         }
         std::string parse_error;
@@ -528,14 +516,11 @@ CompletionResult CompletionClient::complete(
         const auto* delta = choice->find("delta");
         std::string token;
         if (delta != nullptr) {
+            result.hidden_reasoning_only = result.hidden_reasoning_only ||
+                !core::json::string_or(delta->find("reasoning_content")).empty();
             token = core::json::string_or(delta->find("content"));
             if (token.empty()) {
                 token = core::json::string_or(delta->find("text"));
-            }
-            const auto reasoning = core::json::string_or(
-                delta->find("reasoning_content"));
-            if (!reasoning.empty()) {
-                reasoning_fallback += reasoning;
             }
             append_tool_calls(delta->find("tool_calls"), streamed_calls);
         }
@@ -545,11 +530,9 @@ CompletionResult CompletionClient::complete(
         if (token.empty()) {
             const auto* message = choice->find("message");
             if (message != nullptr) {
+                result.hidden_reasoning_only = result.hidden_reasoning_only ||
+                    !core::json::string_or(message->find("reasoning_content")).empty();
                 token = core::json::string_or(message->find("content"));
-                if (token.empty()) {
-                    reasoning_fallback += core::json::string_or(
-                        message->find("reasoning_content"));
-                }
             }
         }
         if (!token.empty()) {
@@ -617,12 +600,6 @@ CompletionResult CompletionClient::complete(
             static_cast<void>(index);
             result.tool_calls.push_back(std::move(call));
         }
-        if (result.content.empty() && !reasoning_fallback.empty()) {
-            result.content = std::move(reasoning_fallback);
-            if (request.on_token) {
-                static_cast<void>(request.on_token(result.content));
-            }
-        }
     }
 
     if (result.finish_reason == "low_confidence") {
@@ -639,10 +616,13 @@ CompletionResult CompletionClient::complete(
         result.tokens_per_second = static_cast<double>(result.completion_tokens) /
                                    static_cast<double>(result.elapsed.count()) * 1000.0;
     }
+    result.hidden_reasoning_only = result.hidden_reasoning_only && result.content.empty();
     result.succeeded = result.error.empty() &&
-                       (!result.content.empty() || !result.tool_calls.empty() || done);
+                       (!result.content.empty() || !result.tool_calls.empty());
     if (!result.succeeded && result.error.empty()) {
-        result.error = "local model server returned no generated content";
+        result.error = result.hidden_reasoning_only
+            ? "local AI used its first answer budget for private reasoning and returned no final answer"
+            : "local model server returned no generated content";
     }
     return result;
 }

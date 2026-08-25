@@ -204,6 +204,28 @@ namespace {
     return result;
 }
 
+[[nodiscard]] std::string normalized_prompt(const std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    bool pending_space = false;
+    for (const unsigned char character : value) {
+        if (std::isalnum(character) != 0 || character == '+' || character == '_') {
+            if (pending_space && !result.empty()) {
+                result.push_back(' ');
+            }
+            result.push_back(static_cast<char>(std::tolower(character)));
+            pending_space = false;
+        } else if (!result.empty()) {
+            pending_space = true;
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] std::string prompt_key(const Episode& episode) {
+    return normalized_prompt(episode.skill) + '\n' + normalized_prompt(episode.prompt);
+}
+
 [[nodiscard]] double similarity(
     const std::set<std::string>& query,
     const Episode& episode) {
@@ -233,7 +255,9 @@ EpisodeStore::EpisodeStore(std::filesystem::path path) : path_(std::move(path)) 
 
 void EpisodeStore::rebuild_index_unlocked() {
     content_hashes_.clear();
+    provisional_prompt_keys_.clear();
     retrievable_episodes_.clear();
+    exact_prompt_index_.clear();
     term_postings_.clear();
     accepted_counts_.clear();
     training_counts_.clear();
@@ -257,6 +281,9 @@ void EpisodeStore::index_episode_unlocked(const Episode& episode) {
     }
     const auto independently_validated = episode.human_accepted || episode.deterministic_verified ||
                                          episode.reference_verified;
+    if (!independently_validated && !episode.human_rejected && !episode.prompt.empty()) {
+        provisional_prompt_keys_.insert(prompt_key(episode));
+    }
     if (independently_validated && !episode.human_rejected) {
         ++accepted_counts_[episode.skill];
     }
@@ -270,6 +297,14 @@ void EpisodeStore::index_episode_unlocked(const Episode& episode) {
 
     const auto index = retrievable_episodes_.size();
     retrievable_episodes_.push_back(episode);
+    const auto exact_key = normalized_prompt(episode.prompt);
+    if (!exact_key.empty()) {
+        const auto existing = exact_prompt_index_.find(exact_key);
+        if (existing == exact_prompt_index_.end() ||
+            retrievable_episodes_[existing->second].score < episode.score) {
+            exact_prompt_index_[exact_key] = index;
+        }
+    }
     for (const auto& term : terms(episode.prompt + ' ' + episode.response)) {
         term_postings_[term].push_back(index);
     }
@@ -318,6 +353,12 @@ bool EpisodeStore::append_if_new(Episode episode) {
     }
     std::lock_guard lock(mutex_);
     if (contains_hash_unlocked(episode.content_hash)) {
+        return false;
+    }
+    const auto independently_validated = episode.human_accepted || episode.deterministic_verified ||
+                                         episode.reference_verified;
+    if (!independently_validated && !episode.human_rejected &&
+        provisional_prompt_keys_.contains(prompt_key(episode))) {
         return false;
     }
     std::ofstream stream(path_, std::ios::app | std::ios::binary);
@@ -400,6 +441,20 @@ std::vector<RetrievedEpisode> EpisodeStore::retrieve(
         result.resize(limit);
     }
     return result;
+}
+
+std::optional<RetrievedEpisode> EpisodeStore::exact_verified(
+    const std::string_view query) const {
+    std::lock_guard lock(mutex_);
+    const auto iterator = exact_prompt_index_.find(normalized_prompt(query));
+    if (iterator == exact_prompt_index_.end() ||
+        iterator->second >= retrievable_episodes_.size()) {
+        return std::nullopt;
+    }
+    return RetrievedEpisode{
+        .episode = retrievable_episodes_[iterator->second],
+        .relevance = 1.0,
+    };
 }
 
 std::size_t EpisodeStore::count_for_skill(const std::string_view skill) const {

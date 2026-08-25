@@ -61,6 +61,7 @@ struct CompletionResult final {
     double tokens_per_second{0.0};
     std::chrono::milliseconds first_token_latency{0};
     std::chrono::milliseconds elapsed{0};
+    bool hidden_reasoning_only{false};
 };
 
 class CompletionClient final {
@@ -97,6 +98,7 @@ struct AgentExecutionOptions final {
     bool force_coding_agent{false};
     bool prefer_minimum_compute{true};
     std::string analysis_prompt;
+    std::string context;
     TokenCallback on_token;
     CompletionStopPredicate should_stop;
     mcp::Client* mcp_client{nullptr};
@@ -133,8 +135,8 @@ private:
         std::string prompt,
         bool expose_tokens = false);
     [[nodiscard]] std::string skill_for(const routing::TaskAnalysis& analysis) const;
-    [[nodiscard]] std::string with_memory(
-        std::string_view prompt,
+    [[nodiscard]] std::string memory_context(
+        std::string_view current_prompt,
         const routing::TaskAnalysis& analysis) const;
 
     models::ModelRegistry& models_;

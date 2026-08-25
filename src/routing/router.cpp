@@ -99,6 +99,14 @@ std::string_view to_string(const RouteMode mode) noexcept {
     return "direct";
 }
 
+[[nodiscard]] bool is_internal_conversation_specialist(
+    const models::ModelProfile& model,
+    const TaskAnalysis& analysis) noexcept {
+    return analysis.kind == TaskKind::conversation &&
+           models::is_internal_model(model) &&
+           model.model_name != "threadspire://fast";
+}
+
 const models::ModelProfile* AdaptiveRouter::fastest_capable(
     const TaskAnalysis& analysis,
     const models::ModelRegistry& registry,
@@ -108,7 +116,8 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
     auto best_latency = std::numeric_limits<double>::max();
 
     for (const auto& model : registry.models()) {
-        if (!model.enabled || model.quality < minimum_quality || model.reliability < 0.55) {
+        if (!model.enabled || model.quality < minimum_quality || model.reliability < 0.55 ||
+            is_internal_conversation_specialist(model, analysis)) {
             continue;
         }
         if (!preferred_capability.empty() && !models::has_capability(model, preferred_capability)) {
@@ -134,7 +143,8 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
     }
 
     for (const auto& model : registry.models()) {
-        if (!model.enabled || !satisfies_required_capabilities(model, analysis)) {
+        if (!model.enabled || !satisfies_required_capabilities(model, analysis) ||
+            is_internal_conversation_specialist(model, analysis)) {
             continue;
         }
         if (is_coding_task(analysis) && !model.coding_agent &&
@@ -158,16 +168,20 @@ RoutingPlan AdaptiveRouter::plan(
     const auto minimum_quality = required_quality(analysis);
     const auto preferred = is_coding_task(analysis) ? std::string_view{"cpp23"} : std::string_view{};
     const auto* fast = fastest_capable(analysis, registry, minimum_quality, preferred);
-    const auto* coder = strongest_matching(registry, [](const models::ModelProfile& model) {
-        return model.coding_agent || models::has_capability(model, "cpp23") ||
-               models::has_capability(model, "repository") ||
-               models::has_capability(model, "debugging");
+    const auto* coder = is_coding_task(analysis)
+        ? strongest_matching(registry, [](const models::ModelProfile& model) {
+              return model.coding_agent || models::has_capability(model, "cpp23") ||
+                     models::has_capability(model, "repository") ||
+                     models::has_capability(model, "debugging");
+          })
+        : nullptr;
+    const auto* thinker = strongest_matching(registry, [&analysis](const models::ModelProfile& model) {
+        return !is_internal_conversation_specialist(model, analysis) &&
+               models::has_capability(model, "planning");
     });
-    const auto* thinker = strongest_matching(registry, [](const models::ModelProfile& model) {
-        return models::has_capability(model, "planning");
-    });
-    const auto* reviewer = strongest_matching(registry, [](const models::ModelProfile& model) {
-        return model.verifier || models::has_capability(model, "review");
+    const auto* reviewer = strongest_matching(registry, [&analysis](const models::ModelProfile& model) {
+        return !is_internal_conversation_specialist(model, analysis) &&
+               (model.verifier || models::has_capability(model, "review"));
     });
 
     if (fast == nullptr) {

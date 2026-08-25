@@ -79,6 +79,7 @@ UnifiedTaskResult AgentTaskProvider::execute(
             .force_coding_agent = request.profile == ExecutionProfile::coding_agent,
             .prefer_minimum_compute = request.profile == ExecutionProfile::interactive,
             .analysis_prompt = request.analysis_prompt,
+            .context = request.context,
             .on_token = [&request, stop_token](const std::string_view token) {
                 return !stop_token.stop_requested() && emit_event(request, {
                     .kind = TaskEventKind::text_delta,

@@ -470,6 +470,7 @@ void style_chat_transcript(
     format_rich_range(handle, 0, -1, text_color, false);
 
     std::size_t line_start = 0;
+    LONG rich_position = 0;
     while (line_start <= text.size()) {
         const auto newline = text.find(L'\n', line_start);
         auto line_end = newline == std::wstring_view::npos ? text.size() : newline;
@@ -499,14 +500,15 @@ void style_chat_transcript(
         if (styled && line_end > line_start) {
             format_rich_range(
                 handle,
-                static_cast<LONG>(line_start),
-                static_cast<LONG>(line_end),
+                rich_position,
+                rich_position + static_cast<LONG>(line.size()),
                 color,
                 color != muted_text_color);
         }
         if (newline == std::wstring_view::npos) {
             break;
         }
+        rich_position += static_cast<LONG>(line.size()) + 1;
         line_start = newline + 1U;
     }
 }
@@ -1239,25 +1241,87 @@ LRESULT CALLBACK page_host_subclass(
     return "general";
 }
 
+[[nodiscard]] std::wstring plain_task_name(const routing::TaskKind kind) {
+    switch (kind) {
+    case routing::TaskKind::conversation:
+        return L"Conversation";
+    case routing::TaskKind::explanation:
+        return L"Explanation";
+    case routing::TaskKind::transformation:
+        return L"Text change";
+    case routing::TaskKind::translation:
+        return L"Translation";
+    case routing::TaskKind::planning:
+        return L"Planning";
+    case routing::TaskKind::code_generation:
+        return L"Coding";
+    case routing::TaskKind::code_debugging:
+        return L"Code repair";
+    case routing::TaskKind::repository_task:
+        return L"Repository work";
+    case routing::TaskKind::tool_action:
+        return L"Tool use";
+    }
+    return L"Request";
+}
+
+[[nodiscard]] std::wstring plain_route_name(const routing::RouteMode mode) {
+    switch (mode) {
+    case routing::RouteMode::direct:
+        return L"One AI answers";
+    case routing::RouteMode::cascade:
+        return L"Try one AI, then a backup if needed";
+    case routing::RouteMode::hedged:
+        return L"Compare two answers";
+    case routing::RouteMode::agentic:
+        return L"Plan, answer, and check";
+    }
+    return L"Automatic";
+}
+
+[[nodiscard]] std::wstring plain_stage_name(const std::string_view role) {
+    if (role == "answer" || role == "draft" || role == "execute") {
+        return L"Answer";
+    }
+    if (role == "automatic-fallback" || role == "fallback") {
+        return L"Backup";
+    }
+    if (role == "verify" || role == "review") {
+        return L"Check";
+    }
+    if (role == "fast-candidate") {
+        return L"Fast choice";
+    }
+    if (role == "specialist-candidate") {
+        return L"Specialist choice";
+    }
+    if (role == "select") {
+        return L"Choose the better answer";
+    }
+    if (role == "plan") {
+        return L"Plan";
+    }
+    return widen(role);
+}
+
 [[nodiscard]] std::wstring format_plan(
     const routing::RoutingPlan& plan,
     const models::ModelRegistry* registry = nullptr) {
     std::wostringstream stream;
-    stream << L"Task: " << widen(routing::to_string(plan.analysis.kind))
-           << L"\r\nComplexity: " << widen(routing::to_string(plan.analysis.tier))
-           << L"\r\nMode: " << widen(routing::to_string(plan.mode))
-           << L"\r\nInput estimate: " << plan.analysis.estimated_input_tokens << L" tokens"
-           << L"\r\nOutput budget: " << plan.analysis.estimated_output_tokens << L" tokens"
-           << L"\r\nRisk: " << plan.analysis.risk
-           << L"    Ambiguity: " << plan.analysis.ambiguity
-           << L"\r\nExpected route latency: "
-           << static_cast<long long>(plan.expected_latency_ms) << L" ms\r\n\r\n";
+    stream << L"Request: " << plain_task_name(plan.analysis.kind)
+           << L"\r\nApproach: " << plain_route_name(plan.mode) << L"\r\n\r\n";
     if (plan.stages.empty()) {
-        stream << L"No usable model was found. Start a connected local LLM server or the ThreadSpire internal-model host.";
+        stream << L"No ready AI can handle this message. Start another local AI app or repair the built-in AI.";
+        return stream.str();
     }
+    stream << L"AI choices\r\n";
     for (const auto& stage : plan.stages) {
         std::wstring model_name = widen(stage.model_id);
         std::wstring runtime_kind;
+        if (stage.model_id == "verified-memory") {
+            model_name = L"ThreadSpire verified knowledge";
+            runtime_kind = L"built-in local memory";
+        }
         if (registry != nullptr) {
             if (const auto* model = registry->find(stage.model_id); model != nullptr) {
                 model_name = widen(model->display_name);
@@ -1266,24 +1330,22 @@ LRESULT CALLBACK page_host_subclass(
                     : L"another AI app";
             }
         }
-        stream << L"• " << widen(stage.role) << L" -> " << model_name;
+        stream << L"• " << plain_stage_name(stage.role) << L": " << model_name;
         if (!runtime_kind.empty()) {
-            stream << L" [" << runtime_kind << L"]";
+            stream << L" — " << runtime_kind;
         }
-        stream
-               << L" (" << stage.max_output_tokens << L" tokens"
-               << (stage.parallel ? L", parallel" : L"") << L")\r\n";
+        stream << L"\r\n";
     }
-    stream << L"\r\n" << widen(plan.rationale);
-    if (!plan.analysis.signals.empty()) {
-        stream << L"\r\n\r\nSignals: ";
-        for (std::size_t index = 0; index < plan.analysis.signals.size(); ++index) {
-            if (index != 0U) {
-                stream << L", ";
-            }
-            stream << widen(plan.analysis.signals[index]);
-        }
-    }
+    const auto used_backup = std::ranges::any_of(
+        plan.stages,
+        [](const routing::RouteStage& stage) { return stage.role == "automatic-fallback"; });
+    stream << L"\r\n" << (used_backup
+        ? L"The first choice could not answer safely, so ThreadSpire used the backup automatically."
+        : plan.stages.size() > 1U
+            ? L"ThreadSpire will move to the next choice automatically if an earlier choice cannot answer safely."
+            : plan.stages.front().model_id == "verified-memory"
+                ? L"ThreadSpire found an exact independently verified answer locally; no model generation was needed."
+            : L"ThreadSpire will use this AI and will switch to a safe backup if it fails.");
     return stream.str();
 }
 
@@ -2152,7 +2214,7 @@ void MainWindow::create_chat_page() {
         static_cast<WPARAM>(inference_source_),
         0));
 
-    create_control(L"STATIC", L"Choose AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
+    create_control(L"STATIC", L"AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -2227,10 +2289,10 @@ void MainWindow::create_chat_page() {
         0, id::chat_open_output, parent);
 
     create_control(
-        L"STATIC", L"Task details", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"How it will run", WS_CHILD | WS_VISIBLE,
         0, id::chat_plan_label, parent);
     create_control(
-        L"BUTTON", L"Show plan", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Check choices", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_route, parent);
     create_control(
         L"EDIT", L"Waiting for a message.", WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -4467,6 +4529,9 @@ std::string MainWindow::requested_runtime_heading() const {
 }
 
 std::string MainWindow::actual_runtime_heading(const std::string_view model_id) const {
+    if (model_id == "verified-memory") {
+        return "ASSISTANT — THREADSPIRE VERIFIED MEMORY";
+    }
     const auto snapshot = runtime_model_snapshot();
     const auto* model = snapshot.find(model_id);
     if (model == nullptr) {
@@ -4565,10 +4630,11 @@ void MainWindow::preview_route() {
     }
     routing::AdaptiveRouter router;
     const auto plan = router.plan(analysis, snapshot);
+    set_control_text(id::chat_plan_label, L"How it would run");
     set_control_text(id::chat_plan, format_plan(plan, &snapshot));
     set_status(plan.stages.empty()
         ? L"No responding model in the selected AI source can handle this message"
-        : L"Route preview complete; no model was invoked");
+        : L"Choices checked; no AI was run");
 }
 
 void MainWindow::send_prompt() {
@@ -4835,28 +4901,27 @@ void MainWindow::send_request(const RequestSurface surface) {
     }
 
     const auto recent_context = recent_conversation_context(conversation_history_);
-    std::string execution_prompt;
+    std::string execution_prompt = raw_prompt;
+    std::string execution_context;
     if (coding) {
         const auto repository = narrow(control_text(
             workspace ? id::chat_repository : id::coding_repository));
-        execution_prompt =
+        execution_context =
             "Act as the primary C++23 coding agent. Give complete, directly usable source changes. "
             "Preserve platform-neutral/platform-specific separation, explicit ownership, and "
             "explain only material tradeoffs.\n\n";
         if (!recent_context.empty()) {
-            execution_prompt += recent_context;
+            execution_context += recent_context;
         }
         if (!repository.empty()) {
-            execution_prompt += "Repository root: " + repository + "\n";
+            execution_context += "Repository root: " + repository + "\n";
         }
-        execution_prompt += "Current task:\n" + raw_prompt;
-    } else {
-        execution_prompt = recent_context;
-        execution_prompt += "Current user message:\n" + raw_prompt;
+    } else if (!recent_context.empty()) {
+        execution_context = recent_context;
     }
     if (workspace && workspace_task() == WorkspaceTask::tool) {
-        execution_prompt = "Use the available MCP tools to complete this task. Report each tool action and its result.\n\n" +
-            execution_prompt;
+        execution_context = "Use the available MCP tools to complete this task. Report each tool action and its result.\n\n" +
+            execution_context;
     }
 
     last_prompt_ = raw_prompt;
@@ -4888,6 +4953,9 @@ void MainWindow::send_request(const RequestSurface surface) {
         pending_transcript_heading_offset_ = std::string::npos;
         pending_transcript_heading_length_ = 0;
         set_control_text(response_id, L"");
+    }
+    if (workspace) {
+        set_control_text(id::chat_plan_label, L"How it is running");
     }
     set_control_text(plan_id, L"Routing and connecting…");
 
@@ -4936,6 +5004,7 @@ void MainWindow::send_request(const RequestSurface surface) {
          surface,
          analysis_prompt = routing_prompt,
          execution_prompt = std::move(execution_prompt),
+         execution_context = std::move(execution_context),
          internal_base_url,
          snapshot = std::move(snapshot),
          experts = std::move(experts),
@@ -4963,6 +5032,7 @@ void MainWindow::send_request(const RequestSurface surface) {
                     .preferred_provider_id = "native-agent",
                     .prompt = std::move(execution_prompt),
                     .analysis_prompt = std::move(analysis_prompt),
+                    .context = std::move(execution_context),
                     .stream = true,
                     .on_event = [this, response_id, stop_token](const backend::TaskEvent& event) {
                         if (event.kind == backend::TaskEventKind::text_delta) {
@@ -6707,6 +6777,9 @@ void MainWindow::update_chat_result() {
     const auto plan_id = workspace ? id::chat_plan : id::coding_plan;
     const auto response_id = workspace ? id::chat_response : id::coding_response;
     const auto route_models = runtime_model_snapshot();
+    if (workspace) {
+        set_control_text(id::chat_plan_label, L"How it ran");
+    }
     set_control_text(plan_id, format_plan(result->plan, &route_models));
     last_analysis_ = result->plan.analysis;
     last_response_surface_ = surface;
@@ -6761,12 +6834,15 @@ void MainWindow::update_chat_result() {
         : result->models_used.back();
 
     auto execution_details = format_plan(result->plan, &route_models);
-    execution_details += L"\r\n\r\nActual execution\r\n";
-    if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
+    execution_details += L"\r\n\r\nAnswer source\r\n";
+    if (last_model_id_ == "verified-memory") {
+        execution_details += L"Used: built-in verified knowledge\r\n"
+                             L"Source: independently accepted local training data";
+    } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
         execution_details += models::is_internal_model(*model)
-            ? L"AI source: ThreadSpire internal model\r\n"
-            : L"AI source: connected local LLM\r\n";
-        execution_details += L"Model: " + widen(model->display_name);
+            ? L"Used: built-in AI\r\n"
+            : L"Used: another AI app\r\n";
+        execution_details += L"AI: " + widen(model->display_name);
     } else {
         execution_details += widen(actual_runtime_heading(last_model_id_));
     }
@@ -6810,7 +6886,9 @@ void MainWindow::update_chat_result() {
 
     std::wostringstream status;
     status << L"Reply complete";
-    if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
+    if (last_model_id_ == "verified-memory") {
+        status << L" • built-in verified knowledge";
+    } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
         status << (models::is_internal_model(*model)
             ? L" • ThreadSpire internal model: "
             : L" • Connected local LLM: ")
@@ -6818,7 +6896,9 @@ void MainWindow::update_chat_result() {
     } else if (!last_models_used_.empty()) {
         status << L" • " << widen(last_models_used_.back());
     }
-    status << L" • " << result->effective_tokens_per_second << L" effective tokens/s";
+    if (last_model_id_ != "verified-memory") {
+        status << L" • " << result->effective_tokens_per_second << L" effective tokens/s";
+    }
     if (result->models_used.size() > 1U) {
         status << L" • " << result->models_used.size() << L" models used";
     }

@@ -283,7 +283,10 @@ PiggybackResult run_piggyback_foundry(
     const std::stop_token stop_token) {
     PiggybackResult result;
     result.progress.target_skill = normalize_skill_id(request.target_skill);
-    if (request.generate_teacher_variations && request.teacher.model_name.empty()) {
+    const auto generate_verified_variations =
+        request.generate_teacher_variations && request.verifier.has_value() &&
+        request.verifier->id != request.teacher.id;
+    if (generate_verified_variations && request.teacher.model_name.empty()) {
         result.error = "No teacher model was selected for variation generation.";
         return result;
     }
@@ -352,9 +355,12 @@ PiggybackResult run_piggyback_foundry(
             ++result.progress.stored;
         }
 
-        if (!request.generate_teacher_variations) {
-            result.progress.message = "Trusted " + result.progress.target_skill +
-                " example imported without synthetic variation.";
+        if (!generate_verified_variations) {
+            result.progress.message = request.generate_teacher_variations
+                ? "Trusted " + result.progress.target_skill +
+                    " example retained; synthetic rewriting waits for a separate verifier."
+                : "Trusted " + result.progress.target_skill +
+                    " example imported without synthetic variation.";
             publish_progress(on_progress, result.progress);
             continue;
         }
@@ -429,14 +435,17 @@ PiggybackResult run_piggyback_foundry(
         publish_progress(on_progress, result.progress);
     }
 
-    result.succeeded = result.progress.stored > 0U;
+    result.succeeded = result.progress.stored > 0U ||
+        (!generate_verified_variations && result.progress.examined > 0U);
     if (!result.succeeded) {
-        result.error = "No unique teacher examples were stored.";
+        result.error = "No independently verified teacher examples were stored.";
     }
     result.progress.message = result.succeeded
-        ? (request.generate_teacher_variations
+        ? (generate_verified_variations
             ? "Verified teacher-data batch complete."
-            : "Trusted dataset import complete.")
+            : request.generate_teacher_variations
+                ? "Trusted seed pass complete; no unverified rewrites were created."
+                : "Trusted dataset import complete.")
         : result.error;
     publish_progress(on_progress, result.progress);
     return result;

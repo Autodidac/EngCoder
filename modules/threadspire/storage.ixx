@@ -56,6 +56,8 @@ public:
     [[nodiscard]] std::vector<RetrievedEpisode> retrieve(
         std::string_view query,
         std::size_t limit = 3) const;
+    [[nodiscard]] std::optional<RetrievedEpisode> exact_verified(
+        std::string_view query) const;
     [[nodiscard]] std::size_t count_for_skill(std::string_view skill) const;
     [[nodiscard]] std::size_t training_count_for_skill(std::string_view skill) const;
     [[nodiscard]] std::filesystem::path path() const;
@@ -68,7 +70,9 @@ private:
     std::filesystem::path path_;
     mutable std::mutex mutex_;
     std::unordered_set<std::string> content_hashes_;
+    std::unordered_set<std::string> provisional_prompt_keys_;
     std::vector<Episode> retrievable_episodes_;
+    std::unordered_map<std::string, std::size_t> exact_prompt_index_;
     std::unordered_map<std::string, std::vector<std::size_t>> term_postings_;
     std::unordered_map<std::string, std::size_t> accepted_counts_;
     std::unordered_map<std::string, std::size_t> training_counts_;

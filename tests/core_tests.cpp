@@ -64,6 +64,19 @@ void test_task_analyzer_long_horizon() {
 
 void test_router_uses_fast_model_for_simple_work() {
     auto registry = threadspire::ai::models::ModelRegistry::defaults();
+    auto* fast = registry.find("fast");
+    auto* coder = registry.find("coder");
+    auto* thinker = registry.find("thinker");
+    require(fast != nullptr && coder != nullptr && thinker != nullptr,
+            "default internal lanes must exist");
+    fast->tokens_per_second = 1.0;
+    fast->quality = 0.10;
+    fast->reliability = 0.30;
+    coder->tokens_per_second = 500.0;
+    coder->quality = 0.99;
+    coder->reliability = 0.99;
+    thinker->quality = 0.99;
+    thinker->reliability = 0.99;
     threadspire::ai::routing::TaskAnalyzer analyzer;
     threadspire::ai::routing::AdaptiveRouter router;
     const auto plan = router.plan(analyzer.analyze("hello"), registry);
@@ -129,6 +142,18 @@ void test_immediate_memory_retrieval() {
     const auto recalled = store.retrieve("Why is this string_view dangling?", 3);
     require(!recalled.empty(), "accepted memory should be retrievable without weight training");
     require(recalled.front().episode.id == "episode-1", "relevant memory should rank first");
+    const auto exact = store.exact_verified("  FIX a dangling std::string_view in C++23!!! ");
+    require(exact.has_value() && exact->episode.response == recalled.front().episode.response,
+            "exact verified lookup must ignore harmless case, spacing, and punctuation changes");
+    require(!store.exact_verified("Fix a different lifetime bug").has_value(),
+            "verified lookup must not guess from a merely similar prompt");
+    auto registry = threadspire::ai::models::ModelRegistry::defaults();
+    threadspire::ai::backend::AgentOrchestrator orchestrator(registry, {}, store);
+    const auto direct = orchestrator.execute(
+        {},
+        "Fix a dangling std::string_view in C++23.");
+    require(direct.succeeded && direct.models_used == std::vector<std::string>{"verified-memory"},
+            "orchestration must answer exact verified knowledge without contacting an endpoint");
     std::filesystem::remove_all(root);
 }
 
@@ -273,6 +298,20 @@ void test_episode_dedup_and_negative_evidence() {
     require(store.append_if_new(accepted), "first deterministic episode should be stored");
     require(!store.append_if_new(accepted), "duplicate evidence must be rejected");
 
+    auto provisional = accepted;
+    provisional.id = "provisional-a";
+    provisional.prompt = "Explain a compact ownership rule";
+    provisional.response = "First unverified teacher wording.";
+    provisional.deterministic_verified = false;
+    provisional.compiler_passed = false;
+    provisional.tests_passed = false;
+    provisional.eligible_for_training = false;
+    provisional.content_hash.clear();
+    require(store.append_if_new(provisional), "the first provisional prompt may be quarantined");
+    provisional.id = "provisional-b";
+    provisional.response = "Different unverified wording for the same prompt.";
+    provisional.content_hash.clear();
+    require(!store.append_if_new(provisional), "unverified teacher rewrites must not multiply per prompt");
     auto rejected = accepted;
     rejected.id = "rejected";
     rejected.prompt = "Suggest a raw owning pointer";
@@ -707,6 +746,14 @@ void test_targeted_and_custom_training_import() {
                     service.memory_store().training_count_for_skill("cpp23-core") == 0U,
                 "English-first import must not silently feed the C++ skill");
 
+        auto no_verifier_request = english_request;
+        no_verifier_request.generate_teacher_variations = true;
+        const auto safe_seed_pass = threadspire::ai::learning::run_piggyback_foundry(
+            no_verifier_request,
+            service);
+        require(safe_seed_pass.succeeded && safe_seed_pass.progress.generated == 0U &&
+                    safe_seed_pass.progress.verified == 0U,
+                "automatic learning must keep trusted seeds and skip synthetic rewrites without a distinct verifier");
         threadspire::ai::learning::PiggybackRequest custom_request;
         custom_request.seed_dataset = dataset;
         custom_request.target_skill = "custom-domain";
@@ -890,14 +937,16 @@ void test_windows_ui_source_contract() {
             "the Task surface must route every capability through execution profiles and expose all six live storage cards");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
-                ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos,
-            "the workspace must pass bounded recent turns to inference without making them inflate route complexity");
+                ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos &&
+                ui.find(".context = std::move(execution_context)") != std::string::npos &&
+                ui.find("Current user message:") == std::string::npos,
+            "the workspace must keep the exact current user message separate from bounded background context and route analysis");
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
                 ui.find("SS_ENDELLIPSIS") != std::string::npos &&
                 ui.find("YOU — CODING REQUEST\\r\\n\\r\\n") != std::string::npos &&
                 ui.find("ASSISTANT — CONNECTED LOCAL LLM") != std::string::npos &&
-                ui.find("Actual execution") != std::string::npos,
+                ui.find("Answer source") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
     require(ui.find("MSFTEDIT_CLASS") != std::string::npos &&
                 ui.find("EM_SETBKGNDCOLOR") != std::string::npos &&
@@ -906,8 +955,20 @@ void test_windows_ui_source_contract() {
                 ui.find("transcript_user_color") != std::string::npos &&
                 ui.find("transcript_internal_color") != std::string::npos &&
                 ui.find("transcript_connected_color") != std::string::npos &&
-                ui.find("transcript_error_color") != std::string::npos,
+                ui.find("transcript_error_color") != std::string::npos &&
+                ui.find("LONG rich_position = 0") != std::string::npos &&
+                ui.find("rich_position + static_cast<LONG>(line.size())") != std::string::npos &&
+                ui.find("static_cast<LONG>(line_start)") == std::string::npos,
             "the conversation must stay dark and visibly distinguish user, internal, connected, and error blocks while streaming or resizing");
+    require(ui.find("L\"How it will run\"") != std::string::npos &&
+                ui.find("L\"Check choices\"") != std::string::npos &&
+                ui.find("L\"AI choices\\r\\n\"") != std::string::npos &&
+                ui.find("Approach: ") != std::string::npos &&
+                ui.find("L\"Show plan\"") == std::string::npos &&
+                ui.find("L\"Complexity: \"") == std::string::npos &&
+                ui.find("L\"Output budget: \"") == std::string::npos &&
+                ui.find("L\"Risk: \"") == std::string::npos,
+            "visible request details must use plain labels and hide internal routing scores and token budgets");
     require(ui.find("stream_timer") != std::string::npos &&
                 ui.find("capture_edit_viewport") != std::string::npos &&
                 ui.find("EM_GETFIRSTVISIBLELINE") != std::string::npos &&
@@ -1092,8 +1153,19 @@ void test_windows_ui_source_contract() {
     const auto orchestrator = read_text_file(source / "src/backend/agent_orchestrator.cpp");
     require(orchestrator.find("Interactive minimum-compute route") != std::string::npos &&
                 orchestrator.find("automatic-fallback") != std::string::npos &&
-                orchestrator.find("Every eligible local model failed") != std::string::npos,
+                orchestrator.find("Every eligible local model failed") != std::string::npos &&
+                orchestrator.find("model.model_name != \"threadspire://fast\"") != std::string::npos,
             "interactive routing must prefer minimum compute and fail over between local endpoints");
+    require(orchestrator.find("memory_context(prompt, active_analysis_)") != std::string::npos &&
+                orchestrator.find("Background context follows") != std::string::npos &&
+                orchestrator.find("const auto augmented = prompt") != std::string::npos &&
+                orchestrator.find("Never expose private reasoning") != std::string::npos,
+            "conversation context must remain out of the current user turn and providers must forbid private reasoning output");
+    require(orchestrator.find("memory_.exact_verified(prompt)") != std::string::npos &&
+                orchestrator.find("verified-memory") != std::string::npos &&
+                orchestrator.find("completion.hidden_reasoning_only") != std::string::npos &&
+                orchestrator.find("stage.max_output_tokens * 4U") != std::string::npos,
+            "compact inference must use exact verified memory first and retry reasoning-only backups with a bounded budget");
     require(orchestrator.find("const auto task_needs_tools") != std::string::npos &&
                 orchestrator.find("const auto use_tools = task_needs_tools") != std::string::npos,
             "connected MCP tools must not disable streaming or break ordinary conversation prompts");
@@ -1111,7 +1183,9 @@ void test_windows_ui_source_contract() {
                 piggyback.find("request.target_skill") != std::string::npos &&
                 piggyback.find("request.restrict_to_target_domain") != std::string::npos &&
                 piggyback.find("document->find(\"prompt\")") != std::string::npos &&
-                piggyback.find("document->find(\"answer\")") != std::string::npos,
+                piggyback.find("document->find(\"answer\")") != std::string::npos &&
+                piggyback.find("generate_verified_variations") != std::string::npos &&
+                piggyback.find("no unverified rewrites were created") != std::string::npos,
             "automatic and custom learning must target one selected skill, rotate independently, and accept practical JSONL record shapes");
 
     const auto custom_template = read_text_file(
@@ -1240,7 +1314,11 @@ void test_worker_and_resource_contract() {
         streaming_heartbeat);
     require(completion.find("result.finish_reason == \"low_confidence\"") != std::string::npos &&
                 completion.find("repetitive or structurally corrupt") != std::string::npos &&
-                worker.find("assess_generation_quality(last_content, trusted_dataset, messages)") != std::string::npos &&
+                completion.find("hidden_reasoning_only") != std::string::npos &&
+                completion.find("result.content = core::json::string_or(message->find(\"reasoning_content\"))") == std::string::npos &&
+                completion.find("result.content += core::json::string_or(message->find(\"thinking\"))") == std::string::npos &&
+                completion.find("private reasoning and returned no final answer") != std::string::npos &&
+                worker.find("verified_response=verified_content is not None") != std::string::npos &&
                 worker.find("trusted_dataset=trusted_dataset") != std::string::npos &&
                 streaming_heartbeat != std::string::npos &&
                 streaming_dataset != std::string::npos &&

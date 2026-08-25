@@ -30,6 +30,8 @@ namespace {
 [[nodiscard]] std::string answer_system(const routing::TaskAnalysis& analysis) {
     std::ostringstream stream;
     stream << "You are the execution lane in ThreadSpire. Answer the user's task directly. "
+           << "Return only the user-facing answer. Never expose private reasoning, chain-of-thought, "
+              "analysis, or instructions about how to respond. "
            << "Prefer correctness, low latency, and concise output. The task was classified as "
            << routing::to_string(analysis.kind) << " at " << routing::to_string(analysis.tier)
            << " complexity. ";
@@ -71,6 +73,11 @@ namespace {
     const models::ModelProfile& model,
     const routing::TaskAnalysis& analysis) {
     if (!model.enabled || model.reliability < 0.20) {
+        return false;
+    }
+    if (analysis.kind == routing::TaskKind::conversation &&
+        models::is_internal_model(model) &&
+        model.model_name != "threadspire://fast") {
         return false;
     }
     if (analysis.needs_tools && !model.supports_tools) {
@@ -232,7 +239,44 @@ AgentResult AgentOrchestrator::execute(
             "or repository-scale requests.";
     }
 
-    const auto augmented = with_memory(prompt, active_analysis_);
+    const auto built_in_memory_enabled = std::ranges::any_of(
+        models_.models(),
+        [](const models::ModelProfile& model) {
+            return model.enabled && models::is_internal_model(model);
+        });
+    if (built_in_memory_enabled &&
+        !active_options_.force_coding_agent &&
+        !active_analysis_.needs_repository &&
+        !active_analysis_.needs_tools) {
+        if (const auto verified = memory_.exact_verified(prompt); verified.has_value()) {
+            result.plan.mode = routing::RouteMode::direct;
+            result.plan.stages = {
+                routing::RouteStage{
+                    .role = "answer",
+                    .model_id = "verified-memory",
+                    .max_output_tokens = 0U,
+                    .parallel = false,
+                },
+            };
+            result.plan.rationale =
+                "An exact independently verified local answer was already available.";
+            result.models_used = {"verified-memory"};
+            result.response = verified->episode.response;
+            result.succeeded = !result.response.empty();
+            if (result.succeeded && active_options_.on_token) {
+                static_cast<void>(active_options_.on_token(result.response));
+            }
+            return result;
+        }
+    }
+
+    if (auto recalled = memory_context(prompt, active_analysis_); !recalled.empty()) {
+        if (!active_options_.context.empty()) {
+            active_options_.context += "\n\n";
+        }
+        active_options_.context += std::move(recalled);
+    }
+    const auto augmented = prompt;
     const auto started = std::chrono::steady_clock::now();
     std::size_t generated_tokens = 0;
 
@@ -243,15 +287,38 @@ AgentResult AgentOrchestrator::execute(
         generated_tokens += completion.completion_tokens;
     };
 
-    if (result.plan.mode == routing::RouteMode::direct) {
-        const auto initial_stage = result.plan.stages.front();
+    const auto run_answer_stage = [&](const routing::RouteStage& stage) {
         auto completion = run_stage(
             internal_base_url,
-            initial_stage,
+            stage,
             answer_system(active_analysis_),
             augmented,
             true);
-        consume(initial_stage, completion);
+        consume(stage, completion);
+        if (completion.hidden_reasoning_only &&
+            !(active_options_.should_stop && active_options_.should_stop())) {
+            const auto* model = models_.find(stage.model_id);
+            if (model != nullptr && !models::is_internal_model(*model)) {
+                auto retry_stage = stage;
+                retry_stage.max_output_tokens = std::clamp(
+                    std::max<std::size_t>(256U, stage.max_output_tokens * 4U),
+                    static_cast<std::size_t>(256U),
+                    static_cast<std::size_t>(1024U));
+                completion = run_stage(
+                    internal_base_url,
+                    retry_stage,
+                    answer_system(active_analysis_) +
+                        " Return the final answer directly and keep private reasoning internal.",
+                    augmented,
+                    true);
+                consume(retry_stage, completion);
+            }
+        }
+        return completion;
+    };
+    if (result.plan.mode == routing::RouteMode::direct) {
+        const auto initial_stage = result.plan.stages.front();
+        auto completion = run_answer_stage(initial_stage);
 
         std::vector<std::string> attempted{initial_stage.model_id};
         std::vector<std::string> errors;
@@ -277,13 +344,7 @@ AgentResult AgentOrchestrator::execute(
                 };
                 result.plan.stages.push_back(fallback_stage);
                 attempted.push_back(candidate->id);
-                completion = run_stage(
-                    internal_base_url,
-                    fallback_stage,
-                    answer_system(active_analysis_),
-                    augmented,
-                    true);
-                consume(fallback_stage, completion);
+                completion = run_answer_stage(fallback_stage);
                 if (completion.succeeded) {
                     successful_model_id = candidate->id;
                     result.plan.rationale +=
@@ -539,6 +600,11 @@ CompletionResult AgentOrchestrator::run_stage(
     const auto tools_json = use_tools
         ? active_options_.mcp_client->openai_tools_json()
         : std::string{};
+    if (!active_options_.context.empty()) {
+        system_prompt +=
+            "\n\nBackground context follows. Use it only when relevant; the current user message "
+            "remains authoritative.\n" + active_options_.context;
+    }
     std::vector<ChatMessage> messages{
         ChatMessage{
             .role = "system",
@@ -654,16 +720,16 @@ std::string AgentOrchestrator::skill_for(const routing::TaskAnalysis& analysis) 
     return "general";
 }
 
-std::string AgentOrchestrator::with_memory(
-    const std::string_view prompt,
+std::string AgentOrchestrator::memory_context(
+    const std::string_view current_prompt,
     const routing::TaskAnalysis& analysis) const {
-    const auto recalled = memory_.retrieve(prompt, 3U);
+    const auto recalled = memory_.retrieve(current_prompt, 3U);
     if (recalled.empty()) {
-        return std::string(prompt);
+        return {};
     }
 
     std::ostringstream stream;
-    stream << prompt << "\n\nLocally validated relevant memories follow. Use them only when applicable; "
+    stream << "Locally validated relevant memories follow. Use them only when applicable; "
                      "the current request remains authoritative.\n";
     for (const auto& item : recalled) {
         stream << "\n--- memory " << item.episode.id << " [skill=" << item.episode.skill

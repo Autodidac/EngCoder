@@ -69,6 +69,7 @@ struct UnifiedTaskRequest final {
     std::string preferred_provider_id;
     std::string prompt;
     std::string analysis_prompt;
+    std::string context;
     models::ModelProfile model;
     std::filesystem::path repository;
     std::filesystem::path output_root;
