@@ -771,6 +771,7 @@ def _internal_draft(
     maximum: int,
     temperature: float,
     on_progress: Callable[[int], None] | None = None,
+    trusted_dataset: Path | None = None,
 ) -> InternalDraft:
     started = time.perf_counter()
     temperatures = [temperature]
@@ -789,7 +790,7 @@ def _internal_draft(
             attempt_temperature,
             on_progress,
         )
-        last_quality = internal.assess_generation_quality(last_content)
+        last_quality = internal.assess_generation_quality(last_content, trusted_dataset)
         if last_quality.accepted:
             return InternalDraft(
                 content=last_content,
@@ -822,6 +823,7 @@ def _generate_internal(state: ServerState, payload: dict[str, Any], messages: li
             lane,
             maximum,
             temperature,
+            trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
         )
     accepted = draft.quality.accepted
     content = draft.content if accepted else ""

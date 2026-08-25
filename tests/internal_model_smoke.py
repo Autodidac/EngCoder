@@ -54,6 +54,25 @@ def main() -> int:
         assert model.english_vocabulary_ratio(
             "Throughput is the amount of work completed per unit of time."
         ) >= 0.9
+        external_vocabulary = temporary / "external-bootstrap.jsonl"
+        external_vocabulary.write_text(
+            json.dumps({
+                "domain": "english-core",
+                "tags": ["english"],
+                "messages": [
+                    {"role": "user", "content": "Check the lexicon."},
+                    {
+                        "role": "assistant",
+                        "content": "Checkpoint throughput application remains deterministic.",
+                    },
+                ],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        assert model.english_vocabulary_ratio(
+            "Checkpoint throughput application remains deterministic.",
+            external_vocabulary,
+        ) == 1.0
         assert not model.assess_generation_quality(
             "The application dooten respond.0 I coded the response."
         ).accepted

@@ -942,8 +942,8 @@ def _looks_like_code(text: str) -> bool:
     return marker_count >= 2 or (marker_count >= 1 and brace_count >= 3)
 
 
-@lru_cache(maxsize=1)
-def _trusted_english_vocabulary() -> frozenset[str]:
+@lru_cache(maxsize=8)
+def _trusted_english_vocabulary(trusted_dataset: str = "") -> frozenset[str]:
     """Build a compact vocabulary from the exact bundled trusted corpus.
 
     This is a corruption detector, not a spelling authority. It gives the
@@ -959,9 +959,12 @@ def _trusted_english_vocabulary() -> frozenset[str]:
         "when", "where", "which", "will", "with", "you", "your",
     }
     module_path = Path(__file__).resolve()
-    candidates = (
-        module_path.parent.parent / "data" / "bootstrap.jsonl",
-        module_path.with_name("bootstrap.jsonl"),
+    candidates = tuple(
+        path for path in (
+            Path(trusted_dataset) if trusted_dataset else None,
+            module_path.parent.parent / "data" / "bootstrap.jsonl",
+            module_path.with_name("bootstrap.jsonl"),
+        ) if path is not None
     )
     for path in candidates:
         if not path.is_file():
@@ -993,8 +996,13 @@ def _trusted_english_vocabulary() -> frozenset[str]:
     return frozenset(word for word in vocabulary if word)
 
 
-def english_vocabulary_ratio(text: str) -> float:
-    vocabulary = _trusted_english_vocabulary()
+def english_vocabulary_ratio(
+    text: str,
+    trusted_dataset: Path | None = None,
+) -> float:
+    vocabulary = _trusted_english_vocabulary(
+        str(trusted_dataset.resolve()) if trusted_dataset is not None else ""
+    )
     words = [
         word.lower().strip("'-")
         for word in re.findall(r"[A-Za-z][A-Za-z'-]*", text)
@@ -1016,7 +1024,10 @@ def english_vocabulary_ratio(text: str) -> float:
     return sum(recognized(word) for word in words) / len(words)
 
 
-def assess_generation_quality(text: str) -> GenerationQuality:
+def assess_generation_quality(
+    text: str,
+    trusted_dataset: Path | None = None,
+) -> GenerationQuality:
     """Reject obvious corruption and repetition before a draft reaches the UI.
 
     This is a conservative structural gate, not a factual verifier. It catches
@@ -1065,7 +1076,10 @@ def assess_generation_quality(text: str) -> GenerationQuality:
             return GenerationQuality(False, "multiple one-letter word fragments")
         if embedded_capitals >= 2:
             return GenerationQuality(False, "multiple malformed capitalized fragments")
-        if len(words) >= 6 and english_vocabulary_ratio(stripped) < 0.45:
+        if (
+            len(words) >= 6
+            and english_vocabulary_ratio(stripped, trusted_dataset) < 0.45
+        ):
             return GenerationQuality(False, "most generated words are not trusted English vocabulary")
 
     if len(words) >= 20:
@@ -1186,6 +1200,7 @@ def evaluate_generation_readiness(
     generation: str,
     manifest: dict[str, Any],
     device: torch.device,
+    trusted_dataset: Path | None = None,
 ) -> GenerationReadiness:
     """Run deterministic held-out prompts before declaring a model usable."""
 
@@ -1285,7 +1300,7 @@ def evaluate_generation_readiness(
                 loaded, canary["messages"], "fast", 72, 0.0, top_p=1.0
             )
         ).strip()
-        quality = assess_generation_quality(output)
+        quality = assess_generation_quality(output, trusted_dataset)
         normalized = re.sub(r"[^a-z0-9']+", " ", output.lower()).strip()
         exact = canary["exact"]
         required_all = canary["required_all"]
@@ -1295,7 +1310,7 @@ def evaluate_generation_readiness(
             and all(term in normalized for term in required_all)
             and (not required_any or any(term in normalized for term in required_any))
         )
-        vocabulary_ratio = english_vocabulary_ratio(output)
+        vocabulary_ratio = english_vocabulary_ratio(output, trusted_dataset)
         sample_passed = bool(
             quality.accepted
             and semantic_match
@@ -1968,7 +1983,12 @@ def train_candidate(
     )
     candidate_readiness = (
         evaluate_generation_readiness(
-            model, config, parent, loaded.manifest, device
+            model,
+            config,
+            parent,
+            loaded.manifest,
+            device,
+            state_root / "data" / "bootstrap.jsonl",
         )
         if requires_generation_readiness else
         GenerationReadiness(False, 0.0, ())
