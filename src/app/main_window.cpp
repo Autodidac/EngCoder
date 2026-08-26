@@ -789,7 +789,8 @@ void draw_dark_text(
 void draw_workspace_card(
     HDC device_context,
     const RECT& rectangle,
-    int radius) noexcept;
+    int radius,
+    COLORREF accent) noexcept;
 
 [[nodiscard]] bool draw_dark_control_item(
     const DRAWITEMSTRUCT& item) {
@@ -819,10 +820,16 @@ void draw_workspace_card(
          item.CtlID == id::chat_conversation_card ||
          item.CtlID == id::chat_composer_card ||
          item.CtlID == id::chat_activity_card)) {
+        const auto accent = item.CtlID == id::chat_conversation_card
+            ? transcript_internal_color
+            : (item.CtlID == id::chat_activity_card
+                ? transcript_connected_color
+                : accent_color);
         draw_workspace_card(
             item.hDC,
             item.rcItem,
-            scaled(12, ::GetDpiForWindow(item.hwndItem)));
+            scaled(12, ::GetDpiForWindow(item.hwndItem)),
+            accent);
         return true;
     }
     if (item.CtlType == ODT_STATIC &&
@@ -955,14 +962,12 @@ void draw_workspace_card(
         const auto divider = line.size() >= 12U &&
             std::ranges::all_of(line, [](const char character) { return character == '-'; });
         if (!divider) {
-            if (line.starts_with("ASSISTANT — THREADSPIRE INTERNAL MODEL") ||
-                line.starts_with("ENGCODER — BUILT-IN —")) {
+            if (line.starts_with("ASSISTANT — THREADSPIRE INTERNAL MODEL")) {
                 line = "ENGCODER — BUILT-IN";
             } else if (line.starts_with("ASSISTANT — THREADSPIRE VERIFIED MEMORY") ||
                        line.starts_with("ENGCODER — VERIFIED MEMORY —")) {
                 line = "ENGCODER — VERIFIED MEMORY";
-            } else if (line.starts_with("ASSISTANT — CONNECTED LOCAL LLM") ||
-                       line.starts_with("ENGCODER — CONNECTED AI —")) {
+            } else if (line.starts_with("ASSISTANT — CONNECTED LOCAL LLM")) {
                 line = "ENGCODER — CONNECTED AI";
             } else if (line.starts_with("ASSISTANT — AUTOMATIC AI SOURCE")) {
                 line = "ENGCODER — CHOOSING AI";
@@ -1306,7 +1311,8 @@ void move_control(
 void draw_workspace_card(
     const HDC device_context,
     const RECT& rectangle,
-    const int radius) noexcept {
+    const int radius,
+    const COLORREF accent) noexcept {
     if (::IsRectEmpty(&rectangle) != FALSE) {
         return;
     }
@@ -1331,6 +1337,26 @@ void draw_workspace_card(
         rectangle.bottom,
         radius,
         radius));
+
+    auto header = rectangle;
+    header.left += std::max(2, radius / 2);
+    header.right -= std::max(2, radius / 2);
+    header.top += 1;
+    header.bottom = std::min(
+        rectangle.bottom - 1,
+        header.top + std::max(24, radius * 3));
+    const auto header_brush = ::CreateSolidBrush(RGB(34, 38, 48));
+    if (header_brush != nullptr && header.bottom > header.top) {
+        static_cast<void>(::FillRect(device_context, &header, header_brush));
+        static_cast<void>(::DeleteObject(header_brush));
+    }
+    auto accent_rule = header;
+    accent_rule.top = std::max(header.top, header.bottom - 2);
+    const auto accent_brush = ::CreateSolidBrush(accent);
+    if (accent_brush != nullptr && accent_rule.bottom > accent_rule.top) {
+        static_cast<void>(::FillRect(device_context, &accent_rule, accent_brush));
+        static_cast<void>(::DeleteObject(accent_brush));
+    }
     static_cast<void>(::SelectObject(device_context, previous_brush));
     static_cast<void>(::SelectObject(device_context, previous_pen));
     static_cast<void>(::DeleteObject(brush));
@@ -5504,9 +5530,10 @@ std::string MainWindow::actual_runtime_heading(const std::string_view model_id) 
     if (model == nullptr) {
         return requested_runtime_heading();
     }
-    return models::is_internal_model(*model)
-        ? "ENGCODER — BUILT-IN"
-        : "ENGCODER — CONNECTED AI";
+    if (models::is_internal_model(*model)) {
+        return "ENGCODER — BUILT-IN — " + model->display_name;
+    }
+    return "ENGCODER — CONNECTED AI — " + model->display_name;
 }
 
 bool MainWindow::is_workspace_surface(const RequestSurface surface) const noexcept {
@@ -6115,6 +6142,9 @@ void MainWindow::update_response_turn_controls() {
         for (std::size_t index = 0; index < response_turns_.size(); ++index) {
             const auto& turn = response_turns_[index];
             const auto state = [&]() -> std::wstring_view {
+                if (turn.learning_destination == "request-error") {
+                    return L"failed • retry available";
+                }
                 switch (turn.review) {
                 case ResponseReview::unreviewed: return L"not reviewed";
                 case ResponseReview::accepted: return L"accepted";
@@ -8149,9 +8179,10 @@ void MainWindow::update_chat_result() {
             }
             pending_transcript_heading_offset_ = std::string::npos;
             pending_transcript_heading_length_ = 0;
-            workspace_transcript_ += result->error.empty()
-                ? "The local model request failed without an error message."
+            const auto failure_text = result->error.empty()
+                ? std::string{"The local model request failed without an error message."}
                 : result->error;
+            workspace_transcript_ += failure_text;
             workspace_transcript_ += "\r\n\r\n";
             set_control_text(response_id, widen(workspace_transcript_));
         } else {
@@ -8162,12 +8193,37 @@ void MainWindow::update_chat_result() {
                         ? std::string{"local model request failed"}
                         : result->error)));
         }
+        const auto failure_text = result->error.empty()
+            ? std::string{"The local model request failed without an error message."}
+            : result->error;
+        last_response_ = failure_text;
+        last_models_used_ = result->models_used;
+        last_tool_events_ = result->tool_events;
+        last_model_id_ = result->models_used.empty()
+            ? "request-error"
+            : result->models_used.back();
+        response_turns_.push_back(ResponseTurn{
+            .prompt = last_prompt_,
+            .response = last_response_,
+            .earlier_context = recent_conversation_context(conversation_history_),
+            .analysis = last_analysis_,
+            .model_id = last_model_id_,
+            .models_used = last_models_used_,
+            .tool_events = last_tool_events_,
+            .input_files = last_input_files_,
+            .surface = last_response_surface_,
+            .learning_weight_eligible = false,
+            .learning_destination = "request-error",
+            .review = ResponseReview::blocked,
+        });
+        selected_response_turn_index_ = response_turns_.size() - 1U;
+        update_response_turn_controls();
         set_control_text(
             id::chat_learning_status,
             L"Foreground request ended. Background learning may resume.");
         set_status(result->error == "generation cancelled"
-            ? L"AI request cancelled"
-            : L"The selected AI could not answer");
+            ? L"AI request cancelled • select the failed attempt to retry"
+            : L"The selected AI could not answer • Retry will resend this exact message");
         persist_current_chat();
         return;
     }

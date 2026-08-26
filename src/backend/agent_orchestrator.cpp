@@ -272,7 +272,8 @@ AgentResult AgentOrchestrator::execute(
         !active_analysis_.needs_tools) {
         if (const auto verified = memory_.verified_match(prompt, skill_for(active_analysis_));
             verified.has_value()) {
-            if (active_analysis_.kind == routing::TaskKind::conversation) {
+            if (active_analysis_.kind == routing::TaskKind::conversation &&
+                verified->relevance < 1.0) {
                 conversation_start = verified;
             } else {
                 result.plan.mode = routing::RouteMode::direct;

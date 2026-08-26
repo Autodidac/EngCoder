@@ -188,6 +188,12 @@ void test_immediate_memory_retrieval() {
         "conversation-1",
         "What's up?",
         "Not much. What is on your mind?");
+    const auto exact_conversation = orchestrator.execute({}, "What's up?");
+    require(
+        exact_conversation.succeeded &&
+            exact_conversation.models_used == std::vector<std::string>{"verified-memory"} &&
+            exact_conversation.response == "Not much. What is on your mind?",
+        "an exact approved conversation reply must be recalled directly without rerunning the tiny model");
     const auto spelling_match = store.verified_match(
         "want's up?",
         "english-conversation");
@@ -1244,6 +1250,7 @@ void test_windows_ui_source_contract() {
                 ui.find("SS_ENDELLIPSIS") != std::string::npos &&
                 ui.find("YOU — CODING REQUEST\\r\\n\\r\\n") != std::string::npos &&
                 ui.find("return \"ENGCODER — CONNECTED AI\";") != std::string::npos &&
+                ui.find("\"ENGCODER — CONNECTED AI — \" + model->display_name") != std::string::npos &&
                 ui.find("modernize_saved_transcript") != std::string::npos &&
                 ui.find("Used: built-in AI — ") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
@@ -1282,10 +1289,14 @@ void test_windows_ui_source_contract() {
                 ui.find("id::chat_setup_card") != std::string::npos &&
                 ui.find("SS_OWNERDRAW") != std::string::npos &&
                 ui.find("RoundRect") != std::string::npos &&
+                ui.find("header_brush") != std::string::npos &&
+                ui.find("accent_rule") != std::string::npos &&
                 ui.find("compact_actions") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&
+                ui.find("failed • retry available") != std::string::npos &&
+                ui.find(".learning_destination = \"request-error\"") != std::string::npos &&
                 ui.find("interactive-hard-correction") != std::string::npos &&
                 ui.find("accepted • already known") != std::string::npos &&
                 ui.find("Adds new weight-training evidence") != std::string::npos &&
@@ -1484,6 +1495,7 @@ void test_windows_ui_source_contract() {
                 orchestrator.find("Never expose private reasoning") != std::string::npos,
             "conversation context must remain out of the current user turn and providers must forbid private reasoning output");
     require(orchestrator.find("memory_.verified_match(prompt, skill_for(active_analysis_))") != std::string::npos &&
+                orchestrator.find("verified->relevance < 1.0") != std::string::npos &&
                 orchestrator.find("generation_temperature(active_analysis_)") != std::string::npos &&
                 orchestrator.find("return 0.05") != std::string::npos &&
                 orchestrator.find("0.48") != std::string::npos &&
