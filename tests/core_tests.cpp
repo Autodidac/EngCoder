@@ -51,6 +51,57 @@ void test_task_analyzer_fast_path() {
             "RAII prompt should be an explanation");
 }
 
+void test_verified_calculator_avoids_models_and_training() {
+    namespace ai = threadspire::ai;
+    ai::routing::TaskAnalyzer analyzer;
+
+    const auto sum = ai::routing::evaluate_calculation("what's 1 + 1?");
+    require(sum.recognized && sum.succeeded && sum.value == "2",
+            "basic arithmetic should be evaluated deterministically");
+    require(analyzer.analyze("what's 1 + 1?").kind == ai::routing::TaskKind::calculation,
+            "numeric arithmetic should route to the verified calculator");
+    require(analyzer.analyze("What's up?").kind == ai::routing::TaskKind::conversation,
+            "ordinary conversation must not be mistaken for arithmetic");
+    require(ai::routing::evaluate_calculation("(2 + 3) * 4").value == "20",
+            "calculator should honor parentheses and precedence");
+    require(ai::routing::evaluate_calculation("2 ^ 3 ^ 2").value == "512",
+            "exponentiation should be right associative");
+    const auto division_by_zero = ai::routing::evaluate_calculation("1 / 0");
+    require(division_by_zero.recognized && !division_by_zero.succeeded &&
+                division_by_zero.error.find("division by zero") != std::string::npos,
+            "unsafe arithmetic should fail with a useful bounded diagnostic");
+
+    const auto root = temporary_root();
+    ai::memory::EpisodeStore store(root / "memory");
+    auto registry = ai::models::ModelRegistry::defaults();
+    for (auto& model : registry.models()) {
+        model.enabled = false;
+    }
+    ai::backend::AgentOrchestrator orchestrator(registry, {}, store);
+    const auto answer = orchestrator.execute({}, "Calculate 17 + 25");
+    require(answer.succeeded && answer.response == "42",
+            "verified arithmetic must work while every AI model is offline");
+    require(answer.models_used == std::vector<std::string>{"deterministic-calculator"} &&
+                answer.plan.stages.size() == 1U &&
+                answer.plan.stages.front().role == "calculate",
+            "calculator execution must not contact or masquerade as an AI model");
+
+    ai::learning::KnowledgeClassifier classifier;
+    const auto decision = classifier.classify(ai::memory::Episode{
+        .id = "calculation",
+        .skill = "calculation",
+        .prompt = "What is 1 + 1?",
+        .response = "2",
+        .model_id = "deterministic-calculator",
+        .score = 1.0,
+        .human_accepted = true,
+    }, 100U);
+    require(decision.destination == ai::learning::KnowledgeDestination::reject &&
+                !decision.eligible_for_weight_training,
+            "calculator outputs must never consume memory or weight-training capacity");
+    std::filesystem::remove_all(root);
+}
+
 void test_task_analyzer_long_horizon() {
     threadspire::ai::routing::TaskAnalyzer analyzer;
     const auto analysis = analyzer.analyze(
@@ -1740,6 +1791,7 @@ void test_seed_material_counts() {
 int main() {
     try {
         test_task_analyzer_fast_path();
+        test_verified_calculator_avoids_models_and_training();
         test_task_analyzer_long_horizon();
         test_router_uses_fast_model_for_simple_work();
         test_router_builds_agentic_code_loop();

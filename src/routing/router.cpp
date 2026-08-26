@@ -165,6 +165,21 @@ RoutingPlan AdaptiveRouter::plan(
     RoutingPlan result;
     result.analysis = analysis;
 
+    if (analysis.kind == TaskKind::calculation) {
+        result.mode = RouteMode::direct;
+        result.stages = {
+            RouteStage{
+                .role = "calculate",
+                .model_id = "deterministic-calculator",
+                .max_output_tokens = 0U,
+                .parallel = false,
+            },
+        };
+        result.rationale =
+            "A strict local calculator evaluates the expression. No AI model is contacted.";
+        return result;
+    }
+
     const auto minimum_quality = required_quality(analysis);
     const auto preferred = is_coding_task(analysis) ? std::string_view{"cpp23"} : std::string_view{};
     const auto* fast = fastest_capable(analysis, registry, minimum_quality, preferred);

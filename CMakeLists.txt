@@ -24,6 +24,7 @@ set(THREADSPIRE_AI_CORE_SOURCES
     src/models/local_provider.cpp
     src/models/local_server_hub.cpp
     src/routing/task.cpp
+    src/routing/calculator.cpp
     src/routing/router.cpp
     src/memory/episode_store.cpp
     src/learning/expert_registry.cpp

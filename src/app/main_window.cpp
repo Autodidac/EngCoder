@@ -1466,6 +1466,8 @@ LRESULT CALLBACK page_host_subclass(
         return "tool-use";
     case routing::TaskKind::explanation:
         return "explanation";
+    case routing::TaskKind::calculation:
+        return "calculation";
     case routing::TaskKind::conversation:
         return "english-conversation";
     }
@@ -1474,6 +1476,9 @@ LRESULT CALLBACK page_host_subclass(
 
 
 [[nodiscard]] std::wstring plain_stage_name(const std::string_view role) {
+    if (role == "calculate") {
+        return L"Verified calculation";
+    }
     if (role == "answer" || role == "draft" || role == "execute") {
         return L"Answer";
     }
@@ -5525,6 +5530,9 @@ std::string MainWindow::actual_runtime_heading(const std::string_view model_id) 
     if (model_id == "verified-memory") {
         return "ENGCODER — VERIFIED MEMORY";
     }
+    if (model_id == "deterministic-calculator") {
+        return "ENGCODER — VERIFIED CALCULATION";
+    }
     const auto snapshot = runtime_model_snapshot();
     const auto* model = snapshot.find(model_id);
     if (model == nullptr) {
@@ -5814,10 +5822,18 @@ void MainWindow::send_request(const RequestSurface surface) {
         return;
     }
 
-    yield_automatic_bootstrap_to_foreground();
+    routing::TaskAnalyzer preflight_analyzer;
+    const auto deterministic_calculation =
+        !coding &&
+        workspace_task() != WorkspaceTask::tool &&
+        preflight_analyzer.analyze(raw_prompt).kind == routing::TaskKind::calculation;
+
+    if (!deterministic_calculation) {
+        yield_automatic_bootstrap_to_foreground();
+    }
 
     // User inference always wins over synthetic teacher-data generation.
-    if (piggyback_operation_.running()) {
+    if (!deterministic_calculation && piggyback_operation_.running()) {
         piggyback_operation_.cancel();
         set_control_text(
             id::chat_learning_status,
@@ -5831,7 +5847,7 @@ void MainWindow::send_request(const RequestSurface surface) {
             model.enabled = model.enabled && model_supports_workspace_task(model);
         }
     }
-    if (const auto selected = selected_model_id(); selected.has_value()) {
+    if (const auto selected = selected_model_id(); deterministic_calculation == false && selected.has_value()) {
         const auto* selected_profile = snapshot.find(*selected);
         if (selected_profile == nullptr || !selected_profile->enabled) {
             const auto error =
@@ -5845,7 +5861,7 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto has_usable_model = std::ranges::any_of(
         snapshot.models(),
         [](const models::ModelProfile& model) { return model.enabled; });
-    if (!has_usable_model) {
+    if (!has_usable_model && !deterministic_calculation) {
         const auto error = preferred_model_id_ == internal_pool_selection_id
             ? L"No Built-in EngCoder is ready. Another AI app was not used."
             : inference_source_ == InferenceSource::custom_model
@@ -5942,7 +5958,9 @@ void MainWindow::send_request(const RequestSurface surface) {
 
     const auto built_in_only = inference_source_ == InferenceSource::custom_model ||
         preferred_model_id_ == internal_pool_selection_id;
-    const auto request_status = built_in_only
+    const auto request_status = deterministic_calculation
+        ? L"Calculating locally — no AI model is needed…"
+        : built_in_only
         ? (coding
             ? L"Running the selected built-in coding AI…"
             : L"Running the selected built-in AI…")
@@ -6142,6 +6160,9 @@ void MainWindow::update_response_turn_controls() {
         for (std::size_t index = 0; index < response_turns_.size(); ++index) {
             const auto& turn = response_turns_[index];
             const auto state = [&]() -> std::wstring_view {
+                if (turn.learning_destination == "deterministic-calculation") {
+                    return L"verified calculation • no training needed";
+                }
                 if (turn.learning_destination == "request-error") {
                     return L"failed • retry available";
                 }
@@ -8244,6 +8265,7 @@ void MainWindow::update_chat_result() {
     last_model_id_ = result->models_used.empty()
         ? "unknown"
         : result->models_used.back();
+    const auto deterministic_result = last_model_id_ == "deterministic-calculator";
     response_turns_.push_back(ResponseTurn{
         .prompt = last_prompt_,
         .response = last_response_,
@@ -8254,13 +8276,18 @@ void MainWindow::update_chat_result() {
         .tool_events = last_tool_events_,
         .input_files = last_input_files_,
         .surface = last_response_surface_,
-        .review = ResponseReview::unreviewed,
+        .learning_weight_eligible = false,
+        .learning_destination = deterministic_result ? "deterministic-calculation" : std::string{},
+        .review = deterministic_result ? ResponseReview::blocked : ResponseReview::unreviewed,
     });
     selected_response_turn_index_ = response_turns_.size() - 1U;
     update_response_turn_controls();
 
 
     std::wstring execution_details;
+    if (deterministic_result) {
+        execution_details = L"Used: strict local calculator • no AI model was contacted";
+    } else
     if (last_model_id_ == "verified-memory") {
         execution_details = L"Used: built-in verified knowledge";
     } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
@@ -8304,7 +8331,7 @@ void MainWindow::update_chat_result() {
     }
     set_control_text(plan_id, std::move(execution_details));
 
-    if (!interactive_model_verified_) {
+    if (!interactive_model_verified_ && !deterministic_result) {
         interactive_model_verified_ = true;
         try {
             write_text(
@@ -8318,6 +8345,9 @@ void MainWindow::update_chat_result() {
 
     std::wostringstream status;
     status << L"Reply complete";
+    if (deterministic_result) {
+        status << L" • verified local calculation • no AI model used";
+    } else
     if (last_model_id_ == "verified-memory") {
         status << L" • built-in verified knowledge";
     } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
@@ -8328,7 +8358,7 @@ void MainWindow::update_chat_result() {
     } else if (!last_models_used_.empty()) {
         status << L" • " << widen(last_models_used_.back());
     }
-    if (last_model_id_ != "verified-memory") {
+    if (last_model_id_ != "verified-memory" && !deterministic_result) {
         status << L" • " << result->effective_tokens_per_second << L" effective tokens/s";
     }
     if (result->models_used.size() > 1U) {
@@ -8337,7 +8367,9 @@ void MainWindow::update_chat_result() {
     set_status(status.str());
     set_control_text(
         id::chat_learning_status,
-        checked(id::learning_auto)
+        deterministic_result
+            ? L"Verified calculation • recomputed when needed • nothing added to memory or model weights"
+            : checked(id::learning_auto)
             ? L"Reply verified. Automatic learning is armed and will run while idle."
             : L"Reply verified. Automatic teacher-data generation is disabled.");
     persist_current_chat();

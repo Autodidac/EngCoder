@@ -17,6 +17,7 @@ namespace threadspire::ai::routing {
 
 enum class TaskKind {
     conversation,
+    calculation,
     explanation,
     transformation,
     translation,
@@ -25,6 +26,14 @@ enum class TaskKind {
     repository_task,
     planning,
     tool_action,
+};
+
+struct CalculationResult final {
+    bool recognized{false};
+    bool succeeded{false};
+    std::string expression;
+    std::string value;
+    std::string error;
 };
 
 enum class ComplexityTier {
@@ -50,6 +59,7 @@ struct TaskAnalysis final {
 
 [[nodiscard]] std::string_view to_string(TaskKind kind) noexcept;
 [[nodiscard]] std::string_view to_string(ComplexityTier tier) noexcept;
+[[nodiscard]] CalculationResult evaluate_calculation(std::string_view prompt);
 
 class TaskAnalyzer final {
 public:

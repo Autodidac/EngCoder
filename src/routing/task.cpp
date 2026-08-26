@@ -53,6 +53,8 @@ std::string_view to_string(const TaskKind kind) noexcept {
     switch (kind) {
     case TaskKind::conversation:
         return "conversation";
+    case TaskKind::calculation:
+        return "calculation";
     case TaskKind::explanation:
         return "explanation";
     case TaskKind::transformation:
@@ -93,6 +95,7 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
     result.estimated_output_tokens = 128;
     add_capability(result, "english");
 
+    const auto calculation = evaluate_calculation(prompt);
     const auto lower = lower_ascii(prompt);
     const auto has_code_block = lower.find("```") != std::string::npos;
     const auto cpp_signal = contains_any(lower, {
@@ -131,7 +134,13 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
         "medical", "legal", "kernel", "driver", "unsafe", "data loss",
     });
 
-    if (translation_signal) {
+    if (calculation.recognized) {
+        result.kind = TaskKind::calculation;
+        result.tier = ComplexityTier::instant;
+        result.estimated_output_tokens = 64U;
+        add_capability(result, "calculation");
+        add_signal(result, "deterministic numeric expression");
+    } else if (translation_signal) {
         result.kind = TaskKind::translation;
         result.tier = ComplexityTier::fast;
         result.estimated_output_tokens = std::max<std::size_t>(96, result.estimated_input_tokens);

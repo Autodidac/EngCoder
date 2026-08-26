@@ -365,6 +365,15 @@ KnowledgeDecision KnowledgeClassifier::classify(
             .reason = "explicit rejection is retained as negative evidence but never positive training",
         };
     }
+    if (episode.model_id == "deterministic-calculator" || episode.skill == "calculation") {
+        return {
+            .destination = KnowledgeDestination::reject,
+            .eligible_for_weight_training = false,
+            .confidence = 1.0,
+            .reason = "deterministic calculations are recomputed and never stored as model training material",
+        };
+    }
+
     if (unsafe_generated_response(episode.response)) {
         return {
             .destination = KnowledgeDestination::reject,

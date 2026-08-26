@@ -229,6 +229,23 @@ AgentResult AgentOrchestrator::execute(
         return result;
     }
 
+    if (active_analysis_.kind == routing::TaskKind::calculation) {
+        const auto calculation = routing::evaluate_calculation(analysis_prompt);
+        result.models_used = {"deterministic-calculator"};
+        if (!calculation.recognized || !calculation.succeeded) {
+            result.error = calculation.error.empty()
+                ? "The local calculator could not evaluate that expression."
+                : calculation.error;
+            return result;
+        }
+        result.response = calculation.value;
+        result.succeeded = true;
+        if (active_options_.on_token) {
+            static_cast<void>(active_options_.on_token(result.response));
+        }
+        return result;
+    }
+
     const auto minimum_compute_candidate =
         active_options_.prefer_minimum_compute &&
         (result.plan.mode == routing::RouteMode::cascade ||
@@ -762,6 +779,8 @@ std::string AgentOrchestrator::skill_for(const routing::TaskAnalysis& analysis) 
         return "explanation";
     case routing::TaskKind::conversation:
         return "english-conversation";
+    case routing::TaskKind::calculation:
+        return "calculation";
     }
     return "general";
 }
