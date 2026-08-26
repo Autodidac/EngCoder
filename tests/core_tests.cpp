@@ -1275,6 +1275,11 @@ void test_windows_ui_source_contract() {
     require(completion_client.find("Your public identity is EngCoder") != std::string::npos &&
                 completion_client.find("Never identify yourself as the underlying") != std::string::npos,
             "every connected provider request must enforce the EngCoder public identity");
+    const auto autonomous_runner = read_text_file(
+        source / "src/long_horizon/runner.cpp");
+    require(autonomous_runner.find("You are EngCoder's autonomous C++23 repository worker") != std::string::npos &&
+                autonomous_runner.find("You are Epoch's autonomous C++23 repository worker") == std::string::npos,
+            "autonomous coding prompts must preserve the EngCoder identity");
     require(ui.find("widen(preview.stored_prompt)") != std::string::npos &&
                 ui.find("widen(preview.stored_response)") != std::string::npos &&
                 ui.find("emoji or underlying AI identity removed") != std::string::npos,
@@ -1328,17 +1333,21 @@ void test_windows_ui_source_contract() {
                 ui.find("storage_cleanup_operation_.running()") != std::string::npos &&
                 ui.find("MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2") != std::string::npos,
             "the Task surface must route every capability, expose all eight disk/RAM cards, describe native inference honestly, and provide protected cleanup preview and execution");
-    require(ui.find("L\"Set up built-in capabilities\"") != std::string::npos &&
-                ui.find("L\"Area to improve\"") != std::string::npos &&
-                ui.find("L\"Improve selected area\"") != std::string::npos &&
-                ui.find("L\"Undo last area update\"") != std::string::npos &&
-                ui.find("L\"Optional add-ons — adding files starts no task and changes no AI choice\"") != std::string::npos &&
-                ui.find("L\"Add or update safely\"") != std::string::npos &&
-                ui.find("L\"Bootstrap local core\"") == std::string::npos &&
-                ui.find("L\"Queue LoRA update\"") == std::string::npos &&
-                ui.find("L\"Rollback active skill\"") == std::string::npos,
-            "Capabilities controls must use plain language and expose optional add-ons without crowding primary Chat");
-    const auto optional_pack_begin = ui.find("void MainWindow::install_selected_capability_pack()");
+    require(ui.find("L\"BUILT-IN ENGCODER\\r\\nStarting the verified local foundation automatically…\"") != std::string::npos &&
+                ui.find("L\"Refresh status\"") != std::string::npos &&
+                ui.find("L\"AUTOMATIC IMPROVEMENT\\r\\n") != std::string::npos &&
+                ui.find("L\"OPTIONAL ADD-ONS\\r\\n") != std::string::npos &&
+                ui.find("L\"Use local package…\"") != std::string::npos &&
+                ui.find("L\"Install ready add-on\"") != std::string::npos &&
+                ui.find("WHAT ENGCODER CAN DO NOW") != std::string::npos &&
+                ui.find("id::skills_overview_card") != std::string::npos &&
+                ui.find("id::skills_learning_card") != std::string::npos &&
+                ui.find("id::skills_addons_card") != std::string::npos &&
+                ui.find("L\"Set up built-in capabilities\"") == std::string::npos &&
+                ui.find("L\"Area to improve\"") == std::string::npos &&
+                ui.find("L\"Improve selected area\"") == std::string::npos &&
+                ui.find("L\"Queue LoRA update\"") == std::string::npos,
+            "Capabilities must show automatic built-in/learning state in real cards and keep manual jargon in backup-only paths");    const auto optional_pack_begin = ui.find("void MainWindow::install_selected_capability_pack()");
     const auto optional_pack_end = ui.find("void MainWindow::update_capability_pack_result()", optional_pack_begin);
     require(optional_pack_begin != std::string::npos && optional_pack_end > optional_pack_begin,
             "the optional add-on transaction must remain inspectable");
@@ -1430,8 +1439,9 @@ void test_windows_ui_source_contract() {
                 ui.find("id::chat_setup_card") != std::string::npos &&
                 ui.find("SS_OWNERDRAW") != std::string::npos &&
                 ui.find("RoundRect") != std::string::npos &&
-                ui.find("header_brush") != std::string::npos &&
-                ui.find("accent_rule") != std::string::npos &&
+                ui.find("header_brush") == std::string::npos &&
+                ui.find("accent_rule") == std::string::npos &&
+                ui.find("id::skills_overview_card") != std::string::npos &&
                 ui.find("compact_actions = conversation_width < scaled(550, dpi_)") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos &&
                 ui.find("tab_client.right - tab_client.left) - scaled(12, dpi_)") != std::string::npos &&
@@ -1551,19 +1561,25 @@ void test_windows_ui_source_contract() {
     const auto ready_serve_branch = ui.find(
         "state.manifest_valid && state.bootstrap_complete && state.generation_ready",
         lifecycle_begin);
+    const auto foundation_serve_branch = ui.find(
+        "!backend_server_.running() && runtime::native_inference_source_available(paths_)",
+        ready_serve_branch);
     const auto active_learning_block = ui.find(
         "learning_pipeline.active_job.has_value()",
-        ready_serve_branch);
+        foundation_serve_branch);
     require(lifecycle_begin != std::string::npos &&
                 ready_serve_branch > lifecycle_begin &&
-                active_learning_block > ready_serve_branch &&
+                foundation_serve_branch > ready_serve_branch &&
+                active_learning_block > foundation_serve_branch &&
+                ui.find("start_backend(true)", foundation_serve_branch) != std::string::npos &&
                 ui.find("background learning must never make the last promoted model unavailable") != std::string::npos,
-            "the last promoted native model must start serving before shadow-learning backpressure is considered");
+            "a promoted model or the clean-install native foundation must start serving before shadow-learning backpressure is considered");
     require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
                 ui.find("AI: best available") != std::string::npos &&
                 ui.find("EngCoder built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
-                ui.find("built_in_status = L\"READY\"") != std::string::npos &&
+                ui.find("L\"READY — promoted model\"") != std::string::npos &&
+                ui.find("L\"READY — verified native foundation\"") != std::string::npos &&
                 ui.find("const auto progress_active = progress.available") != std::string::npos &&
                 ui.find("progress_active && completed == 0U") != std::string::npos &&
                 ui.find("stream << L\"starting\"") != std::string::npos &&

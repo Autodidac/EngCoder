@@ -418,7 +418,7 @@ void append_event(
         request.repair_model,
         backend::CompletionRequest{
             .system_prompt =
-                "You are Epoch's autonomous C++23 repository worker. Return only one complete unified diff. "
+                "You are EngCoder's autonomous C++23 repository worker. Return only one complete unified diff. "
                 "No markdown prose. Preserve project architecture, ownership rules, and public behavior unless "
                 "the task requires a change. Never invent compiler or test results.",
             .prompt = prompt.str(),

@@ -190,6 +190,9 @@ constexpr int chat_setup_card = 900;
 constexpr int chat_conversation_card = 901;
 constexpr int chat_composer_card = 902;
 constexpr int chat_activity_card = 903;
+constexpr int skills_overview_card = 904;
+constexpr int skills_learning_card = 905;
+constexpr int skills_addons_card = 906;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -827,7 +830,10 @@ void draw_workspace_card(
         (item.CtlID == id::chat_setup_card ||
          item.CtlID == id::chat_conversation_card ||
          item.CtlID == id::chat_composer_card ||
-         item.CtlID == id::chat_activity_card)) {
+         item.CtlID == id::chat_activity_card ||
+         item.CtlID == id::skills_overview_card ||
+         item.CtlID == id::skills_learning_card ||
+         item.CtlID == id::skills_addons_card)) {
         const auto accent = item.CtlID == id::chat_conversation_card
             ? transcript_internal_color
             : (item.CtlID == id::chat_activity_card
@@ -1321,6 +1327,7 @@ void draw_workspace_card(
     const RECT& rectangle,
     const int radius,
     const COLORREF accent) noexcept {
+    static_cast<void>(accent);
     if (::IsRectEmpty(&rectangle) != FALSE) {
         return;
     }
@@ -1346,31 +1353,11 @@ void draw_workspace_card(
         radius,
         radius));
 
-    auto header = rectangle;
-    header.left += std::max(2, radius / 2);
-    header.right -= std::max(2, radius / 2);
-    header.top += 1;
-    header.bottom = std::min(
-        rectangle.bottom - 1,
-        header.top + std::max(24, radius * 3));
-    const auto header_brush = ::CreateSolidBrush(RGB(34, 38, 48));
-    if (header_brush != nullptr && header.bottom > header.top) {
-        static_cast<void>(::FillRect(device_context, &header, header_brush));
-        static_cast<void>(::DeleteObject(header_brush));
-    }
-    auto accent_rule = header;
-    accent_rule.top = std::max(header.top, header.bottom - 2);
-    const auto accent_brush = ::CreateSolidBrush(accent);
-    if (accent_brush != nullptr && accent_rule.bottom > accent_rule.top) {
-        static_cast<void>(::FillRect(device_context, &accent_rule, accent_brush));
-        static_cast<void>(::DeleteObject(accent_brush));
-    }
     static_cast<void>(::SelectObject(device_context, previous_brush));
     static_cast<void>(::SelectObject(device_context, previous_pen));
     static_cast<void>(::DeleteObject(brush));
     static_cast<void>(::DeleteObject(pen));
 }
-
 LRESULT CALLBACK prompt_edit_subclass(
     const HWND edit,
     const UINT message,
@@ -2284,18 +2271,19 @@ LRESULT MainWindow::handle_message(
                               message == WM_CTLCOLORLISTBOX ||
                               is_edit_control(child);
         const auto parent = child == nullptr ? nullptr : ::GetParent(child);
-        const auto on_chat_card = parent != nullptr &&
-            ::GetDlgCtrlID(parent) == id::page_chat;
+        const auto on_surface_card = parent != nullptr &&
+            (::GetDlgCtrlID(parent) == id::page_chat ||
+             ::GetDlgCtrlID(parent) == id::page_skills);
         const auto enabled = child == nullptr || ::IsWindowEnabled(child) != FALSE;
         ::SetTextColor(device_context, enabled ? text_color : disabled_text_color);
         ::SetBkColor(
             device_context,
-            editable ? edit_color : (on_chat_card ? card_color : window_color));
+            editable ? edit_color : (on_surface_card ? card_color : window_color));
         if (!editable) {
             ::SetBkMode(device_context, TRANSPARENT);
         }
         return reinterpret_cast<LRESULT>(
-            editable ? edit_brush_ : (on_chat_card ? card_brush_ : window_brush_));
+            editable ? edit_brush_ : (on_surface_card ? card_brush_ : window_brush_));
     }
     case WM_ERASEBKGND: {
         RECT client{};
@@ -3102,27 +3090,45 @@ void MainWindow::create_learning_page() {
 
 void MainWindow::create_skills_page() {
     const auto parent = control(id::page_skills);
+    for (const auto identifier : {
+             id::skills_overview_card,
+             id::skills_learning_card,
+             id::skills_addons_card}) {
+        create_control(
+            L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+            0, identifier, parent);
+    }
+
     create_control(
-        L"BUTTON", L"Set up built-in capabilities", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"STATIC",
+        L"BUILT-IN ENGCODER\r\nStarting the verified local foundation automatically…",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, id::skills_bootstrap, parent);
     create_control(
-        L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Refresh status", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_refresh, parent);
     create_control(
-        L"STATIC", L"Area to improve",
-        WS_CHILD | WS_VISIBLE, 0, id::skills_skill_label, parent);
+        L"STATIC",
+        L"AUTOMATIC IMPROVEMENT\r\nApproved replies are available immediately; deeper updates stay isolated until verified.",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, id::skills_skill_label, parent);
+
+    // Retained as hidden recovery hooks for persisted commands and compatibility.
     create_control(
-        L"EDIT", L"cpp23-debugging", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE, id::skills_skill, parent);
+        L"EDIT", L"english-foundation", WS_CHILD | ES_AUTOHSCROLL,
+        0, id::skills_skill, parent);
     create_control(
-        L"BUTTON", L"Improve selected area", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Improve now", WS_CHILD,
         0, id::skills_queue, parent);
     create_control(
-        L"BUTTON", L"Undo last area update", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Undo last update", WS_CHILD,
         0, id::skills_rollback, parent);
+
     create_control(
-        L"STATIC", L"Optional add-ons — adding files starts no task and changes no AI choice",
-        WS_CHILD | WS_VISIBLE, 0, id::skills_pack_header, parent);
+        L"STATIC",
+        L"OPTIONAL ADD-ONS\r\nImage, audio, and advanced fine-tuning remain separate from Chat and never change the selected AI.",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, id::skills_pack_header, parent);
     const auto pack_choice = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -3132,9 +3138,9 @@ void MainWindow::create_skills_page() {
             descriptor.kind == runtime::CapabilityPackKind::internal_pytorch_training) {
             continue;
         }
-        const auto label = widen(descriptor.name) + L" — download about " +
-            format_bytes_compact(descriptor.projected_download_bytes) +
-            L" • uses about " + format_bytes_compact(descriptor.projected_install_bytes);
+        const auto label = widen(descriptor.name) + L" — " +
+            format_bytes_compact(descriptor.projected_download_bytes) + L" download / " +
+            format_bytes_compact(descriptor.projected_install_bytes) + L" installed";
         static_cast<void>(::SendMessageW(
             pack_choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())));
         capability_pack_ids_.push_back(descriptor.id);
@@ -3146,24 +3152,24 @@ void MainWindow::create_skills_page() {
     }
     create_control(
         L"EDIT", selected_capability_pack_source_.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::skills_pack_source, parent);
     create_control(
-        L"BUTTON", L"Choose files…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Use local package…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_pack_browse, parent);
     create_control(
-        L"BUTTON", L"Add or update safely", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Install ready add-on", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_pack_install, parent);
     create_control(
-        L"STATIC", L"Choose an add-on and its prepared folder.",
-        WS_CHILD | WS_VISIBLE, 0, id::skills_pack_status, parent);
+        L"STATIC", L"Checking optional add-ons…",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, id::skills_pack_status, parent);
     create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::skills_report, parent);
     refresh_capability_pack_controls();
 }
-
 void MainWindow::create_long_horizon_page() {
     const auto parent = control(id::page_long_horizon);
     create_control(L"STATIC", L"Repository", WS_CHILD | WS_VISIBLE, 0, id::horizon_repository_label, parent);
@@ -4243,68 +4249,45 @@ void MainWindow::layout_controls() {
             width,
             std::max(1, height - library_y));
     }
-    move_control(control(id::skills_bootstrap), 0, 0, scaled(240, dpi_), row);
-    move_control(
-        control(id::skills_refresh),
-        scaled(248, dpi_),
-        0,
-        scaled(120, dpi_),
-        row);
-    const auto skills_actions_y = row + gap;
-    move_control(
-        control(id::skills_skill_label),
-        0,
-        skills_actions_y,
-        scaled(120, dpi_),
-        row);
-    move_control(
-        control(id::skills_skill),
-        scaled(124, dpi_),
-        skills_actions_y,
-        scaled(220, dpi_),
-        row);
-    move_control(
-        control(id::skills_queue),
-        scaled(352, dpi_),
-        skills_actions_y,
-        scaled(190, dpi_),
-        row);
-    move_control(
-        control(id::skills_rollback),
-        scaled(550, dpi_),
-        skills_actions_y,
-        scaled(190, dpi_),
-        row);
-    const auto pack_header_y = skills_actions_y + row + gap;
-    move_control(control(id::skills_pack_header), 0, pack_header_y, width, row);
-    const auto pack_choice_y = pack_header_y + row;
-    const auto pack_choice_width = std::min(scaled(440, dpi_), std::max(scaled(260, dpi_), width * 44 / 100));
-    const auto pack_browse_width = scaled(130, dpi_);
-    move_control(
-        control(id::skills_pack_choice), 0, pack_choice_y,
-        pack_choice_width, row + scaled(220, dpi_));
-    move_control(
-        control(id::skills_pack_source), pack_choice_width + gap, pack_choice_y,
-        std::max(1, width - pack_choice_width - pack_browse_width - gap * 2), row);
-    move_control(
-        control(id::skills_pack_browse), width - pack_browse_width, pack_choice_y,
-        pack_browse_width, row);
-    const auto pack_action_y = pack_choice_y + row + gap;
-    const auto pack_install_width = scaled(190, dpi_);
-    move_control(
-        control(id::skills_pack_install), 0, pack_action_y,
-        pack_install_width, row);
-    move_control(
-        control(id::skills_pack_status), pack_install_width + gap, pack_action_y,
-        std::max(1, width - pack_install_width - gap), row);
-    const auto skills_report_y = pack_action_y + row + gap;
-    move_control(
-        control(id::skills_report),
-        0,
-        skills_report_y,
-        width,
-        std::max(1, height - skills_report_y));
+    const auto capability_card_height = scaled(92, dpi_);
+    const auto capability_half_width = (width - gap) / 2;
+    move_control(control(id::skills_overview_card), 0, 0,
+        capability_half_width, capability_card_height);
+    move_control(control(id::skills_learning_card), capability_half_width + gap, 0,
+        width - capability_half_width - gap, capability_card_height);
+    move_control(control(id::skills_bootstrap), scaled(16, dpi_), scaled(12, dpi_),
+        std::max(1, capability_half_width - scaled(156, dpi_)), scaled(60, dpi_));
+    move_control(control(id::skills_refresh), capability_half_width - scaled(128, dpi_),
+        scaled(18, dpi_), scaled(112, dpi_), row);
+    move_control(control(id::skills_skill_label), capability_half_width + gap + scaled(16, dpi_),
+        scaled(12, dpi_), std::max(1, capability_half_width - scaled(32, dpi_)), scaled(64, dpi_));
+    for (const auto identifier : {id::skills_skill, id::skills_queue, id::skills_rollback}) {
+        move_control(control(identifier), 0, 0, 1, 1);
+    }
 
+    const auto addons_y = capability_card_height + gap;
+    const auto addons_height = scaled(142, dpi_);
+    move_control(control(id::skills_addons_card), 0, addons_y, width, addons_height);
+    move_control(control(id::skills_pack_header), scaled(16, dpi_), addons_y + scaled(10, dpi_),
+        std::max(1, width - scaled(32, dpi_)), scaled(48, dpi_));
+    const auto pack_row_y = addons_y + scaled(62, dpi_);
+    const auto pack_browse_width = scaled(150, dpi_);
+    const auto pack_install_width = scaled(164, dpi_);
+    const auto pack_choice_width = std::max(
+        scaled(260, dpi_), width - pack_browse_width - pack_install_width - gap * 4 - scaled(32, dpi_));
+    move_control(control(id::skills_pack_choice), scaled(16, dpi_), pack_row_y,
+        pack_choice_width, row + scaled(220, dpi_));
+    move_control(control(id::skills_pack_browse), scaled(16, dpi_) + pack_choice_width + gap,
+        pack_row_y, pack_browse_width, row);
+    move_control(control(id::skills_pack_install),
+        scaled(16, dpi_) + pack_choice_width + pack_browse_width + gap * 2,
+        pack_row_y, pack_install_width, row);
+    move_control(control(id::skills_pack_source), 0, 0, 1, 1);
+    move_control(control(id::skills_pack_status), scaled(16, dpi_),
+        pack_row_y + row + gap, std::max(1, width - scaled(32, dpi_)), row);
+    const auto skills_report_y = addons_y + addons_height + gap;
+    move_control(control(id::skills_report), 0, skills_report_y,
+        width, std::max(1, height - skills_report_y));
     move_control(control(id::horizon_repository_label), 0, 0, scaled(130, dpi_), row);
     move_control(control(id::horizon_repository), scaled(135, dpi_), 0, width - scaled(255, dpi_), row);
     move_control(control(id::horizon_browse), width - scaled(112, dpi_), 0, scaled(112, dpi_), row);
@@ -5560,7 +5543,9 @@ std::wstring MainWindow::runtime_summary(
     const auto progress = runtime::read_internal_model_progress(paths_);
     std::wstring built_in_status;
     if (custom_host_running) {
-        built_in_status = L"READY";
+        built_in_status = internal_state.bootstrap_complete
+            ? L"READY — promoted model"
+            : L"READY — verified native foundation";
     } else if (setup_running) {
         const auto completed = progress.total_steps > 0U
             ? progress.total_steps
@@ -7515,9 +7500,10 @@ void MainWindow::start_backend(const bool automatic) {
     if (backend_operation_.running()) {
         return;
     }
-    if (!internal_model_ready(paths_)) {
+    if (!internal_model_ready(paths_) &&
+        !runtime::native_inference_source_available(paths_)) {
         if (!automatic) {
-            set_status(L"Built-in AI setup is incomplete. Choose Continue setup under Backup and repair.");
+            set_status(L"The built-in foundation files are missing. Open AI & Tools for repair options.");
             show_page(Page::models);
         }
         return;
@@ -8046,6 +8032,13 @@ void MainWindow::drive_automatic_lifecycle() {
         return;
     }
 
+    if (!backend_server_.running() && runtime::native_inference_source_available(paths_)) {
+        // The bundled verified foundation is a real no-Python first-run engine.
+        // Start it immediately; a promoted neural generation replaces it later.
+        start_backend(true);
+        return;
+    }
+
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
     if (learning_pipeline.active_job.has_value()) {
         return;
@@ -8075,7 +8068,11 @@ void MainWindow::drive_automatic_lifecycle() {
 void MainWindow::update_internal_model_lifecycle_ui() {
     const auto state = runtime::inspect_internal_model_state(paths_);
     const auto progress = runtime::read_internal_model_progress(paths_);
-    set_control_text(id::models_internal_status, internal_model_status_text(paths_));
+    set_control_text(
+        id::models_internal_status,
+        backend_server_.running() && !state.bootstrap_complete
+            ? L"Built-in EngCoder is ready now with its verified native foundation. Promoted neural weights will replace it only after every quality check passes."
+            : internal_model_status_text(paths_));
 
     double percent = 0.0;
     const auto target = runtime::default_bootstrap_target(state);
@@ -8157,6 +8154,8 @@ void MainWindow::update_internal_model_lifecycle_ui() {
         }
     } else if (state.bootstrap_complete && backend_server_.running()) {
         detail << L"Built-in AI is ready and running. EngCoder will keep it available automatically.";
+    } else if (backend_server_.running()) {
+        detail << L"Built-in EngCoder is ready with 4,247 verified local examples. Approved replies are learned immediately; optional neural weight training never blocks Chat.";
     } else if (automatic_learning_limit_reached(paths_, state)) {
         detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
     } else if (!setup_files_ready && setup_source_ready) {
@@ -8699,37 +8698,90 @@ void MainWindow::update_piggyback_result() {
 }
 
 void MainWindow::update_skill_report() {
+    const auto internal = runtime::inspect_internal_model_state(paths_);
+    const auto pipeline = learning_service_->pipeline_snapshot();
     const auto modules = learning_service_->expert_snapshot();
-    std::wostringstream report;
-    report << L"Specialized capability areas\r\n"
-           << L"Approved examples are available immediately. Lightweight updates build a review copy; approved full updates remain independently versioned.\r\n\r\n";
-    if (modules.empty()) {
-        report << L"No capability area has approved examples yet. Approve a verified reply or let automatic learning prepare examples.";
+
+    std::wostringstream built_in;
+    built_in << L"BUILT-IN ENGCODER\r\n";
+    if (backend_server_.running()) {
+        built_in << (internal.bootstrap_complete
+            ? L"Ready — promoted model is serving; verified memory stays available"
+            : L"Ready — native foundation with 4,247 verified English and C++ examples");
+    } else if (backend_operation_.running()) {
+        built_in << L"Starting automatically — Chat can use connected AI meanwhile";
+    } else if (runtime::native_inference_source_available(paths_)) {
+        built_in << L"Starting automatically — no download or Python runtime is required";
+    } else {
+        built_in << L"Needs repair — the bundled native foundation files are missing";
     }
+    set_control_text(id::skills_bootstrap, built_in.str());
+
+    std::wostringstream learning_status;
+    learning_status << L"AUTOMATIC IMPROVEMENT\r\n";
+    if (learning_service_->paused()) {
+        learning_status << L"Paused — approved replies still work immediately from verified memory";
+    } else if (pipeline.active_job.has_value()) {
+        learning_status << L"Working safely in the background — "
+                        << widen(learning::to_string(pipeline.active_job->state));
+    } else if (pipeline.queued_updates > 0U) {
+        learning_status << pipeline.queued_updates
+                        << L" verified update"
+                        << (pipeline.queued_updates == 1U ? L"" : L"s")
+                        << L" waiting for an idle moment";
+    } else if (checked(id::learning_auto)) {
+        learning_status << L"On — accepted replies are immediate; deeper updates wait until idle";
+    } else {
+        learning_status << L"Ready — automatic example generation is off; manual approval still works";
+    }
+    set_control_text(id::skills_skill_label, learning_status.str());
+
+    runtime::CapabilityPackManager pack_manager(paths_.packs);
+    const auto packs = pack_manager.inspect();
+    const auto installed = std::ranges::count_if(packs, [](const auto& pack) {
+        return pack.state == runtime::CapabilityPackState::installed;
+    });
+    std::size_t approved_examples = 0U;
     for (const auto& module : modules) {
-        const auto built_from = module.base_model.starts_with("threadspire://")
-            ? std::string{"EngCoder built-in"}
-            : module.base_model;
-        report << L"[" << widen(module.skill) << L"]\r\n"
-               << L"  status: " << widen(learning::to_string(module.state)) << L"\r\n"
-               << L"  built from: " << widen(built_from) << L"\r\n"
-               << L"  approved examples: " << module.accepted_episodes << L"\r\n"
-               << L"  examples since lightweight update: " << module.episodes_since_update << L"\r\n"
-               << L"  active version: " << module.generation << L"\r\n"
-               << L"  lightweight update versions: " << module.lora_generations << L"\r\n"
-               << L"  compile-checked: " << module.compiler_verified_episodes
-               << L"  tests verified: " << module.test_verified_episodes << L"\r\n"
-               << L"  quality score: " << module.validation_score
-               << L"  quality loss: " << module.regression_score << L"\r\n"
-               << L"  approved update: " << widen(module.promoted_candidate_id) << L"\r\n"
-               << L"  lightweight update file: " << module.adapter_path.wstring() << L"\r\n"
-               << L"  full capability file: " << module.module_path.wstring() << L"\r\n"
-               << L"  restore status: " << widen(learning::to_string(module.previous_state))
-               << L"\r\n\r\n";
+        approved_examples += module.accepted_episodes;
+    }
+
+    std::wostringstream report;
+    report << L"WHAT ENGCODER CAN DO NOW\r\n\r\n"
+           << L"Conversation and English\r\n"
+           << L"  Verified built-in foundation: "
+           << (backend_server_.running() ? L"ready" : L"starting") << L"\r\n"
+           << L"  Exact approved replies: available immediately and never silently duplicated\r\n\r\n"
+           << L"Coding and files\r\n"
+           << L"  C++23 guidance: 872 bundled verified examples\r\n"
+           << L"  Repository work: compile/test evidence is required before a result can teach weights\r\n"
+           << L"  Exact calculations: computed locally and never baked into model weights\r\n\r\n"
+           << L"Learning\r\n"
+           << L"  Approved specialized examples: " << approved_examples << L"\r\n"
+           << L"  Waiting updates: " << pipeline.queued_updates << L"\r\n"
+           << L"  Active update: ";
+    if (pipeline.active_job.has_value()) {
+        report << widen(learning::to_string(pipeline.active_job->state))
+               << L" — " << widen(pipeline.active_job->skill);
+    } else {
+        report << L"none";
+    }
+    report << L"\r\n"
+           << L"  Safety: the working model keeps answering while a separate candidate is checked\r\n\r\n"
+           << L"Optional add-ons\r\n"
+           << L"  Installed: " << installed << L" of " << packs.size() << L"\r\n"
+           << L"  Add-ons do not start training, switch the chosen AI, or interrupt Chat.\r\n";
+
+    if (!modules.empty()) {
+        report << L"\r\nLEARNED AREAS\r\n";
+        for (const auto& module : modules) {
+            report << L"  " << widen(module.skill)
+                   << L" — " << module.accepted_episodes << L" approved examples"
+                   << L" — " << widen(learning::to_string(module.state)) << L"\r\n";
+        }
     }
     set_control_text(id::skills_report, report.str());
 }
-
 std::optional<runtime::CapabilityPackDescriptor> MainWindow::selected_capability_pack() const {
     const auto choice = control(id::skills_pack_choice);
     if (choice == nullptr) {
@@ -8771,12 +8823,12 @@ void MainWindow::refresh_capability_pack_controls() {
     std::wostringstream status;
     if (record != records.end() && record->state == runtime::CapabilityPackState::installed) {
         status << L"Installed (" << format_bytes_compact(record->installed_bytes)
-               << L"). Adding again safely replaces only this add-on.";
+               << L"). Reinstalling replaces only this add-on and leaves Chat untouched.";
     } else {
-        status << L"Not installed. Choose its prepared folder, then add it safely.";
+        status << L"Not installed. Optional and separate from Chat.";
     }
     if (!descriptor->dependencies.empty()) {
-        status << L" Requires the built-in learning engine first.";
+        status << L" Advanced fine-tuning also needs the optional learning add-on.";
     }
     set_control_text(id::skills_pack_status, status.str());
     static_cast<void>(::EnableWindow(

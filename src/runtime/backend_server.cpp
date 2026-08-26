@@ -42,20 +42,33 @@ namespace {
         !std::filesystem::is_symlink(status);
 }
 
+[[nodiscard]] std::string installed_pack_version(
+    const std::filesystem::path& pack_root) noexcept {
+    try {
+        std::ifstream stream(pack_root / "pack.json", std::ios::binary);
+        if (!stream) {
+            return {};
+        }
+        const std::string text{
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>()};
+        const auto manifest = core::json::parse(text);
+        if (core::json::string_or(manifest.find("id")) != "compact-native-inference") {
+            return {};
+        }
+        return core::json::string_or(manifest.find("version"));
+    } catch (...) {
+        return {};
+    }
+}
 [[nodiscard]] std::filesystem::path ensure_native_host(
     const app::AppPaths& paths,
     const std::stop_token stop_token,
     std::string& message) {
     const auto installed = native_host_path(paths);
-    if (regular_file_no_follow(installed)) {
-        return installed;
-    }
     const auto source = native_host_source(paths);
-    if (!regular_file_no_follow(
-            source / "bin" / "threadspire-native-host.exe")) {
-        message = "Compact native inference pack is unavailable: " + source.string();
-        return {};
-    }
+    const auto source_ready = regular_file_no_follow(
+        source / "bin" / "threadspire-native-host.exe");
     const auto catalog = CapabilityPackManager::catalog();
     const auto descriptor = std::ranges::find(
         catalog,
@@ -63,6 +76,15 @@ namespace {
         &CapabilityPackDescriptor::id);
     if (descriptor == catalog.end()) {
         message = "Compact native inference pack description is missing";
+        return {};
+    }
+    if (regular_file_no_follow(installed) &&
+        (!source_ready || installed_pack_version(installed.parent_path().parent_path()) ==
+            descriptor->version)) {
+        return installed;
+    }
+    if (!source_ready) {
+        message = "Compact native inference pack is unavailable: " + source.string();
         return {};
     }
     CapabilityPackManager manager(paths.packs);

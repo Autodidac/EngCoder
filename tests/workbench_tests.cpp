@@ -639,7 +639,12 @@ void test_named_module_and_native_base_contract() {
                 backend_server.find(".executable = host") != std::string::npos &&
                 backend_server.find(".executable = python") == std::string::npos &&
                 backend_server.find("install_transactional") != std::string::npos &&
+                backend_server.find("installed_pack_version") != std::string::npos &&
+                backend_server.find("descriptor->version") != std::string::npos &&
                 native_host.find("--engine-contract-self-test") != std::string::npos &&
+                native_host.find("generation_ = \"foundation\"") != std::string::npos &&
+                native_host.find("approved_response(normalized)") != std::string::npos &&
+                native_host.find("the native foundation has not learned this request yet") != std::string::npos &&
                 native_host.find("/v1/chat/completions") != std::string::npos &&
                 native_host.find("text/event-stream; charset=utf-8") != std::string::npos &&
                 native_host.find("valid_utf8") != std::string::npos &&

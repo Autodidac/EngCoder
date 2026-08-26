@@ -17,6 +17,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <random>
@@ -431,44 +432,53 @@ void rms_norm(
 class NativeModel final {
 public:
     explicit NativeModel(std::filesystem::path state_root)
-        : state_root_(std::move(state_root)),
-          generation_path_(resolve_generation()),
-          manifest_(json::parse(read_text(generation_path_ / "manifest.json"))),
-          config_(load_config(generation_path_ / json::string_or(
-              manifest_.find("config_file"), "config.json"))),
-          weights_(validated_weights_path()),
-          safetensors_(weights_) {
-        if (json::string_or(manifest_.find("format")) != "threadspire.internal.v1" ||
-            json::string_or(manifest_.find("generation")) != generation_) {
-            throw std::runtime_error("active model manifest is incompatible");
-        }
-        embedding_ = safetensors_.tensor("embedding.weight", {byte_vocab_size, config_.width});
-        final_norm_ = safetensors_.tensor("final_norm.weight", {config_.width});
-        for (std::size_t layer = 0; layer < config_.layers; ++layer) {
-            const auto prefix = "blocks." + std::to_string(layer) + ".";
-            BlockWeights block{
-                .attention_norm = safetensors_.tensor(prefix + "attention_norm.weight", {config_.width}),
-                .qkv = safetensors_.tensor(prefix + "attention.qkv.weight", {config_.width * 3U, config_.width}),
-                .attention_output = safetensors_.tensor(prefix + "attention.output.weight", {config_.width, config_.width}),
-                .ffn_norm = safetensors_.tensor(prefix + "ffn_norm.weight", {config_.width}),
-                .ffn = {
-                    .gate = safetensors_.tensor(prefix + "ffn.gate.weight", {config_.ffn_hidden, config_.width}),
-                    .up = safetensors_.tensor(prefix + "ffn.up.weight", {config_.ffn_hidden, config_.width}),
-                    .down = safetensors_.tensor(prefix + "ffn.down.weight", {config_.width, config_.ffn_hidden}),
-                },
-                .expert_norm = safetensors_.tensor(prefix + "expert_norm.weight", {config_.width}),
-            };
-            for (const auto& skill : config_.skills) {
-                const auto expert = prefix + "experts." + skill + ".";
-                block.experts.emplace(skill, SwiWeights{
-                    .gate = safetensors_.tensor(expert + "gate.weight", {config_.expert_hidden, config_.width}),
-                    .up = safetensors_.tensor(expert + "up.weight", {config_.expert_hidden, config_.width}),
-                    .down = safetensors_.tensor(expert + "down.weight", {config_.width, config_.expert_hidden}),
-                });
-            }
-            blocks_.push_back(std::move(block));
-        }
+        : state_root_(std::move(state_root)) {
         load_curated_responses();
+        try {
+            generation_path_ = resolve_generation();
+            manifest_ = json::parse(read_text(generation_path_ / "manifest.json"));
+            config_ = load_config(generation_path_ / json::string_or(
+                manifest_.find("config_file"), "config.json"));
+            weights_ = validated_weights_path();
+            safetensors_ = std::make_unique<SafeTensorFile>(weights_);
+            if (json::string_or(manifest_.find("format")) != "threadspire.internal.v1" ||
+                json::string_or(manifest_.find("generation")) != generation_) {
+                throw std::runtime_error("active model manifest is incompatible");
+            }
+            embedding_ = safetensors_->tensor("embedding.weight", {byte_vocab_size, config_.width});
+            final_norm_ = safetensors_->tensor("final_norm.weight", {config_.width});
+            for (std::size_t layer = 0; layer < config_.layers; ++layer) {
+                const auto prefix = "blocks." + std::to_string(layer) + ".";
+                BlockWeights block{
+                    .attention_norm = safetensors_->tensor(prefix + "attention_norm.weight", {config_.width}),
+                    .qkv = safetensors_->tensor(prefix + "attention.qkv.weight", {config_.width * 3U, config_.width}),
+                    .attention_output = safetensors_->tensor(prefix + "attention.output.weight", {config_.width, config_.width}),
+                    .ffn_norm = safetensors_->tensor(prefix + "ffn_norm.weight", {config_.width}),
+                    .ffn = {
+                        .gate = safetensors_->tensor(prefix + "ffn.gate.weight", {config_.ffn_hidden, config_.width}),
+                        .up = safetensors_->tensor(prefix + "ffn.up.weight", {config_.ffn_hidden, config_.width}),
+                        .down = safetensors_->tensor(prefix + "ffn.down.weight", {config_.width, config_.ffn_hidden}),
+                    },
+                    .expert_norm = safetensors_->tensor(prefix + "expert_norm.weight", {config_.width}),
+                };
+                for (const auto& skill : config_.skills) {
+                    const auto expert = prefix + "experts." + skill + ".";
+                    block.experts.emplace(skill, SwiWeights{
+                        .gate = safetensors_->tensor(expert + "gate.weight", {config_.expert_hidden, config_.width}),
+                        .up = safetensors_->tensor(expert + "up.weight", {config_.expert_hidden, config_.width}),
+                        .down = safetensors_->tensor(expert + "down.weight", {config_.width, config_.expert_hidden}),
+                    });
+                }
+                blocks_.push_back(std::move(block));
+            }
+            neural_ready_ = true;
+        } catch (const std::exception&) {
+            generation_ = "foundation";
+            generation_path_.clear();
+            weights_.clear();
+            safetensors_.reset();
+            blocks_.clear();
+        }
     }
 
     [[nodiscard]] GenerationResult complete(
@@ -490,6 +500,17 @@ public:
                 .verified = true,
             };
         }
+        if (!neural_ready_) {
+            return {
+                .quality_reason = "the native foundation has not learned this request yet",
+                .generation = generation_,
+                .prompt_tokens = prompt_tokens(messages).size(),
+                .completion_tokens = 0,
+                .attempts = 1,
+                .elapsed_ms = elapsed_ms(started),
+                .accepted = false,
+            };
+        }
         maximum_new_tokens = std::clamp<std::size_t>(
             maximum_new_tokens, 1U, std::max<std::size_t>(1U, config_.context_length - 1U));
         const std::array temperatures{temperature, 0.0F};
@@ -508,6 +529,9 @@ public:
 
     [[nodiscard]] const std::string& generation() const noexcept { return generation_; }
     [[nodiscard]] std::uintmax_t weights_bytes() const noexcept {
+        if (!neural_ready_ || weights_.empty()) {
+            return 0U;
+        }
         std::error_code error;
         return std::filesystem::file_size(weights_, error);
     }
@@ -631,7 +655,7 @@ private:
                 continue;
             }
             const auto domain = lower_ascii(json::string_or(record->find("domain")));
-            if (!domain.starts_with("english")) {
+            if (!domain.starts_with("english") && domain != "cpp23") {
                 continue;
             }
             const auto* messages = record->find("messages");
@@ -674,6 +698,10 @@ private:
         const auto normalized = normalize_space(user);
         if (normalized.empty()) {
             return std::nullopt;
+        }
+        const auto approved = approved_response(normalized);
+        if (approved.reviewed) {
+            return approved.response;
         }
         static const std::regex greeting(R"(^(hi|hello|hey)[.!?,]*$)", std::regex::icase);
         if (std::regex_match(user, greeting)) {
@@ -718,6 +746,41 @@ private:
             }
         }
         return best != nullptr && best_score >= 0.82 ? std::optional<std::string>(*best) : std::nullopt;
+    }
+
+    struct ReviewedResponse final {
+        bool reviewed{false};
+        std::optional<std::string> response;
+    };
+
+    [[nodiscard]] ReviewedResponse approved_response(
+        const std::string_view normalized_prompt) const {
+        std::ifstream stream(state_root_ / "memory" / "episodes.jsonl", std::ios::binary);
+        std::string line;
+        ReviewedResponse result;
+        while (std::getline(stream, line)) {
+            std::string error;
+            const auto record = json::try_parse(line, error);
+            if (!record.has_value() ||
+                normalize_space(json::string_or(record->find("prompt"))) != normalized_prompt) {
+                continue;
+            }
+            const auto rejected = json::bool_or(record->find("human_rejected"));
+            const auto trusted = json::bool_or(record->find("human_accepted")) ||
+                json::bool_or(record->find("deterministic_verified")) ||
+                json::bool_or(record->find("reference_verified"));
+            auto answer = rejected
+                ? json::string_or(record->find("correction"))
+                : json::string_or(record->find("response"));
+            answer = trim(std::move(answer));
+            if (rejected || trusted) {
+                result.reviewed = true;
+                result.response = answer.empty()
+                    ? std::nullopt
+                    : std::optional<std::string>(std::move(answer));
+            }
+        }
+        return result;
     }
 
     [[nodiscard]] GenerationResult generate(
@@ -1037,12 +1100,13 @@ private:
     Value manifest_;
     ModelConfig config_;
     std::filesystem::path weights_;
-    SafeTensorFile safetensors_;
+    std::unique_ptr<SafeTensorFile> safetensors_;
     TensorView embedding_;
     TensorView final_norm_;
     std::vector<BlockWeights> blocks_;
     std::vector<std::pair<std::string, std::string>> curated_;
     std::unordered_set<std::string> vocabulary_;
+    bool neural_ready_{false};
 };
 
 [[nodiscard]] std::string lane_from_model(const std::string_view model) {
@@ -1081,6 +1145,9 @@ private:
     const std::string& model) {
     const auto finish = result.accepted ? "stop" : "low_confidence";
     const auto content = result.accepted ? result.text : std::string{};
+    const auto origin = result.generation == "foundation"
+        ? "verified-native-foundation"
+        : "random-initialized-local-model";
     const auto tokens_per_second = result.elapsed_ms <= 0.0 ? 0.0 :
         static_cast<double>(result.completion_tokens) * 1000.0 / result.elapsed_ms;
     std::ostringstream output;
@@ -1088,7 +1155,7 @@ private:
            << "\",\"object\":\"chat.completion\",\"model\":\"" << json::escape(model)
            << "\",\"source\":\"engcoder-native\",\"generation\":\""
            << json::escape(result.generation)
-           << "\",\"origin\":\"random-initialized-local-model\",\"external_base_weights\":false,"
+           << "\",\"origin\":\"" << origin << "\",\"external_base_weights\":false,"
            << "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\""
            << json::escape(content) << "\"},\"finish_reason\":\"" << finish << "\"}],"
            << "\"usage\":{\"prompt_tokens\":" << result.prompt_tokens
@@ -1258,6 +1325,43 @@ void write_ready_file(const std::filesystem::path& path, const unsigned short po
     const std::string surrogate{"\xED\xA0\x80", 3U};
     if (!valid_utf8(valid) || valid_utf8(overlong) || valid_utf8(surrogate)) {
         throw std::runtime_error("native UTF-8 validation contract failed");
+    }
+    const auto foundation_root = std::filesystem::temp_directory_path() /
+        ("engcoder-native-foundation-contract-" + std::to_string(GetCurrentProcessId()));
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(foundation_root, cleanup_error);
+    std::filesystem::create_directories(foundation_root / "data");
+    std::filesystem::create_directories(foundation_root / "memory");
+    {
+        std::ofstream curriculum(foundation_root / "data" / "bootstrap.jsonl", std::ios::binary);
+        curriculum
+            << R"({"domain":"english-core","messages":[{"role":"user","content":"Define reliable."},{"role":"assistant","content":"Reliable means consistently dependable or trustworthy."}]})"
+            << '\n'
+            << R"({"domain":"cpp23","messages":[{"role":"user","content":"What does import do in C++23?"},{"role":"assistant","content":"An import declaration makes a named module's exported declarations available to the translation unit."}]})"
+            << '\n';
+    }
+    {
+        std::ofstream episodes(foundation_root / "memory" / "episodes.jsonl", std::ios::binary);
+        episodes
+            << R"({"prompt":"hello there","response":"Hello there! What would you like to work on?","human_accepted":true,"human_rejected":false,"deterministic_verified":false,"reference_verified":false})"
+            << '\n'
+            << R"({"prompt":"obsolete answer","response":"Old reply","human_accepted":true,"human_rejected":false,"deterministic_verified":false,"reference_verified":false})"
+            << '\n'
+            << R"({"prompt":"obsolete answer","response":"Old reply","correction":"","human_accepted":false,"human_rejected":true,"deterministic_verified":false,"reference_verified":false})"
+            << '\n';
+    }
+    NativeModel foundation(foundation_root);
+    const auto curated = foundation.complete({{"user", "Define reliable."}}, "fast", 96U, 0.0F);
+    const auto approved = foundation.complete({{"user", "hello there"}}, "fast", 96U, 0.0F);
+    const auto unknown = foundation.complete({{"user", "zzzxxyy"}}, "fast", 96U, 0.0F);
+    const auto suppressed = foundation.complete({{"user", "obsolete answer"}}, "fast", 96U, 0.0F);
+    std::filesystem::remove_all(foundation_root, cleanup_error);
+    if (foundation.generation() != "foundation" || foundation.weights_bytes() != 0U ||
+        !curated.accepted || curated.text != "Reliable means consistently dependable or trustworthy." ||
+        !approved.accepted || approved.text != "Hello there! What would you like to work on?" ||
+        unknown.accepted || suppressed.accepted ||
+        unknown.quality_reason != "the native foundation has not learned this request yet") {
+        throw std::runtime_error("clean-install native foundation contract failed");
     }
     std::cout << "EngCoder native inference contract passed\n";
     return 0;

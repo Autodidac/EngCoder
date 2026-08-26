@@ -47,7 +47,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
         {
             .id = "compact-native-inference",
             .name = "Compact Native Inference",
-            .version = "1",
+            .version = "2",
             .kind = CapabilityPackKind::compact_native_inference,
             .projected_download_bytes = 8U * mib,
             .projected_install_bytes = 16U * mib,
