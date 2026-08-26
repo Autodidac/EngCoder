@@ -93,6 +93,9 @@ Published generations include a SafeTensors checksum and metrics. `active.json` 
 
 Immediate memory is the fastest learning path and remains active even when background weight training is paused. It stores user corrections, accepted context, and verified outcomes for retrieval in later prompts. Short conversation prompts may use a unique conservative spelling match; code, tools, and repository prompts require exact verified matches. The original prompt is never rewritten and a typo match never creates synthetic training evidence.
 
+Conversational `remember`, `forget`, memory-list, `teach`, and `correct` controls are intercepted before provider routing. They print exact receipts and never contact a model. Permanent user facts remain in the editable user-memory file and are never weight data. Taught replies and corrections enter the same admission service used by the per-reply controls. A correction supersedes every earlier positive answer for that normalized prompt in exact and semantic retrieval; historical drafts remain negative audit evidence only. Both optional Python loaders independently keep only the newest hard correction and exclude stale positives before batching.
+The visible Training Library applies the same rule: it presents the correction as the approved expected answer, shows the replaced draft as excluded audit material, and labels older approvals for the prompt as superseded.
+
 Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off background learning stops candidate training but does not erase context or memory.
 
 ## Conversation, coding, and self-iteration

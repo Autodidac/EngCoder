@@ -378,6 +378,16 @@ def main() -> int:
             "english-conversation",
         )) == 4
 
+        stale_positive = {
+            **human_records[0],
+            "skill": "english-conversation",
+            "eligible_for_training": True,
+            "human_accepted": True,
+            "human_rejected": False,
+            "prompt": "hi",
+            "response": "Yes. I can help with that problem.",
+            "provenance": "per-reply-test",
+        }
         hard_correction = {
             **human_records[0],
             "skill": "english-conversation",
@@ -390,6 +400,7 @@ def main() -> int:
             "provenance": "interactive-hard-correction",
         }
         with memory_only_episodes.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(stale_positive) + "\n")
             stream.write(json.dumps(hard_correction) + "\n")
         loaded_corrections = worker._load_episodes(  # pylint: disable=protected-access
             memory_only_episodes,
@@ -397,6 +408,13 @@ def main() -> int:
         )
         assert any(
             record.get("hard_correction") and record["response"] == "Hello!"
+            for record in loaded_corrections
+        )
+        assert len(loaded_corrections) == 5
+        assert not any(
+            record.get("prompt") == "hi"
+            and record.get("response") == "Yes. I can help with that problem."
+            and not record.get("hard_correction")
             for record in loaded_corrections
         )
         assert len(model.load_training_sequences(

@@ -384,7 +384,9 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
     sanitize_learning_episode(episode);
     result.stored_prompt = episode.prompt;
     result.stored_response =
-        episode.response.empty() ? episode.correction : episode.response;
+        episode.human_rejected && !episode.correction.empty()
+            ? episode.correction
+            : (episode.response.empty() ? episode.correction : episode.response);
     result.training_text_adjusted =
         episode.prompt != original_prompt ||
         episode.response != original_response ||
@@ -406,15 +408,21 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
         hash_response);
     const auto current_accepted_examples =
         memory_store_.human_acceptance_count_for_skill(episode.skill);
+    const auto hard_correction = episode.human_rejected && !episode.correction.empty() &&
+        episode.provenance == "interactive-hard-correction";
     const auto independently_validated =
         episode.human_accepted || episode.deterministic_verified || episode.reference_verified;
     const auto exact_duplicate = memory_store_.contains_hash(result.content_hash);
-    const auto positive_prompt_duplicate =
-        independently_validated && !episode.human_rejected &&
+    const auto prompt_already_positive =
         memory_store_.contains_positive_prompt(episode.skill, episode.prompt);
+    const auto prompt_already_human_accepted =
+        memory_store_.contains_human_accepted_prompt(episode.skill, episode.prompt);
+    const auto positive_prompt_duplicate =
+        independently_validated && !episode.human_rejected && prompt_already_positive;
     const auto projected_accepted_examples =
         current_accepted_examples +
-        (episode.human_accepted && !episode.human_rejected &&
+        (((episode.human_accepted && !episode.human_rejected) ||
+          (hard_correction && !prompt_already_human_accepted)) &&
          !exact_duplicate && !positive_prompt_duplicate ? 1U : 0U);
 
     auto decision = knowledge_classifier_.classify(
@@ -496,8 +504,10 @@ bool ContinualLearningService::submit(memory::Episode episode) {
     }
 
     std::string skill_to_queue;
+    const auto hard_correction = episode.human_rejected && !episode.correction.empty() &&
+        episode.provenance == "interactive-hard-correction";
     if (episode.human_accepted || episode.deterministic_verified ||
-        episode.reference_verified) {
+        episode.reference_verified || hard_correction) {
         std::lock_guard lock(mutex_);
         auto& module = expert_registry_.ensure(episode.skill, settings_.base_model);
         ++module.accepted_episodes;

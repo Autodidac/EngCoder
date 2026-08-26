@@ -1952,6 +1952,19 @@ def _human_only_training_record(record: dict[str, Any]) -> bool:
     )
 
 
+def _hard_correction_record(record: dict[str, Any]) -> bool:
+    return bool(
+        record.get("human_rejected", False)
+        and str(record.get("provenance", "")) == "interactive-hard-correction"
+        and str(record.get("correction", "")).strip()
+    )
+
+
+def _normalized_learning_prompt(record: dict[str, Any]) -> str:
+    prompt = strip_training_emoji(str(record.get("prompt", "")))
+    return re.sub(r"[^a-z0-9+_]+", " ", prompt.lower()).strip()
+
+
 def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
     prompts: dict[str, set[str]] = {}
     for path in paths:
@@ -1963,7 +1976,10 @@ def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not _human_only_training_record(record):
+                if not (
+                    _human_only_training_record(record)
+                    or _hard_correction_record(record)
+                ):
                     continue
                 if not _weight_training_skill(str(record.get("skill", record.get("domain", "general")))):
                     continue
@@ -2062,6 +2078,29 @@ def load_training_sequences(
     normalized_skill = normalize_skill(skill) if skill else None
     path_values = [Path(path_value) for path_value in paths]
     human_approval_counts = _human_approval_counts(path_values)
+    latest_hard_corrections: dict[tuple[str, str], str] = {}
+    for path in path_values:
+        if not path.is_file():
+            continue
+        with path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not _hard_correction_record(record):
+                    continue
+                correction_key = (
+                    normalize_skill(str(record.get("skill", record.get("domain", "general")))),
+                    _normalized_learning_prompt(record),
+                )
+                if correction_key[1]:
+                    latest_hard_corrections[correction_key] = hashlib.sha256(
+                        line.strip().encode("utf-8")
+                    ).hexdigest()
+
     for path in path_values:
         if not path.is_file():
             continue
@@ -2089,11 +2128,20 @@ def load_training_sequences(
                 if normalized_skill:
                     if not _capability_matches_scope(record_capabilities, normalized_skill):
                         continue
-                hard_correction = bool(
-                    record.get("human_rejected", False)
-                    and str(record.get("provenance", "")) == "interactive-hard-correction"
-                    and str(record.get("correction", "")).strip()
+                hard_correction = _hard_correction_record(record)
+                correction_key = (
+                    record_skill,
+                    _normalized_learning_prompt(record),
                 )
+                latest_correction = latest_hard_corrections.get(correction_key)
+                if latest_correction is not None:
+                    if not hard_correction:
+                        continue
+                    record_identity = hashlib.sha256(
+                        line.strip().encode("utf-8")
+                    ).hexdigest()
+                    if record_identity != latest_correction:
+                        continue
                 if hard_correction:
                     record = dict(record)
                     record["response"] = record.get("correction", "")

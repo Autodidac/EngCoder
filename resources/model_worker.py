@@ -1259,6 +1259,14 @@ def _human_only_training_record(record: dict[str, Any]) -> bool:
     )
 
 
+def _hard_correction_record(record: dict[str, Any]) -> bool:
+    return bool(
+        record.get("human_rejected", False)
+        and str(record.get("provenance", "")) == "interactive-hard-correction"
+        and str(record.get("correction", "")).strip()
+    )
+
+
 def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
     if skill not in _WEIGHT_TRAINING_SKILLS:
         return []
@@ -1273,13 +1281,9 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
                 continue
             normalized_prompt = _normalized_learning_prompt(record)
             human_only = _human_only_training_record(record)
-            if human_only and normalized_prompt:
+            hard_correction = _hard_correction_record(record)
+            if (human_only or hard_correction) and normalized_prompt:
                 diverse_human_prompts.add(normalized_prompt)
-            hard_correction = bool(
-                record.get("human_rejected", False)
-                and str(record.get("provenance", "")) == "interactive-hard-correction"
-                and str(record.get("correction", "")).strip()
-            )
             if not record.get("eligible_for_training", False) and not hard_correction and not human_only:
                 continue
             if not hard_correction and not (
@@ -1308,6 +1312,22 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
                     (prompt + "\0" + response).encode("utf-8")
                 ).hexdigest()
                 records.append(cleaned)
+
+    latest_corrections: dict[str, dict[str, Any]] = {}
+    for record in records:
+        normalized_prompt = _normalized_learning_prompt(record)
+        if record.get("hard_correction", False) and normalized_prompt:
+            latest_corrections[normalized_prompt] = record
+    if latest_corrections:
+        records = [
+            record
+            for record in records
+            if (
+                _normalized_learning_prompt(record) not in latest_corrections
+                or record is latest_corrections[_normalized_learning_prompt(record)]
+            )
+        ]
+
     unique: dict[str, dict[str, Any]] = {}
     for record in records:
         fingerprint = str(record.get("content_hash", "")).strip()

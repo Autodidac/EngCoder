@@ -316,6 +316,8 @@ void test_permanent_user_memory_is_atomic_editable_and_never_weights() {
             "Remember that I prefer dark interfaces");
         require(remembered.has_value(),
                 "an explicit harmless preference should enter permanent user memory");
+        require(remembered->text == "I prefer dark interfaces",
+                "remember commands must store the fact, not the control instruction");
         saved_id = remembered->id;
         require(!store.remember_from_prompt(
                     "Remember that my API key is secret-123").has_value(),
@@ -521,6 +523,43 @@ void test_episode_dedup_and_negative_evidence() {
     const auto recalled = store.retrieve("dangling span owner lifetime", 5);
     require(recalled.size() == 1 && recalled.front().episode.id == "accepted",
             "retrieval should use independently validated positive evidence only");
+
+    auto correction = accepted;
+    correction.id = "accepted-correction";
+    correction.human_accepted = false;
+    correction.human_rejected = true;
+    correction.deterministic_verified = false;
+    correction.compiler_passed = false;
+    correction.tests_passed = false;
+    correction.eligible_for_training = true;
+    correction.provenance = "interactive-hard-correction";
+    correction.correction = "Keep the owner alive for every span access.";
+    correction.content_hash = threadspire::ai::memory::make_content_hash(
+        correction.skill,
+        correction.prompt,
+        correction.response + "\nAPPROVED CORRECTION\n" + correction.correction);
+    correction.created_unix_ms += 1;
+    require(store.append_if_new(correction),
+            "a hard correction must coexist with its negative draft as superseding evidence");
+    const auto exact_correction = store.exact_verified("Repair a dangling span");
+    require(exact_correction.has_value() &&
+                exact_correction->episode.response == correction.correction,
+            "an exact lookup must immediately return the newest human correction");
+    const auto matched_corrections = store.retrieve(
+        "repair dangling span owner lifetime", 5);
+    require(!matched_corrections.empty() &&
+                matched_corrections.front().episode.response == correction.correction,
+            "semantic retrieval must prefer a human correction over the stale answer");
+    require(store.count_for_skill("cpp23-debugging") == 1U &&
+                store.human_acceptance_count_for_skill("cpp23-debugging") == 1U,
+            "correcting one prompt must not inflate its accepted or diverse-human counts");
+    {
+        threadspire::ai::memory::EpisodeStore recovered(root / "episodes.jsonl");
+        const auto recovered_correction = recovered.exact_verified("Repair a dangling span");
+        require(recovered_correction.has_value() &&
+                    recovered_correction->episode.response == correction.correction,
+                "the corrected answer must remain authoritative after process restart");
+    }
     std::filesystem::remove_all(root);
 }
 void test_learning_preview_blocks_errors_and_repetition() {
@@ -614,6 +653,29 @@ void test_learning_preview_blocks_errors_and_repetition() {
     require(service.memory_store().count_for_skill("english-core") == 4U &&
                 service.memory_store().training_count_for_skill("english-core") == 1U,
             "four unique approvals should yield four memory records but only the gated weight record");
+
+    auto corrected = accepted_episode(4);
+    corrected.response = "Wrong fourth answer";
+    corrected.human_accepted = false;
+    corrected.human_rejected = true;
+    corrected.correction = "Corrected fourth answer";
+    corrected.provenance = "interactive-hard-correction";
+    corrected.score = 0.99;
+    const auto correction_preview = service.preview(corrected);
+    require(correction_preview.would_store &&
+                correction_preview.stored_response == corrected.correction &&
+                correction_preview.eligible_for_weight_training,
+            "a hard correction must preview its replacement text as gated positive evidence");
+    require(service.submit(corrected),
+            "a non-duplicate hard correction should enter persistent learning");
+    const auto corrected_recall = service.memory_store().exact_verified(corrected.prompt);
+    require(corrected_recall.has_value() &&
+                corrected_recall->episode.response == corrected.correction,
+            "a submitted correction must replace the stale answer immediately");
+    require(service.memory_store().count_for_skill("english-core") == 4U &&
+                service.memory_store().human_acceptance_count_for_skill("english-core") == 4U &&
+                service.memory_store().training_count_for_skill("english-core") == 2U,
+            "a correction must not fake diversity even when it enters a later candidate batch");
     service.request_stop();
     std::filesystem::remove_all(root);
 }
@@ -1483,6 +1545,12 @@ void test_windows_ui_source_contract() {
                 ui.find("Adds new weight-training evidence") != std::string::npos &&
                 ui.find("reconcile_response_reviews_from_memory") != std::string::npos,
             "duplicate approval must become a visible accepted state and link wrong built-in output to one bounded correction");
+    require(ui.find("handle_conversation_command(prompt)") != std::string::npos &&
+                ui.find("AI model contacted: NO") != std::string::npos &&
+                ui.find("TRAINING INPUT / USER MESSAGE (EXACT)") != std::string::npos &&
+                ui.find("Old answer remains positive: NO") != std::string::npos &&
+                ui.find("local-memory-saved") != std::string::npos,
+            "remember, forget, teach, and correct must run locally with exact visible receipts");
     require(ui.find("page_host_subclass") != std::string::npos &&
                 ui.find("WS_EX_CONTROLPARENT") != std::string::npos &&
                 ui.find("SetWindowSubclass failed for a page host") != std::string::npos &&
@@ -1661,6 +1729,10 @@ void test_windows_ui_source_contract() {
     require(ui.find("Training Library —") != std::string::npos &&
                 ui.find("append_training_library_file") != std::string::npos &&
                 ui.find("Approved result") != std::string::npos &&
+                ui.find("Approved correction") != std::string::npos &&
+                ui.find("Superseded result") != std::string::npos &&
+                ui.find("REPLACED ANSWER (EXCLUDED)") != std::string::npos &&
+                ui.find("excluded from retrieval and weight training") != std::string::npos &&
                 ui.find("Rejected results") != std::string::npos &&
                 ui.find("Weight training: eligible") != std::string::npos &&
                 ui.find("Held-out check") != std::string::npos &&
@@ -1670,7 +1742,7 @@ void test_windows_ui_source_contract() {
                 ui.find("width >= scaled(980, dpi_)") != std::string::npos,
             "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");
     require(ui.find("Permanent user memory — separate from weights") != std::string::npos &&
-                ui.find("user_memory_store_.remember_from_prompt(raw_prompt)") != std::string::npos &&
+                ui.find("user_memory_store_.remember_from_prompt(command.subject)") != std::string::npos &&
                 ui.find("user_memory_store_.context_for(raw_prompt)") != std::string::npos &&
                 ui.find("Forget this permanent memory?") != std::string::npos,
             "permanent user memory must be visible, self-managing, editable, forgettable, and separate from weights");

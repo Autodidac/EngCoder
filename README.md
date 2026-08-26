@@ -136,6 +136,10 @@ EngCoder learns at three speeds:
 2. **Internal skill updates** — verified examples may train only `english-core`, `english-foundation`, `cpp23-core`, `cpp23-debugging`, or `planning`; all other subjects remain retrieval memory.
 3. **Optional external-model LoRA** — retained as an advanced workflow for imported models, not used by the internal source.
 
+Plain-language learning and memory use the same composer and do not contact an AI provider. Examples: `Remember that I prefer dark interfaces`, `What do you remember about me?`, `Forget dark interfaces`, `Teach EngCoder: when I say "hello", answer "Hello!"`, and `Correct that to "the answer you want"`. EngCoder prints an exact local receipt showing the stored user message, expected reply or memory item, cleanup changes, immediate-recall state, shadow-training eligibility, and `AI model contacted: NO`.
+
+A hard correction makes the replacement answer authoritative immediately, preserves the rejected draft only as negative audit evidence, and removes every stale positive version of that prompt from later C++ and Python retrieval/training loads. Repeated approval does not create extra weight. Error cards and deterministic calculations cannot be selected as training answers. Per-reply **Copy**, **Edit**, **Retry**, **Accept + learn**, **Reject**, and **Learn?** controls remain the manual backup.
+
 Connected teachers can generate diverse examples in parallel with up to four workers per teacher. A different model verifies each attempt; accepted, rejected, and failed attempts are all retained in `teacher-attempts.jsonl` and visible in the training library. The internal model never teaches or verifies itself.
 
 The active generation is never trained in place. Training starts from the active parent, writes resumable shadow state, evaluates held-out anchors, and atomically advances `active.json` only when the candidate passes. A stale or failed candidate cannot overwrite the active model.

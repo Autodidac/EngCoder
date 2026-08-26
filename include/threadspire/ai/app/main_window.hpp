@@ -151,6 +151,14 @@ private:
     void send_coding_prompt();
     void run_media_request(backend::MediaKind kind);
     void send_request(RequestSurface surface);
+    [[nodiscard]] bool handle_conversation_command(std::string_view prompt);
+    void append_local_control_turn(
+        std::string_view prompt,
+        std::string_view heading,
+        std::string_view response,
+        std::wstring_view detail,
+        std::string_view destination,
+        std::wstring_view status);
     void accept_last_response();
     void reject_last_response();
     void copy_selected_response();

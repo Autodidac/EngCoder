@@ -342,6 +342,13 @@ namespace {
              std::string_view{"i always want "}, std::string_view{"i don't want "},
              std::string_view{"i do not want "}}) {
         if (lowered.starts_with(prefix)) {
+            if (prefix == "remember that " || prefix == "remember: " ||
+                prefix == "please remember ") {
+                const auto remove_that =
+                    prefix == "please remember " &&
+                    lowered.substr(prefix.size()).starts_with("that ");
+                cleaned.erase(0U, prefix.size() + (remove_that ? 5U : 0U));
+            }
             while (!cleaned.empty() &&
                    std::string_view(" .!\t\r\n").find(cleaned.back()) != std::string_view::npos) {
                 cleaned.pop_back();
@@ -407,37 +414,68 @@ void EpisodeStore::index_episode_unlocked(const Episode& episode) {
     if (!episode.content_hash.empty()) {
         content_hashes_.insert(episode.content_hash);
     }
+    const auto hard_correction = episode.human_rejected && !episode.correction.empty() &&
+        episode.provenance == "interactive-hard-correction";
     const auto independently_validated = episode.human_accepted || episode.deterministic_verified ||
                                          episode.reference_verified;
+    const auto key = prompt_key(episode);
+    const auto normalized_episode_skill = normalized_prompt(episode.skill);
+    const auto normalized_episode_prompt = normalized_prompt(episode.prompt);
+    const auto already_human_positive = std::ranges::any_of(
+        retrievable_episodes_,
+        [&](const Episode& existing) {
+            return existing.human_accepted &&
+                   normalized_prompt(existing.skill) == normalized_episode_skill &&
+                   normalized_prompt(existing.prompt) == normalized_episode_prompt;
+        });
+    const auto already_positive = positive_prompt_keys_.contains(key);
     if (!independently_validated && !episode.human_rejected && !episode.prompt.empty()) {
-        provisional_prompt_keys_.insert(prompt_key(episode));
+        provisional_prompt_keys_.insert(key);
     }
     if (independently_validated && !episode.human_rejected) {
-        positive_prompt_keys_.insert(prompt_key(episode));
+        positive_prompt_keys_.insert(key);
         ++accepted_counts_[episode.skill];
         if (episode.human_accepted) {
             ++human_accepted_counts_[episode.skill];
         }
     }
-    if (episode.eligible_for_training && !episode.human_rejected) {
+    if (hard_correction) {
+        positive_prompt_keys_.insert(key);
+        if (!already_positive) {
+            ++accepted_counts_[episode.skill];
+        }
+        if (!already_human_positive) {
+            ++human_accepted_counts_[episode.skill];
+        }
+    }
+    if (episode.eligible_for_training && (!episode.human_rejected || hard_correction)) {
         ++training_counts_[episode.skill];
     }
-    if (!independently_validated || episode.human_rejected || episode.prompt.empty() ||
-        episode.response.empty()) {
+    if ((!independently_validated && !hard_correction) || episode.prompt.empty() ||
+        (episode.response.empty() && !hard_correction)) {
         return;
     }
 
+    auto retrievable = episode;
+    if (hard_correction) {
+        retrievable.response = episode.correction;
+        retrievable.human_accepted = true;
+        retrievable.human_rejected = false;
+        retrievable.score = 1.0;
+        retrievable.knowledge_destination = "corrected-retrieval-memory";
+    }
     const auto index = retrievable_episodes_.size();
-    retrievable_episodes_.push_back(episode);
-    const auto exact_key = normalized_prompt(episode.prompt);
+    retrievable_episodes_.push_back(std::move(retrievable));
+    const auto& indexed = retrievable_episodes_.back();
+    const auto exact_key = normalized_prompt(indexed.prompt);
     if (!exact_key.empty()) {
         const auto existing = exact_prompt_index_.find(exact_key);
-        if (existing == exact_prompt_index_.end() ||
-            retrievable_episodes_[existing->second].score < episode.score) {
+        if (hard_correction || existing == exact_prompt_index_.end() ||
+            retrievable_episodes_[existing->second].score < indexed.score) {
             exact_prompt_index_[exact_key] = index;
         }
     }
-    for (const auto& term : terms(episode.prompt + ' ' + episode.response)) {
+    for (const auto& term : terms(indexed.prompt + ' ' + indexed.response)) {
         term_postings_[term].push_back(index);
     }
 }
@@ -550,6 +588,19 @@ bool EpisodeStore::contains_positive_prompt(
         normalized_prompt(skill) + '\n' + normalized_prompt(prompt));
 }
 
+bool EpisodeStore::contains_human_accepted_prompt(
+    const std::string_view skill,
+    const std::string_view prompt) const {
+    std::lock_guard lock(mutex_);
+    const auto normalized_skill = normalized_prompt(skill);
+    const auto normalized_value = normalized_prompt(prompt);
+    return std::ranges::any_of(retrievable_episodes_, [&](const Episode& episode) {
+        return episode.human_accepted &&
+               normalized_prompt(episode.skill) == normalized_skill &&
+               normalized_prompt(episode.prompt) == normalized_value;
+    });
+}
+
 std::vector<RetrievedEpisode> EpisodeStore::retrieve(
     const std::string_view query,
     const std::size_t limit) const {
@@ -574,6 +625,14 @@ std::vector<RetrievedEpisode> EpisodeStore::retrieve(
             continue;
         }
         const auto& episode = retrievable_episodes_[index];
+        const auto authoritative = exact_prompt_index_.find(normalized_prompt(episode.prompt));
+        if (authoritative != exact_prompt_index_.end() &&
+            authoritative->second != index &&
+            authoritative->second < retrievable_episodes_.size() &&
+            retrievable_episodes_[authoritative->second].provenance ==
+                "interactive-hard-correction") {
+            continue;
+        }
         const auto relevance = similarity(query_terms, episode);
         if (relevance > 0.04) {
             result.push_back({.episode = episode, .relevance = relevance});

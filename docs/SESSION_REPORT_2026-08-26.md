@@ -190,3 +190,20 @@ Verification for this checkpoint: clean Visual Studio 2022 Release build passed;
 - Updated the README and strict UI regression contract for the new information architecture. The next queue item is plain-language conversational teach/remember/forget with exact storage previews.
 
 Verification for this checkpoint: a clean Visual Studio 2022 Release build passed; Release CTest passed 5/5; a clean Debug build and Debug CTest passed 5/5; native inference contract, curriculum guard, and base-footprint smoke tests all passed; EngCoder.exe measured 5,129,216 bytes (4.89 MiB), within the 100 MiB budget; automated minimum/wide screenshots of Workspace, all three Settings pages, and Activity were captured and inspected; and `git diff --check` passed.
+
+### Conversational memory, teaching, and correction checkpoint
+
+Since the user requested a complete audit of learning behavior and exact visibility:
+
+- Removed silent prompt-to-memory capture. EngCoder now changes permanent memory or learned behavior only through explicit conversational commands or the existing per-reply backup controls.
+- Added local `remember`, `forget`, memory-list, `teach`, and last/selected-reply correction commands inside the unified composer. Every command prints the exact affected text, whether it is immediately available, whether it may enter a future shadow candidate, whether cleanup changed it, and confirms that no AI model was contacted.
+- Kept permanent user memory entirely separate from model weights. Secret-like content, empty commands, ambiguous deletion, and bulk deletion from Chat are blocked without changing storage.
+- Made a hard correction immediately authoritative across exact and semantic recall, including after restart. The rejected answer remains only as negative audit evidence; accepted and diverse-human counts are not inflated.
+- Updated the optional training loaders so only the newest correction for a prompt is batched and every obsolete positive answer is excluded. Eligible corrections now enter the serialized shadow-learning queue through the same transactional service as other verified evidence.
+- Kept error cards, calculations, and local control receipts out of reply learning. Duplicate lessons and corrections add no copy or extra weight.
+- Made the Training Library mirror the actual trainer: hard corrections appear as approved replacements, the rejected draft is shown in full but explicitly excluded, and any older approved answer is labeled superseded audit history rather than trainable data.
+
+Verification for this checkpoint: Visual Studio 2022 Release build passed; Release CTest passed 5/5; `git diff --check` passed; Python bytecode compilation passed for both optional training loaders and their smoke test. The full PyTorch smoke was attempted through the base Python and correctly stopped at `ModuleNotFoundError: torch`; the authorized reset removed the 4.2 GiB private trainer and no internal PyTorch training pack is currently installed. No dependency was installed implicitly.
+
+
+Post-verification visual pass: launched the real Release executable at 150% DPI, resized between the 980x680 logical minimum and 1400x833, and inspected DPI-aware captures. Workspace, Settings, Activity, transcript, reply controls, composer, and sidebar remained dark, readable, and non-overlapping with no stretched resize artifacts. An initial capture incorrectly clipped Activity because the PowerShell QA process was DPI-unaware; the application layout was not changed for that harness error. The first interactive capture created a QA-only chat containing two memory-list receipts; after process, path, and link validation, that exact generated chat was removed and the previously active user chat was restored. No existing user conversation or memory item was deleted.

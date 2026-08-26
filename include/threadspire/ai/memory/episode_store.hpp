@@ -52,6 +52,9 @@ public:
     [[nodiscard]] bool contains_positive_prompt(
         std::string_view skill,
         std::string_view prompt) const;
+    [[nodiscard]] bool contains_human_accepted_prompt(
+        std::string_view skill,
+        std::string_view prompt) const;
     [[nodiscard]] std::vector<RetrievedEpisode> retrieve(
         std::string_view query,
         std::size_t limit = 3) const;

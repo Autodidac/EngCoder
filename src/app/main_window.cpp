@@ -592,7 +592,11 @@ void style_chat_transcript(
         if (line == L"YOU" || line.starts_with(L"YOU —")) {
             color = transcript_user_color;
         } else if (line.starts_with(L"ENGCODER — BUILT-IN") ||
-                   line.starts_with(L"ENGCODER — VERIFIED")) {
+                   line.starts_with(L"ENGCODER — VERIFIED") ||
+                   line.starts_with(L"ENGCODER — MEMORY") ||
+                   line.starts_with(L"ENGCODER — PERMANENT MEMORY") ||
+                   line.starts_with(L"ENGCODER — LESSON") ||
+                   line.starts_with(L"ENGCODER — CORRECTION")) {
             color = transcript_internal_color;
         } else if (line.starts_with(L"ENGCODER — CONNECTED") ||
                    line.starts_with(L"ENGCODER — CHOOSING")) {
@@ -1606,7 +1610,10 @@ struct TrainingLibraryRecord final {
     std::string verification;
     std::string prompt;
     std::string answer;
+    std::string replaced_answer;
     std::string fingerprint;
+    std::string normalized_prompt;
+    bool hard_correction{false};
 };
 
 [[nodiscard]] std::string lower_ascii(std::string value) {
@@ -1614,6 +1621,151 @@ struct TrainingLibraryRecord final {
         return static_cast<char>(std::tolower(character));
     });
     return value;
+}
+
+[[nodiscard]] std::string trim_ascii(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1U);
+}
+
+[[nodiscard]] std::string strip_outer_quotes(std::string value) {
+    value = trim_ascii(std::move(value));
+    if (value.size() >= 2U) {
+        const auto first = value.front();
+        const auto last = value.back();
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            value = trim_ascii(value.substr(1U, value.size() - 2U));
+        }
+    }
+    return value;
+}
+
+enum class ConversationCommandKind {
+    none,
+    remember,
+    forget,
+    list_memory,
+    teach,
+    correct_last,
+    correct_selected,
+};
+
+struct ConversationCommand final {
+    ConversationCommandKind kind{ConversationCommandKind::none};
+    std::string subject;
+    std::string answer;
+};
+
+[[nodiscard]] ConversationCommand parse_conversation_command(const std::string_view prompt) {
+    auto original = trim_ascii(std::string(prompt));
+    auto lowered = lower_ascii(original);
+    auto key = lowered;
+    while (!key.empty() && std::string_view{" ?!."}.find(key.back()) != std::string_view::npos) {
+        key.pop_back();
+    }
+    if (key == "what do you remember" || key == "what do you remember about me" ||
+        key == "show my memory" || key == "show what you remember" ||
+        key == "list my memory") {
+        return {.kind = ConversationCommandKind::list_memory};
+    }
+
+    const auto payload_after = [&](const std::string_view prefix) {
+        return strip_outer_quotes(original.substr(prefix.size()));
+    };
+    for (const auto prefix : {
+             std::string_view{"remember that "},
+             std::string_view{"remember: "},
+             std::string_view{"please remember "}, std::string_view{"my name is "},
+             std::string_view{"call me "}, std::string_view{"i prefer "},
+             std::string_view{"i always want "}, std::string_view{"i don't want "},
+             std::string_view{"i do not want "}}) {
+        if (lowered.starts_with(prefix)) {
+            return {
+                .kind = ConversationCommandKind::remember,
+                .subject = original,
+            };
+        }
+    }
+    for (const auto prefix : {
+             std::string_view{"forget that "},
+             std::string_view{"forget: "},
+             std::string_view{"forget "}}) {
+        if (lowered.starts_with(prefix)) {
+            return {
+                .kind = ConversationCommandKind::forget,
+                .subject = payload_after(prefix),
+            };
+        }
+    }
+
+    auto parse_teaching_payload = [&](const std::string_view prefix) -> ConversationCommand {
+        auto payload = trim_ascii(original.substr(prefix.size()));
+        auto lower_payload = lower_ascii(payload);
+        if (lower_payload.starts_with("when i say ")) {
+            payload.erase(0U, std::string_view{"when i say "}.size());
+            lower_payload.erase(0U, std::string_view{"when i say "}.size());
+            for (const auto separator : {
+                     std::string_view{", answer "},
+                     std::string_view{", reply "},
+                     std::string_view{", respond "}}) {
+                const auto position = lower_payload.find(separator);
+                if (position != std::string::npos) {
+                    return {
+                        .kind = ConversationCommandKind::teach,
+                        .subject = strip_outer_quotes(payload.substr(0U, position)),
+                        .answer = strip_outer_quotes(payload.substr(position + separator.size())),
+                    };
+                }
+            }
+        }
+        for (const auto separator : {std::string_view{"=>"}, std::string_view{"->"}}) {
+            const auto position = payload.find(separator);
+            if (position != std::string::npos) {
+                return {
+                    .kind = ConversationCommandKind::teach,
+                    .subject = strip_outer_quotes(payload.substr(0U, position)),
+                    .answer = strip_outer_quotes(payload.substr(position + separator.size())),
+                };
+            }
+        }
+        return {.kind = ConversationCommandKind::teach};
+    };
+    for (const auto prefix : {
+             std::string_view{"teach engcoder: "},
+             std::string_view{"teach engcoder "},
+             std::string_view{"teach: "}}) {
+        if (lowered.starts_with(prefix)) {
+            return parse_teaching_payload(prefix);
+        }
+    }
+
+    for (const auto prefix : {
+             std::string_view{"correct selected reply to "},
+             std::string_view{"correct the selected reply to "}}) {
+        if (lowered.starts_with(prefix)) {
+            return {
+                .kind = ConversationCommandKind::correct_selected,
+                .answer = payload_after(prefix),
+            };
+        }
+    }
+    for (const auto prefix : {
+             std::string_view{"correct that to "},
+             std::string_view{"the correct answer is "},
+             std::string_view{"that answer was wrong; use this correction: "},
+             std::string_view{"that answer was wrong, use this correction: "}}) {
+        if (lowered.starts_with(prefix)) {
+            return {
+                .kind = ConversationCommandKind::correct_last,
+                .answer = payload_after(prefix),
+            };
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] std::string json_tags(const core::json::Value& record) {
@@ -1660,11 +1812,16 @@ void append_training_library_file(
         const auto held_out = category == "Held-out check";
         const auto teacher_attempt = category == "Teacher attempt";
         const auto review_record = category == "Review record" || teacher_attempt;
-        const auto review_rejected = review_record && (
+        const auto provenance = core::json::string_or(document->find("provenance"));
+        const auto correction = core::json::string_or(document->find("correction"));
+        const auto hard_correction = review_record && !teacher_attempt &&
+            core::json::bool_or(document->find("human_rejected"), false) &&
+            !correction.empty() && provenance == "interactive-hard-correction";
+        const auto review_rejected = review_record && !hard_correction && (
             core::json::bool_or(document->find("human_rejected"), false) ||
             (teacher_attempt &&
              !core::json::bool_or(document->find("reference_verified"), false)));
-        const auto independently_checked = review_record && (
+        const auto independently_checked = review_record && (hard_correction ||
             core::json::bool_or(document->find("human_accepted"), false) ||
             core::json::bool_or(document->find("deterministic_verified"), false) ||
             core::json::bool_or(document->find("reference_verified"), false));
@@ -1679,22 +1836,31 @@ void append_training_library_file(
 
         TrainingLibraryRecord record;
         record.category = review_record
-            ? (review_rejected ? "Rejected result" : "Approved result")
+            ? (hard_correction ? "Approved correction" :
+                (review_rejected ? "Rejected result" : "Approved result"))
             : std::string(category);
         record.identifier = core::json::string_or(document->find("id"), "unnamed-record");
         record.topic = core::json::string_or(
             document->find("skill"),
             core::json::string_or(document->find("domain"), "general"));
         record.tags = json_tags(*document);
-        record.provenance = core::json::string_or(
-            document->find("provenance"),
-            held_out ? "bundled independent validation" : "bundled curated curriculum");
+        record.provenance = provenance.empty()
+            ? (held_out ? "bundled independent validation" : "bundled curated curriculum")
+            : provenance;
 
         if (review_record) {
             record.prompt = core::json::string_or(document->find("prompt"));
             record.answer = core::json::string_or(document->find("response"));
+            record.hard_correction = hard_correction;
+            if (hard_correction) {
+                record.replaced_answer = record.answer;
+                record.answer = correction;
+            }
             record.verification = core::json::string_or(document->find("verification_notes"));
-            if (review_rejected) {
+            if (hard_correction) {
+                record.verification = "Approved by the user as the authoritative replacement; "
+                    "the rejected draft below is excluded from retrieval and weight training";
+            } else if (review_rejected) {
                 if (teacher_attempt) {
                     if (record.verification.empty()) {
                         record.verification = "Rejected by the independent checker";
@@ -1761,6 +1927,7 @@ void append_training_library_file(
         if (record.fingerprint.empty()) {
             record.fingerprint = record.prompt + '\n' + record.answer;
         }
+        record.normalized_prompt = lower_ascii(trim_ascii(record.prompt));
         records.push_back(std::move(record));
     }
 }
@@ -1793,6 +1960,25 @@ void append_training_library_file(
         records,
         unreadable_records);
 
+    std::map<std::string, std::size_t, std::less<>> newest_corrections;
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        if (records[index].hard_correction) {
+            newest_corrections[records[index].normalized_prompt] = index;
+        }
+    }
+    std::size_t superseded_count = 0;
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto correction = newest_corrections.find(records[index].normalized_prompt);
+        if (correction == newest_corrections.end() || index >= correction->second ||
+            records[index].category != "Approved result") {
+            continue;
+        }
+        records[index].category = "Superseded result";
+        records[index].verification =
+            "Historical audit copy only; excluded from retrieval and weight training by the newer approved correction";
+        ++superseded_count;
+    }
+
     std::map<std::string, std::size_t, std::less<>> duplicate_counts;
     std::size_t training_count = 0;
     std::size_t approved_count = 0;
@@ -1801,7 +1987,8 @@ void append_training_library_file(
     for (const auto& record : records) {
         ++duplicate_counts[record.fingerprint];
         training_count += record.category == "Training example" ? 1U : 0U;
-        approved_count += record.category == "Approved result" ? 1U : 0U;
+        approved_count += (record.category == "Approved result" ||
+                           record.category == "Approved correction") ? 1U : 0U;
         rejected_count += record.category == "Rejected result" ? 1U : 0U;
         held_out_count += record.category == "Held-out check" ? 1U : 0U;
     }
@@ -1812,7 +1999,8 @@ void append_training_library_file(
     for (const auto& record : records) {
         const auto source_matches = source_filter <= 0 ||
             (source_filter == 1 && record.category == "Training example") ||
-            (source_filter == 2 && record.category == "Approved result") ||
+            (source_filter == 2 && (record.category == "Approved result" ||
+                                    record.category == "Approved correction")) ||
             (source_filter == 3 && record.category == "Rejected result") ||
             (source_filter == 4 && record.category == "Held-out check");
         if (!source_matches) {
@@ -1834,6 +2022,7 @@ void append_training_library_file(
     summary_stream << L"Training Library — " << visible.size() << L" shown of " << records.size()
                    << L" records • " << training_count << L" training • " << approved_count
                    << L" approved • " << rejected_count << L" rejected • "
+                   << superseded_count << L" superseded • "
                    << held_out_count << L" held-out checks";
     if (unreadable_records > 0U) {
         summary_stream << L" • " << unreadable_records << L" unreadable";
@@ -1844,7 +2033,8 @@ void append_training_library_file(
     output << L"WHAT ENGCODER LEARNS FROM\r\n"
            << L"Approved results say whether they are memory-only or eligible for a future weight update. "
            << L"Rejected results are negative evidence and never positive training. Held-out checks never "
-           << L"train the model; they only decide whether a candidate is safe to use. No prompt or answer below is shortened.\r\n\r\n";
+           << L"train the model; they only decide whether a candidate is safe to use. Superseded results are "
+           << L"audit history only. No prompt or answer below is shortened.\r\n\r\n";
     if (visible.empty()) {
         output << L"No records match this view.";
         return output.str();
@@ -1864,6 +2054,10 @@ void append_training_library_file(
         if (duplicates > 1U) {
             output << L"Duplicate copies: " << duplicates
                    << L" (training uses one copy)\r\n";
+        }
+        if (!record->replaced_answer.empty()) {
+            output << L"\r\nREPLACED ANSWER (EXCLUDED)\r\n"
+                   << widen(record->replaced_answer) << L"\r\n";
         }
         output << L"\r\nPROMPT\r\n" << widen(record->prompt)
                << L"\r\n\r\nEXPECTED ANSWER\r\n" << widen(record->answer)
@@ -6006,6 +6200,389 @@ void MainWindow::preview_route() {
         : L"Action and AI choices checked; nothing was run");
 }
 
+void MainWindow::append_local_control_turn(
+    const std::string_view prompt,
+    const std::string_view heading,
+    const std::string_view response,
+    const std::wstring_view detail,
+    const std::string_view destination,
+    const std::wstring_view status) {
+    if (!workspace_transcript_.empty() && !workspace_transcript_.ends_with("\r\n\r\n")) {
+        workspace_transcript_ += "\r\n\r\n";
+    }
+    workspace_transcript_ += workspace_transcript_.empty() ? "" : "\r\n";
+    workspace_transcript_ += "YOU\r\n\r\n";
+    workspace_transcript_ += prompt;
+    workspace_transcript_ += "\r\n\r\n";
+    workspace_transcript_ += heading;
+    workspace_transcript_ += "\r\n\r\n";
+    workspace_transcript_ += response;
+    workspace_transcript_ += "\r\n\r\n";
+
+    routing::TaskAnalyzer analyzer;
+    last_prompt_ = std::string(prompt);
+    last_response_ = std::string(response);
+    last_analysis_ = analyzer.analyze(prompt);
+    last_model_id_ = "engcoder-local-control";
+    last_models_used_.clear();
+    last_tool_events_.clear();
+    last_input_files_.clear();
+    last_response_surface_ = RequestSurface::assistant;
+    response_turns_.push_back(ResponseTurn{
+        .prompt = last_prompt_,
+        .response = last_response_,
+        .earlier_context = {},
+        .analysis = last_analysis_,
+        .model_id = last_model_id_,
+        .models_used = {},
+        .tool_events = {},
+        .input_files = {},
+        .surface = RequestSurface::assistant,
+        .learning_weight_eligible = false,
+        .learning_destination = std::string(destination),
+        .review = ResponseReview::blocked,
+    });
+    selected_response_turn_index_ = response_turns_.size() - 1U;
+
+    set_control_text(id::chat_response, widen(workspace_transcript_));
+    set_control_text(id::chat_prompt, L"");
+    set_control_text(id::chat_plan_label, L"What changed");
+    set_control_text(id::chat_plan, std::wstring(detail));
+    set_control_text(id::chat_learning_status, std::wstring(status));
+    set_status(std::wstring(status));
+    update_response_turn_controls();
+    persist_current_chat();
+}
+
+bool MainWindow::handle_conversation_command(const std::string_view prompt) {
+    const auto command = parse_conversation_command(prompt);
+    if (command.kind == ConversationCommandKind::none) {
+        return false;
+    }
+    if (chat_operation_.running() || media_operation_.running() ||
+        long_horizon_operation_.running()) {
+        set_status(L"Stop the current foreground task before changing memory or lessons");
+        return true;
+    }
+
+    const auto publish = [&](const std::string_view heading,
+                             const std::string& receipt,
+                             const std::string_view destination,
+                             const std::wstring_view status) {
+        append_local_control_turn(
+            prompt,
+            heading,
+            receipt,
+            widen(receipt),
+            destination,
+            status);
+    };
+
+    if (command.kind == ConversationCommandKind::remember) {
+        try {
+            const auto remembered = user_memory_store_.remember_from_prompt(command.subject);
+            if (!remembered.has_value()) {
+                publish(
+                    "ENGCODER — NO MEMORY CHANGE",
+                    "Nothing was saved. Permanent memory accepts explicit harmless preferences and facts, "
+                    "but refuses likely passwords, keys, payment data, recovery phrases, or empty requests.\r\n\r\n"
+                    "No AI model was contacted.",
+                    "local-memory-blocked",
+                    L"Nothing was saved to permanent memory");
+                return true;
+            }
+            update_user_memory_controls(remembered->id);
+            std::ostringstream receipt;
+            receipt << "Saved to permanent memory (exact):\r\n"
+                    << remembered->text
+                    << "\r\n\r\nUsed in future relevant chats: YES"
+                    << "\r\nAdded to model weights: NO"
+                    << "\r\nDuplicate copies or extra weight: NO"
+                    << "\r\nAI model contacted: NO";
+            publish(
+                "ENGCODER — MEMORY SAVED",
+                receipt.str(),
+                "local-memory-saved",
+                L"Permanent memory saved once; no model was contacted");
+        } catch (const std::exception& error) {
+            publish(
+                "ENGCODER — NO MEMORY CHANGE",
+                "Permanent memory could not be saved. Nothing changed.\r\n\r\nReason:\r\n" +
+                    std::string(error.what()),
+                "local-memory-blocked",
+                L"Permanent memory was not changed");
+        }
+        return true;
+    }
+
+    if (command.kind == ConversationCommandKind::list_memory) {
+        const auto items = user_memory_store_.items();
+        std::ostringstream receipt;
+        if (items.empty()) {
+            receipt << "Permanent memory is empty.";
+        } else {
+            receipt << "Permanent memory (" << items.size() << " item"
+                    << (items.size() == 1U ? "" : "s") << "):\r\n";
+            for (std::size_t index = 0; index < items.size(); ++index) {
+                receipt << "\r\n" << (index + 1U) << ". " << items[index].text;
+            }
+        }
+        receipt << "\r\n\r\nUsed as future context: YES"
+                << "\r\nAdded to model weights: NEVER"
+                << "\r\nAI model contacted: NO";
+        publish(
+            "ENGCODER — PERMANENT MEMORY",
+            receipt.str(),
+            "local-memory-list",
+            L"Showing all permanent user memory; no model was contacted");
+        return true;
+    }
+
+    if (command.kind == ConversationCommandKind::forget) {
+        auto query = lower_ascii(trim_ascii(command.subject));
+        while (!query.empty() && std::string_view{" ?!."}.find(query.back()) != std::string_view::npos) {
+            query.pop_back();
+        }
+        if (query.empty() || query == "all" || query == "everything" ||
+            query == "all memory" || query == "everything about me") {
+            publish(
+                "ENGCODER — NO MEMORY CHANGE",
+                "Nothing was deleted. For safety, a chat command cannot erase all permanent memory at once. "
+                "Name one remembered fact, or review items under Settings > Memory & Learning.\r\n\r\n"
+                "AI model contacted: NO",
+                "local-memory-blocked",
+                L"Bulk memory deletion was blocked; nothing changed");
+            return true;
+        }
+
+        const auto items = user_memory_store_.items();
+        std::vector<memory::UserMemoryItem> matches;
+        for (const auto& item : items) {
+            const auto candidate = lower_ascii(item.text);
+            if (candidate == query || candidate.find(query) != std::string::npos ||
+                query.find(candidate) != std::string::npos) {
+                matches.push_back(item);
+            }
+        }
+        if (matches.size() != 1U) {
+            std::ostringstream receipt;
+            receipt << "Nothing was deleted. ";
+            if (matches.empty()) {
+                receipt << "No permanent memory matched:\r\n" << command.subject;
+            } else {
+                receipt << "More than one item matched. Name one more precisely:\r\n";
+                for (std::size_t index = 0; index < matches.size(); ++index) {
+                    receipt << "\r\n" << (index + 1U) << ". " << matches[index].text;
+                }
+            }
+            receipt << "\r\n\r\nAI model contacted: NO";
+            publish(
+                "ENGCODER — NO MEMORY CHANGE",
+                receipt.str(),
+                "local-memory-blocked",
+                L"No permanent memory was deleted");
+            return true;
+        }
+
+        const auto removed_text = matches.front().text;
+        const auto removed = user_memory_store_.forget(matches.front().id);
+        update_user_memory_controls();
+        publish(
+            removed ? "ENGCODER — MEMORY FORGOTTEN" : "ENGCODER — NO MEMORY CHANGE",
+            removed
+                ? "Deleted from permanent memory (exact):\r\n" + removed_text +
+                    "\r\n\r\nFuture context use: NO\r\nAI model contacted: NO"
+                : "The item changed before deletion. Nothing was removed.\r\n\r\nAI model contacted: NO",
+            removed ? "local-memory-forgotten" : "local-memory-blocked",
+            removed ? L"One permanent memory item was deleted" : L"No permanent memory was deleted");
+        return true;
+    }
+
+    if (command.kind == ConversationCommandKind::teach) {
+        if (command.subject.empty() || command.answer.empty()) {
+            publish(
+                "ENGCODER — NO LESSON CHANGE",
+                "Nothing was taught. Use plain language like:\r\n\r\n"
+                "Teach EngCoder: when I say \"hello\", answer \"Hello!\"\r\n"
+                "or\r\nTeach: hello => Hello!\r\n\r\nNo AI model was contacted.",
+                "local-learning-blocked",
+                L"The teaching command needs both a message and its preferred answer");
+            return true;
+        }
+
+        routing::TaskAnalyzer analyzer;
+        const auto analysis = analyzer.analyze(command.subject);
+        const auto existing =
+            learning_service_->memory_store().exact_verified(command.subject);
+        memory::Episode episode{
+            .id = {},
+            .skill = skill_for(analysis),
+            .prompt = command.subject,
+            .response = command.answer,
+            .model_id = "human-teaching",
+            .score = 0.99,
+            .compiler_passed = false,
+            .tests_passed = false,
+            .human_accepted = true,
+            .human_rejected = false,
+            .deterministic_verified = false,
+            .reference_verified = false,
+            .self_generated = false,
+            .eligible_for_training = false,
+            .verifier_model_id = "explicit-human-teacher",
+            .verification_notes = "Explicit conversational teaching from the user",
+            .provenance = "conversational-teach",
+            .knowledge_destination = "retrieval-memory",
+            .content_hash = {},
+            .correction = {},
+            .tool_trace_hash = {},
+            .created_unix_ms = 0,
+        };
+        auto replaced_answer = false;
+        auto previous_answer = std::string{};
+        if (existing.has_value() && existing->episode.response != command.answer) {
+            replaced_answer = true;
+            previous_answer = existing->episode.response;
+            episode.skill = existing->episode.skill;
+            episode.response = previous_answer;
+            episode.model_id = existing->episode.model_id;
+            episode.human_accepted = false;
+            episode.human_rejected = true;
+            episode.correction = command.answer;
+            episode.provenance = "interactive-hard-correction";
+            episode.verification_notes =
+                "Explicit conversational teaching replaced the prior answer";
+        }
+
+        const auto preview = learning_service_->preview(episode);
+        const auto stored = preview.would_store && learning_service_->submit(episode);
+
+        std::ostringstream receipt;
+        receipt << (stored ? "Saved one human-taught lesson." :
+                    (preview.duplicate ? "This exact lesson was already saved; no copy or weight was added."
+                                       : "Nothing was saved."))
+                << "\r\n\r\nTRAINING INPUT / USER MESSAGE (EXACT)\r\n"
+                << preview.stored_prompt
+                << "\r\n\r\nEXPECTED REPLY (EXACT)\r\n"
+                << preview.stored_response;
+        if (replaced_answer) {
+            receipt << "\r\n\r\nREPLACED ANSWER (REJECTED)\r\n" << previous_answer;
+        }
+        receipt << "\r\n\r\nAvailable immediately from verified memory: "
+                << ((stored || preview.duplicate) ? "YES" : "NO")
+                << "\r\nAdded to the current serving model: NO"
+                << "\r\nCandidate weight-training evidence: "
+                << (preview.eligible_for_weight_training ? "YES — bounded shadow candidate only"
+                                                         : "NO — waits for four diverse human lessons")
+                << "\r\nCleanup changed the text: "
+                << (preview.training_text_adjusted ? "YES — see the exact text above" : "NO")
+                << "\r\nAI model contacted: NO"
+                << "\r\nReason: " << preview.reason;
+        publish(
+            stored ? (replaced_answer ? "ENGCODER — CORRECTION SAVED" : "ENGCODER — LESSON SAVED")
+                   : (preview.duplicate ? "ENGCODER — LESSON ALREADY KNOWN"
+                                        : "ENGCODER — NO LESSON CHANGE"),
+            receipt.str(),
+            stored ? (replaced_answer ? "local-correction-saved" : "local-lesson-saved")
+                   : (preview.duplicate ? "local-lesson-known" : "local-learning-blocked"),
+            stored ? L"Lesson saved once and available immediately; no AI model was contacted"
+                   : (preview.duplicate ? L"Lesson already known; no duplicate was added"
+                                        : L"Lesson was blocked; nothing changed"));
+        update_learning_report();
+        update_training_library();
+        update_skill_report();
+        return true;
+    }
+
+    if (command.answer.empty()) {
+        publish(
+            "ENGCODER — NO CORRECTION CHANGE",
+            "Nothing was corrected because the replacement answer was empty.\r\n\r\n"
+            "Try: Correct that to \"the answer you want\"\r\n\r\nAI model contacted: NO",
+            "local-learning-blocked",
+            L"The correction needs a replacement answer");
+        return true;
+    }
+
+    auto target_index = std::string::npos;
+    const auto correctable = [](const ResponseTurn& turn) {
+        return turn.learning_destination != "request-error" &&
+               turn.learning_destination != "deterministic-calculation" &&
+               !turn.learning_destination.starts_with("local-") &&
+               !turn.prompt.empty() && !turn.response.empty();
+    };
+    if (command.kind == ConversationCommandKind::correct_selected) {
+        if (selected_response_turn_index_ < response_turns_.size() &&
+            correctable(response_turns_[selected_response_turn_index_])) {
+            target_index = selected_response_turn_index_;
+        }
+    } else {
+        for (auto index = response_turns_.size(); index > 0U; --index) {
+            if (correctable(response_turns_[index - 1U])) {
+                target_index = index - 1U;
+                break;
+            }
+        }
+    }
+    if (target_index == std::string::npos) {
+        publish(
+            "ENGCODER — NO CORRECTION CHANGE",
+            "No completed answer was available to correct. Error cards, calculations, and memory receipts "
+            "are never used as training answers.\r\n\r\nAI model contacted: NO",
+            "local-learning-blocked",
+            L"No correctable reply was found; nothing changed");
+        return true;
+    }
+
+    const auto target = response_turns_[target_index];
+    auto episode = learning_episode_for(target, false);
+    episode.correction = command.answer;
+    episode.score = 0.99;
+    episode.provenance = "interactive-hard-correction";
+    episode.verification_notes =
+        "Explicit conversational correction supplied by the user";
+    const auto preview = learning_service_->preview(episode);
+    const auto stored = preview.would_store && learning_service_->submit(episode);
+    if (stored || preview.duplicate) {
+        response_turns_[target_index].review = ResponseReview::rejected;
+        response_turns_[target_index].learning_weight_eligible = false;
+        response_turns_[target_index].learning_destination = "negative-correction";
+    }
+
+    std::ostringstream receipt;
+    receipt << (stored ? "Saved one correction." :
+                (preview.duplicate ? "This correction was already saved; no copy or weight was added."
+                                   : "Nothing was saved."))
+            << "\r\n\r\nORIGINAL USER MESSAGE (EXACT)\r\n"
+            << preview.stored_prompt
+            << "\r\n\r\nREJECTED ANSWER (EXACT)\r\n"
+            << target.response
+            << "\r\n\r\nCORRECT ANSWER (EXACT)\r\n"
+            << preview.stored_response
+            << "\r\n\r\nOld answer remains positive: NO"
+            << "\r\nCorrect answer available immediately from verified memory: "
+            << ((stored || preview.duplicate) ? "YES" : "NO")
+            << "\r\nAdded to the current serving model: NO"
+            << "\r\nCandidate weight-training evidence: "
+            << (preview.eligible_for_weight_training ? "YES — bounded shadow candidate only"
+                                                     : "NO — waits for four diverse human lessons")
+            << "\r\nAI model contacted: NO"
+            << "\r\nReason: " << preview.reason;
+    publish(
+        stored ? "ENGCODER — CORRECTION SAVED"
+               : (preview.duplicate ? "ENGCODER — CORRECTION ALREADY KNOWN"
+                                    : "ENGCODER — NO CORRECTION CHANGE"),
+        receipt.str(),
+        stored ? "local-correction-saved"
+               : (preview.duplicate ? "local-correction-known" : "local-learning-blocked"),
+        stored ? L"Correction saved and used immediately; no AI model was contacted"
+               : (preview.duplicate ? L"Correction already known; no duplicate was added"
+                                    : L"Correction was blocked; nothing changed"));
+    update_learning_report();
+    update_training_library();
+    update_skill_report();
+    return true;
+}
 void MainWindow::send_prompt() {
     const auto prompt = narrow(control_text(id::chat_prompt));
     if (prompt.empty()) {
@@ -6014,6 +6591,10 @@ void MainWindow::send_prompt() {
     }
 
     const auto selected_task = workspace_task();
+    if ((selected_task == WorkspaceTask::automatic || selected_task == WorkspaceTask::ask) &&
+        handle_conversation_command(prompt)) {
+        return;
+    }
     const auto task = effective_workspace_task(prompt);
     if (task == WorkspaceTask::repository &&
         control_text(id::chat_repository).empty()) {
@@ -6312,12 +6893,7 @@ void MainWindow::send_request(const RequestSurface surface) {
             execution_context;
     }
 
-    std::optional<memory::UserMemoryItem> remembered_user_fact;
     try {
-        remembered_user_fact = user_memory_store_.remember_from_prompt(raw_prompt);
-        if (remembered_user_fact.has_value()) {
-            update_user_memory_controls(remembered_user_fact->id);
-        }
         const auto permanent_memory = user_memory_store_.context_for(raw_prompt);
         if (!permanent_memory.empty()) {
             if (!execution_context.empty()) {
@@ -6387,9 +6963,7 @@ void MainWindow::send_request(const RequestSurface surface) {
     set_status(request_status);
     set_control_text(
         id::chat_learning_status,
-        remembered_user_fact.has_value()
-            ? L"Remembered for future chats • stored separately • never added to model weights"
-            : L"Answering now. Automatic learning is waiting.");
+        L"Answering now. Automatic learning is waiting.");
 
     learning_service_->set_interactive_busy(true);
     const auto internal_base_url = backend_server_.running()
@@ -6560,24 +7134,50 @@ void MainWindow::update_response_turn_controls() {
     const auto selector = control(id::chat_turn);
     static_cast<void>(::SendMessageW(selector, CB_RESETCONTENT, 0, 0));
     static_cast<void>(::SendMessageW(
-        selector, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scaled(360, dpi_)), 0));
+        selector, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scaled(390, dpi_)), 0));
     if (response_turns_.empty()) {
         static_cast<void>(::SendMessageW(
             selector,
             CB_ADDSTRING,
             0,
-            reinterpret_cast<LPARAM>(L"Replies")));
+            reinterpret_cast<LPARAM>(L"Replies and changes")));
         static_cast<void>(::SendMessageW(selector, CB_SETCURSEL, 0, 0));
         selected_response_turn_index_ = std::string::npos;
     } else {
         for (std::size_t index = 0; index < response_turns_.size(); ++index) {
             const auto& turn = response_turns_[index];
+            const auto local_control = turn.learning_destination.starts_with("local-");
             const auto state = [&]() -> std::wstring_view {
                 if (turn.learning_destination == "deterministic-calculation") {
                     return L"verified calculation • no training needed";
                 }
                 if (turn.learning_destination == "request-error") {
                     return L"failed • retry available";
+                }
+                if (turn.learning_destination == "negative-correction") {
+                    return L"corrected • old answer rejected";
+                }
+                if (turn.learning_destination == "local-memory-saved") {
+                    return L"permanent memory saved";
+                }
+                if (turn.learning_destination == "local-memory-forgotten") {
+                    return L"permanent memory deleted";
+                }
+                if (turn.learning_destination == "local-memory-list") {
+                    return L"permanent memory shown";
+                }
+                if (turn.learning_destination == "local-lesson-saved") {
+                    return L"lesson saved";
+                }
+                if (turn.learning_destination == "local-correction-saved") {
+                    return L"correction saved";
+                }
+                if (turn.learning_destination == "local-lesson-known" ||
+                    turn.learning_destination == "local-correction-known") {
+                    return L"already known • no copy added";
+                }
+                if (local_control) {
+                    return L"no change";
                 }
                 switch (turn.review) {
                 case ResponseReview::unreviewed: return L"not reviewed";
@@ -6589,13 +7189,14 @@ void MainWindow::update_response_turn_controls() {
                 return L"not reviewed";
             }();
             std::wostringstream label;
-            label << L"Reply " << (index + 1U) << L" • " << state;
-            const auto text = label.str();
+            label << (local_control ? L"Change " : L"Reply ")
+                  << (index + 1U) << L" • " << state;
+            const auto label_text = label.str();
             static_cast<void>(::SendMessageW(
                 selector,
                 CB_ADDSTRING,
                 0,
-                reinterpret_cast<LPARAM>(text.c_str())));
+                reinterpret_cast<LPARAM>(label_text.c_str())));
         }
         selected_response_turn_index_ =
             std::min(selected_response_turn_index_, response_turns_.size() - 1U);
@@ -6606,21 +7207,23 @@ void MainWindow::update_response_turn_controls() {
             0));
     }
 
-    const auto has_reply = selected_response_turn() != nullptr;
+    const auto* selected = selected_response_turn();
+    const auto has_reply = selected != nullptr;
+    const auto local_control = has_reply &&
+        selected->learning_destination.starts_with("local-");
+    const auto learnable = has_reply && !local_control &&
+        selected->learning_destination != "deterministic-calculation" &&
+        selected->learning_destination != "request-error";
     const auto reviewed = has_reply &&
-        selected_response_turn()->review != ResponseReview::unreviewed;
-    for (const auto identifier : {
-             id::chat_copy,
-             id::chat_edit,
-             id::chat_retry,
-             id::chat_learning_preview,
-             id::chat_include_context}) {
-        ::EnableWindow(control(identifier), has_reply ? TRUE : FALSE);
-    }
-    ::EnableWindow(control(id::chat_accept), has_reply && !reviewed ? TRUE : FALSE);
-    ::EnableWindow(control(id::chat_reject), has_reply && !reviewed ? TRUE : FALSE);
+        selected->review != ResponseReview::unreviewed;
+    ::EnableWindow(control(id::chat_copy), has_reply ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_edit), has_reply ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_retry), has_reply && !local_control ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_learning_preview), learnable ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_include_context), has_reply && !local_control ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_accept), learnable && !reviewed ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_reject), learnable && !reviewed ? TRUE : FALSE);
 }
-
 void MainWindow::select_response_turn() {
     const auto selection = static_cast<int>(::SendMessageW(
         control(id::chat_turn),
@@ -6693,6 +7296,7 @@ std::size_t MainWindow::apply_hard_corrections_for(const ResponseTurn& approved)
 
         auto correction = learning_episode_for(candidate, false);
         correction.correction = approved.response;
+        correction.score = 0.99;
         correction.provenance = "interactive-hard-correction";
         correction.verification_notes =
             "A human-approved answer corrected this built-in reply for the same message";

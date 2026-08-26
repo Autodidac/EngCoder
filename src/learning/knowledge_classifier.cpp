@@ -357,6 +357,22 @@ std::string_view to_string(const KnowledgeDestination destination) noexcept {
 KnowledgeDecision KnowledgeClassifier::classify(
     const memory::Episode& episode,
     const std::size_t accepted_skill_examples) const {
+    const auto hard_correction = episode.human_rejected && !episode.correction.empty() &&
+        episode.provenance == "interactive-hard-correction";
+    if (hard_correction) {
+        constexpr std::size_t minimum_diverse_human_approvals = 4U;
+        const auto ready = accepted_skill_examples >= minimum_diverse_human_approvals;
+        return {
+            .destination = ready
+                ? KnowledgeDestination::lora_incubation
+                : KnowledgeDestination::retrieval_memory,
+            .eligible_for_weight_training = ready,
+            .confidence = 1.0,
+            .reason = ready
+                ? "the rejected draft stays negative while its human correction joins one bounded candidate batch"
+                : "the rejected draft stays negative and its human correction is used immediately from memory",
+        };
+    }
     if (episode.human_rejected) {
         return {
             .destination = KnowledgeDestination::episodic_memory,
