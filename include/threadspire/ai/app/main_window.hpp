@@ -240,6 +240,7 @@ private:
     HWND window_{nullptr};
     HFONT font_{nullptr};
     HBRUSH window_brush_{nullptr};
+    HBRUSH card_brush_{nullptr};
     HBRUSH edit_brush_{nullptr};
     unsigned int dpi_{96};
     Page page_{Page::chat};

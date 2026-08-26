@@ -1205,13 +1205,14 @@ void test_windows_ui_source_contract() {
                 ui.find("Current user message:") == std::string::npos,
             "the workspace must keep the exact current user message separate from bounded background context and route analysis");
     require(ui.find("L\"Learn?\"") != std::string::npos &&
-                ui.find("L\"Use earlier chat\"") != std::string::npos &&
+                ui.find("L\"Include earlier chat in next reply\"") != std::string::npos &&
                 ui.find("response_turns_.push_back") != std::string::npos &&
                 ui.find("copy_selected_response") != std::string::npos &&
-                ui.find("EARLIER CONVERSATION INCLUDED BY USER") != std::string::npos &&
+                ui.find("Earlier chat used to answer: NEVER LEARNED") != std::string::npos &&
+                ui.find("EARLIER CONVERSATION INCLUDED BY USER") == std::string::npos &&
                 ui.find("Other replies, routing details, status text, and error messages: NOT INCLUDED") !=
                     std::string::npos,
-            "each completed reply must have exact copy, review, context, and learning-preview controls");
+            "each completed reply must have exact copy and review controls while next-message context remains isolated from learning");
     const auto learning_gate = read_text_file(source / "src/learning/knowledge_classifier.cpp");
     const auto learning_service = read_text_file(source / "src/learning/continual_learning_service.cpp");
     const auto episode_store = read_text_file(source / "src/memory/episode_store.cpp");
@@ -1236,7 +1237,8 @@ void test_windows_ui_source_contract() {
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
                 ui.find("SS_ENDELLIPSIS") != std::string::npos &&
                 ui.find("YOU — CODING REQUEST\\r\\n\\r\\n") != std::string::npos &&
-                ui.find("ASSISTANT — CONNECTED LOCAL LLM") != std::string::npos &&
+                ui.find("return \"ENGCODER — CONNECTED AI\";") != std::string::npos &&
+                ui.find("modernize_saved_transcript") != std::string::npos &&
                 ui.find("Used: built-in AI — ") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
     require(ui.find("MSFTEDIT_CLASS") != std::string::npos &&
@@ -1252,7 +1254,7 @@ void test_windows_ui_source_contract() {
                 ui.find("static_cast<LONG>(line_start)") == std::string::npos,
             "the conversation must stay dark and visibly distinguish user, internal, connected, and error blocks while streaming or resizing");
     require(ui.find("L\"How it will run\"") != std::string::npos &&
-                ui.find("L\"Check choices\"") != std::string::npos &&
+                ui.find("L\"Why this AI?\"") != std::string::npos &&
                 ui.find("L\"AI choices\\r\\n\"") != std::string::npos &&
                 ui.find("Approach: ") == std::string::npos &&
                 ui.find("L\"Show plan\"") == std::string::npos &&
@@ -1266,10 +1268,16 @@ void test_windows_ui_source_contract() {
                 ui.find("WM_SETREDRAW") != std::string::npos &&
                 ui.find("PostMessageW(window_, stream_message") == std::string::npos,
             "streaming and live reports must batch repaints and preserve a user's scroll position instead of fighting it");
-    require(ui.find("SystemParametersInfoForDpi") != std::string::npos &&
-                ui.find("SPI_GETNONCLIENTMETRICS") != std::string::npos &&
-                ui.find("Segoe UI Variable Text") == std::string::npos,
-            "the GUI must use the DPI-aware Windows message font instead of a hard-coded oversized face");
+    require(ui.find("MulDiv(12") != std::string::npos &&
+                ui.find("Segoe UI Variable Text") != std::string::npos &&
+                ui.find("CLEARTYPE_NATURAL_QUALITY") != std::string::npos &&
+                ui.find("WM_GETFONT") != std::string::npos &&
+                ui.find("scaled(600, dpi_)") != std::string::npos &&
+                ui.find("paint_chat_cards") != std::string::npos &&
+                ui.find("RoundRect") != std::string::npos &&
+                ui.find("compact_actions") != std::string::npos &&
+                ui.find("compact_bottom_actions") != std::string::npos,
+            "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("page_host_subclass") != std::string::npos &&
                 ui.find("WS_EX_CONTROLPARENT") != std::string::npos &&
                 ui.find("SetWindowSubclass failed for a page host") != std::string::npos &&
@@ -1404,7 +1412,8 @@ void test_windows_ui_source_contract() {
             "a manual source or exact AI choice must disable automatic switching while Automatic mode retains it");
     require(ui.find("DarkMode_Explorer") != std::string::npos &&
                 ui.find("DwmSetWindowAttribute") != std::string::npos &&
-                ui.find("RGB(22, 24, 29)") != std::string::npos,
+                ui.find("RGB(20, 22, 27)") != std::string::npos &&
+                ui.find("RGB(27, 30, 37)") != std::string::npos,
             "the native Windows UI must default to a real dark surface and dark title bar");
     require(ui.find("English foundation — recommended first") != std::string::npos &&
                 ui.find("training-target.txt") != std::string::npos &&

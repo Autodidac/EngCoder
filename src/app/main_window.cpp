@@ -19,6 +19,7 @@ module;
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -38,7 +39,8 @@ namespace {
 constexpr wchar_t window_class_name[] = L"EngCoder.MainWindow";
 constexpr UINT_PTR update_timer = 1;
 constexpr UINT_PTR stream_timer = 2;
-constexpr COLORREF window_color = RGB(22, 24, 29);
+constexpr COLORREF window_color = RGB(20, 22, 27);
+constexpr COLORREF card_color = RGB(27, 30, 37);
 constexpr COLORREF edit_color = RGB(31, 34, 41);
 constexpr COLORREF button_color = RGB(40, 44, 53);
 constexpr COLORREF button_pressed_color = RGB(52, 58, 70);
@@ -571,10 +573,11 @@ void style_chat_transcript(
         bool styled = true;
         if (line == L"YOU" || line.starts_with(L"YOU —")) {
             color = transcript_user_color;
-        } else if (line.starts_with(L"ASSISTANT — THREADSPIRE")) {
+        } else if (line.starts_with(L"ENGCODER — BUILT-IN") ||
+                   line.starts_with(L"ENGCODER — VERIFIED")) {
             color = transcript_internal_color;
-        } else if (line.starts_with(L"ASSISTANT — CONNECTED") ||
-                   line.starts_with(L"ASSISTANT — AUTOMATIC")) {
+        } else if (line.starts_with(L"ENGCODER — CONNECTED") ||
+                   line.starts_with(L"ENGCODER — CHOOSING")) {
             color = transcript_connected_color;
         } else if (line.starts_with(L"ERROR")) {
             color = transcript_error_color;
@@ -781,6 +784,22 @@ void draw_dark_text(
 
 [[nodiscard]] bool draw_dark_control_item(
     const DRAWITEMSTRUCT& item) {
+    const auto control_font = reinterpret_cast<HFONT>(
+        ::SendMessageW(item.hwndItem, WM_GETFONT, 0, 0));
+    const auto previous_font = control_font == nullptr
+        ? nullptr
+        : ::SelectObject(item.hDC, control_font);
+    struct RestoreFont final {
+        HDC device_context;
+        HGDIOBJ previous;
+        ~RestoreFont() {
+            if (previous != nullptr) {
+                static_cast<void>(::SelectObject(device_context, previous));
+            }
+        }
+    };
+    [[maybe_unused]] RestoreFont restore_font{item.hDC, previous_font};
+
     const auto disabled = (item.itemState & ODS_DISABLED) != 0U;
     const auto selected = (item.itemState & ODS_SELECTED) != 0U;
     const auto focused = (item.itemState & ODS_FOCUS) != 0U;
@@ -903,6 +922,47 @@ void draw_dark_text(
     return value;
 }
 
+[[nodiscard]] std::string modernize_saved_transcript(const std::string_view transcript) {
+    std::string result;
+    std::size_t offset = 0U;
+    while (offset < transcript.size()) {
+        const auto newline = transcript.find('\n', offset);
+        const auto end = newline == std::string_view::npos ? transcript.size() : newline;
+        auto line = transcript.substr(offset, end - offset);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1U);
+        }
+        const auto divider = line.size() >= 12U &&
+            std::ranges::all_of(line, [](const char character) { return character == '-'; });
+        if (!divider) {
+            if (line.starts_with("ASSISTANT — THREADSPIRE INTERNAL MODEL") ||
+                line.starts_with("ENGCODER — BUILT-IN —")) {
+                line = "ENGCODER — BUILT-IN";
+            } else if (line.starts_with("ASSISTANT — THREADSPIRE VERIFIED MEMORY") ||
+                       line.starts_with("ENGCODER — VERIFIED MEMORY —")) {
+                line = "ENGCODER — VERIFIED MEMORY";
+            } else if (line.starts_with("ASSISTANT — CONNECTED LOCAL LLM") ||
+                       line.starts_with("ENGCODER — CONNECTED AI —")) {
+                line = "ENGCODER — CONNECTED AI";
+            } else if (line.starts_with("ASSISTANT — AUTOMATIC AI SOURCE")) {
+                line = "ENGCODER — CHOOSING AI";
+            }
+            result.append(line);
+            result.append("\r\n");
+        }
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        offset = newline + 1U;
+    }
+    constexpr std::string_view excessive_gap{"\r\n\r\n\r\n"};
+    for (auto gap = result.find(excessive_gap);
+         gap != std::string::npos;
+         gap = result.find(excessive_gap)) {
+        result.erase(gap, 2U);
+    }
+    return result;
+}
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
@@ -1223,6 +1283,113 @@ void move_control(
     }
 }
 
+[[nodiscard]] RECT combined_control_bounds(
+    const HWND page,
+    const std::initializer_list<int> identifiers,
+    const int padding) noexcept {
+    RECT bounds{};
+    bool initialized = false;
+    for (const auto identifier : identifiers) {
+        const auto child = ::GetDlgItem(page, identifier);
+        if (child == nullptr || ::IsWindowVisible(child) == FALSE) {
+            continue;
+        }
+        RECT rectangle{};
+        if (::GetWindowRect(child, &rectangle) == FALSE) {
+            continue;
+        }
+        std::array<POINT, 2> points{{
+            POINT{rectangle.left, rectangle.top},
+            POINT{rectangle.right, rectangle.bottom},
+        }};
+        static_cast<void>(::MapWindowPoints(
+            HWND_DESKTOP,
+            page,
+            points.data(),
+            static_cast<UINT>(points.size())));
+        rectangle = RECT{points[0].x, points[0].y, points[1].x, points[1].y};
+        if (!initialized) {
+            bounds = rectangle;
+            initialized = true;
+        } else {
+            bounds.left = std::min(bounds.left, rectangle.left);
+            bounds.top = std::min(bounds.top, rectangle.top);
+            bounds.right = std::max(bounds.right, rectangle.right);
+            bounds.bottom = std::max(bounds.bottom, rectangle.bottom);
+        }
+    }
+    if (initialized) {
+        ::InflateRect(&bounds, padding, padding);
+    }
+    return bounds;
+}
+
+void draw_workspace_card(
+    const HDC device_context,
+    const RECT& rectangle,
+    const int radius) noexcept {
+    if (::IsRectEmpty(&rectangle) != FALSE) {
+        return;
+    }
+    const auto brush = ::CreateSolidBrush(card_color);
+    const auto pen = ::CreatePen(PS_SOLID, 1, border_color);
+    if (brush == nullptr || pen == nullptr) {
+        if (brush != nullptr) {
+            static_cast<void>(::DeleteObject(brush));
+        }
+        if (pen != nullptr) {
+            static_cast<void>(::DeleteObject(pen));
+        }
+        return;
+    }
+    const auto previous_brush = ::SelectObject(device_context, brush);
+    const auto previous_pen = ::SelectObject(device_context, pen);
+    static_cast<void>(::RoundRect(
+        device_context,
+        rectangle.left,
+        rectangle.top,
+        rectangle.right,
+        rectangle.bottom,
+        radius,
+        radius));
+    static_cast<void>(::SelectObject(device_context, previous_brush));
+    static_cast<void>(::SelectObject(device_context, previous_pen));
+    static_cast<void>(::DeleteObject(brush));
+    static_cast<void>(::DeleteObject(pen));
+}
+
+void paint_chat_cards(const HWND page, const HDC device_context) noexcept {
+    const auto dpi = ::GetDpiForWindow(page);
+    const auto padding = scaled(5, dpi);
+    const auto radius = scaled(12, dpi);
+    const auto draw = [&](const std::initializer_list<int> identifiers) {
+        draw_workspace_card(
+            device_context,
+            combined_control_bounds(page, identifiers, padding),
+            radius);
+    };
+    draw({
+        id::chat_session_label, id::chat_session, id::chat_delete_session,
+        id::chat_mode_label, id::chat_mode, id::chat_source_label, id::chat_source,
+        id::chat_model_label, id::chat_model, id::chat_backend,
+        id::chat_discover, id::chat_open_models,
+    });
+    draw({
+        id::chat_response_label, id::chat_response, id::chat_turn,
+        id::chat_copy, id::chat_edit, id::chat_retry, id::chat_accept,
+        id::chat_reject, id::chat_learning_preview,
+    });
+    draw({
+        id::chat_prompt_label, id::chat_include_context,
+        id::chat_attachment_status, id::chat_prompt, id::chat_send,
+        id::chat_stop, id::chat_clear, id::chat_attach, id::chat_open_output,
+    });
+    draw({
+        id::chat_plan_label, id::chat_route, id::chat_plan,
+        id::chat_auto_learning, id::chat_learning_status,
+    });
+}
+
 LRESULT CALLBACK prompt_edit_subclass(
     const HWND edit,
     const UINT message,
@@ -1283,6 +1450,9 @@ LRESULT CALLBACK page_host_subclass(
         RECT client{};
         static_cast<void>(::GetClientRect(page, &client));
         fill_solid_rect(reinterpret_cast<HDC>(wparam), client, window_color);
+        if (::GetDlgCtrlID(page) == id::page_chat) {
+            paint_chat_cards(page, reinterpret_cast<HDC>(wparam));
+        }
         return 1;
     }
     case WM_NCDESTROY:
@@ -1688,7 +1858,7 @@ void append_training_library_file(
     summary = summary_stream.str();
 
     std::wostringstream output;
-    output << L"WHAT THREADSPIRE LEARNS FROM\r\n"
+    output << L"WHAT ENGCODER LEARNS FROM\r\n"
            << L"Approved results say whether they are memory-only or eligible for a future weight update. "
            << L"Rejected results are negative evidence and never positive training. Held-out checks never "
            << L"train the model; they only decide whether a candidate is safe to use. No prompt or answer below is shortened.\r\n\r\n";
@@ -1911,6 +2081,9 @@ MainWindow::~MainWindow() {
     if (window_brush_ != nullptr) {
         static_cast<void>(::DeleteObject(window_brush_));
     }
+    if (card_brush_ != nullptr) {
+        static_cast<void>(::DeleteObject(card_brush_));
+    }
     if (edit_brush_ != nullptr) {
         static_cast<void>(::DeleteObject(edit_brush_));
     }
@@ -1933,10 +2106,25 @@ bool MainWindow::register_window_class() {
 
 bool MainWindow::create(const int show_command) {
     window_brush_ = ::CreateSolidBrush(window_color);
+    card_brush_ = ::CreateSolidBrush(card_color);
     edit_brush_ = ::CreateSolidBrush(edit_color);
-    if (window_brush_ == nullptr || edit_brush_ == nullptr || !register_window_class()) {
+    if (window_brush_ == nullptr || card_brush_ == nullptr ||
+        edit_brush_ == nullptr || !register_window_class()) {
         return false;
     }
+
+    RECT work_area{};
+    static_cast<void>(::SystemParametersInfoW(
+        SPI_GETWORKAREA, 0, &work_area, 0));
+    const auto initial_dpi = ::GetDpiForSystem();
+    const auto work_width = std::max(1L, work_area.right - work_area.left);
+    const auto work_height = std::max(1L, work_area.bottom - work_area.top);
+    const auto initial_width = std::max(
+        std::min(scaled(980, initial_dpi), static_cast<int>(work_width)),
+        std::min(scaled(1450, initial_dpi), static_cast<int>(work_width * 94 / 100)));
+    const auto initial_height = std::max(
+        std::min(scaled(680, initial_dpi), static_cast<int>(work_height)),
+        std::min(scaled(900, initial_dpi), static_cast<int>(work_height * 94 / 100)));
 
     window_ = ::CreateWindowExW(
         0,
@@ -1945,8 +2133,8 @@ bool MainWindow::create(const int show_command) {
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        1450,
-        930,
+        initial_width,
+        initial_height,
         nullptr,
         nullptr,
         instance_,
@@ -2108,13 +2296,19 @@ LRESULT MainWindow::handle_message(
         const auto editable = message == WM_CTLCOLOREDIT ||
                               message == WM_CTLCOLORLISTBOX ||
                               is_edit_control(child);
+        const auto parent = child == nullptr ? nullptr : ::GetParent(child);
+        const auto on_chat_card = parent != nullptr &&
+            ::GetDlgCtrlID(parent) == id::page_chat;
         const auto enabled = child == nullptr || ::IsWindowEnabled(child) != FALSE;
         ::SetTextColor(device_context, enabled ? text_color : disabled_text_color);
-        ::SetBkColor(device_context, editable ? edit_color : window_color);
+        ::SetBkColor(
+            device_context,
+            editable ? edit_color : (on_chat_card ? card_color : window_color));
         if (!editable) {
             ::SetBkMode(device_context, TRANSPARENT);
         }
-        return reinterpret_cast<LRESULT>(editable ? edit_brush_ : window_brush_);
+        return reinterpret_cast<LRESULT>(
+            editable ? edit_brush_ : (on_chat_card ? card_brush_ : window_brush_));
     }
     case WM_ERASEBKGND: {
         RECT client{};
@@ -2200,8 +2394,8 @@ HWND MainWindow::create_control(
     }
     if (is_edit_control(handle)) {
         const auto margin = static_cast<LPARAM>(MAKELONG(
-            scaled(6, dpi_),
-            scaled(6, dpi_)));
+            scaled(12, dpi_),
+            scaled(12, dpi_)));
         static_cast<void>(::SendMessageW(
             handle,
             EM_SETMARGINS,
@@ -2229,7 +2423,7 @@ void MainWindow::create_controls() {
         tabs,
         TCM_SETITEMSIZE,
         0,
-        MAKELPARAM(scaled(150, dpi_), scaled(30, dpi_))));
+        MAKELPARAM(scaled(150, dpi_), scaled(40, dpi_))));
     const std::array tabs_and_pages{
         std::pair{L"Chat", Page::chat},
         std::pair{L"AI & Tools", Page::models},
@@ -2340,7 +2534,7 @@ void MainWindow::create_chat_page() {
         mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Use tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
-    create_control(L"STATIC", L"Use AIs from", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
+    create_control(L"STATIC", L"AI access", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_source, parent);
@@ -2356,7 +2550,7 @@ void MainWindow::create_chat_page() {
         static_cast<WPARAM>(inference_source_),
         0));
 
-    create_control(L"STATIC", L"Choose AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
+    create_control(L"STATIC", L"AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -2416,7 +2610,7 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Learn?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_learning_preview, parent);
     create_control(
-        L"BUTTON", L"Use earlier chat",
+        L"BUTTON", L"Include earlier chat in next reply",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::chat_include_context, parent);
 
@@ -2437,7 +2631,7 @@ void MainWindow::create_chat_page() {
         static_cast<DWORD_PTR>(id::chat_send)));
 
     create_control(
-        L"BUTTON", L"Run task", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        L"BUTTON", L"Send", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
         0, id::chat_send, parent);
     create_control(
         L"BUTTON", L"Stop", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -2465,7 +2659,7 @@ void MainWindow::create_chat_page() {
         L"STATIC", L"How it will run", WS_CHILD | WS_VISIBLE,
         0, id::chat_plan_label, parent);
     create_control(
-        L"BUTTON", L"Check choices", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Why this AI?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_route, parent);
     create_control(
         L"EDIT", L"Waiting for a message.", WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -2483,7 +2677,7 @@ void MainWindow::create_chat_page() {
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_learning_status, parent);
     create_control(
         L"STATIC", L"Optional tools: not connected",
-        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_mcp_status, parent);
+        WS_CHILD | SS_EDITCONTROL, 0, id::chat_mcp_status, parent);
     update_response_turn_controls();
 }
 
@@ -3045,8 +3239,8 @@ void MainWindow::layout_controls() {
     ::GetClientRect(window_, &client);
     const auto client_width = static_cast<int>(client.right - client.left);
     const auto client_height = static_cast<int>(client.bottom - client.top);
-    const auto margin = scaled(10, dpi_);
-    const auto status_height = scaled(24, dpi_);
+    const auto margin = scaled(14, dpi_);
+    const auto status_height = scaled(30, dpi_);
     move_control(control(id::status), 0, client_height - status_height, client_width, status_height);
     const auto tabs = control(id::tabs);
     move_control(
@@ -3066,7 +3260,7 @@ void MainWindow::layout_controls() {
             tabs,
             TCM_SETITEMSIZE,
             0,
-            MAKELPARAM(tab_width, scaled(30, dpi_))));
+            MAKELPARAM(tab_width, scaled(40, dpi_))));
     }
 
     RECT page_rect{};
@@ -3099,9 +3293,9 @@ void MainWindow::layout_controls() {
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOCOPYBITS));
     }
 
-    const auto gap = scaled(8, dpi_);
-    const auto row = scaled(32, dpi_);
-    const auto button = scaled(132, dpi_);
+    const auto gap = scaled(10, dpi_);
+    const auto row = scaled(40, dpi_);
+    const auto button = scaled(144, dpi_);
 
     // Primary workspace: connection, model, conversation, coding mode, and learning state
     // are intentionally visible without requiring another tab.
@@ -3124,20 +3318,18 @@ void MainWindow::layout_controls() {
     auto workspace_x = 0;
     move_control(control(id::chat_mode_label), workspace_x, workspace_top, scaled(40, dpi_), row);
     workspace_x += scaled(44, dpi_);
-    move_control(control(id::chat_mode), workspace_x, workspace_top, scaled(190, dpi_), row + scaled(160, dpi_));
-    workspace_x += scaled(190, dpi_) + gap;
-    move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(82, dpi_), row);
-    workspace_x += scaled(86, dpi_);
-    move_control(control(id::chat_source), workspace_x, workspace_top, scaled(255, dpi_), row + scaled(120, dpi_));
-    workspace_x += scaled(255, dpi_) + gap;
-    move_control(control(id::chat_model_label), workspace_x, workspace_top, scaled(70, dpi_), row);
-    workspace_x += scaled(74, dpi_);
+    move_control(control(id::chat_mode), workspace_x, workspace_top, scaled(175, dpi_), row + scaled(160, dpi_));
+    workspace_x += scaled(175, dpi_) + gap;
+    move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(75, dpi_), row);
+    workspace_x += scaled(79, dpi_);
+    move_control(control(id::chat_source), workspace_x, workspace_top, scaled(220, dpi_), row + scaled(120, dpi_));
+    workspace_x += scaled(220, dpi_) + gap;
+    move_control(control(id::chat_model_label), workspace_x, workspace_top, scaled(28, dpi_), row);
+    workspace_x += scaled(32, dpi_);
 
     const auto workspace_button_width = scaled(108, dpi_);
     const auto workspace_settings_width = scaled(142, dpi_);
-    const auto model_width = std::max(
-        scaled(220, dpi_),
-        width - workspace_x);
+    const auto model_width = std::max(scaled(180, dpi_), width - workspace_x);
     move_control(control(id::chat_model), workspace_x, workspace_top, model_width, row + scaled(220, dpi_));
 
     const auto workspace_status_y = workspace_top + row + gap;
@@ -3194,21 +3386,26 @@ void MainWindow::layout_controls() {
         : workspace_repository_y;
     const auto sidebar_width = std::clamp(
         width * 30 / 100,
-        scaled(300, dpi_),
-        scaled(430, dpi_));
+        scaled(330, dpi_),
+        scaled(600, dpi_));
     const auto conversation_width = width - sidebar_width - gap;
     const auto sidebar_x = conversation_width + gap;
-    const auto action_y = height - row;
+    const auto compact_actions = conversation_width < scaled(720, dpi_);
+    const auto compact_bottom_actions = conversation_width < scaled(560, dpi_);
+    const auto compact_vertical = height < scaled(760, dpi_);
+    const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
+    const auto action_y = height - action_block_height;
     const auto prompt_height = std::clamp(
-        height * 19 / 100,
-        scaled(105, dpi_),
-        scaled(175, dpi_));
+        height * 18 / 100,
+        scaled(compact_vertical ? 75 : 95, dpi_),
+        scaled(compact_vertical ? 135 : 165, dpi_));
     const auto prompt_y = action_y - gap - prompt_height;
     const auto prompt_label_y = prompt_y - row;
     const auto conversation_y = workspace_content_top + row;
-    const auto review_y = prompt_label_y - gap - row;
+    const auto review_block_height = compact_actions ? row * 2 + gap : row;
+    const auto review_y = prompt_label_y - gap - review_block_height;
     const auto conversation_height = std::max(
-        scaled(120, dpi_),
+        scaled(compact_vertical ? 80 : 120, dpi_),
         review_y - gap - conversation_y);
 
     move_control(
@@ -3223,22 +3420,51 @@ void MainWindow::layout_controls() {
         conversation_y,
         conversation_width,
         conversation_height);
-    const auto review_fixed_width =
-        scaled(52 + 55 + 55 + 90 + 55 + 95, dpi_) + gap * 6;
-    const auto reply_selector_width = std::clamp(
-        conversation_width - review_fixed_width, scaled(80, dpi_), scaled(140, dpi_));
-    auto review_x = 0;
-    const auto move_review_action = [&](const int identifier, const int control_width) {
-        move_control(control(identifier), review_x, review_y, control_width, row);
-        review_x += control_width + gap;
-    };
-    move_review_action(id::chat_turn, reply_selector_width);
-    move_review_action(id::chat_copy, scaled(52, dpi_));
-    move_review_action(id::chat_edit, scaled(55, dpi_));
-    move_review_action(id::chat_retry, scaled(55, dpi_));
-    move_review_action(id::chat_accept, scaled(90, dpi_));
-    move_review_action(id::chat_reject, scaled(55, dpi_));
-    move_review_action(id::chat_learning_preview, scaled(95, dpi_));
+
+    if (compact_actions) {
+        auto review_x = 0;
+        const auto first_row_y = review_y;
+        const auto selector_width = std::max(
+            scaled(140, dpi_),
+            conversation_width - scaled(62 + 62 + 70, dpi_) - gap * 3);
+        const auto move_first_row = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), review_x, first_row_y, control_width, row);
+            review_x += control_width + gap;
+        };
+        move_first_row(id::chat_turn, selector_width);
+        move_first_row(id::chat_copy, scaled(62, dpi_));
+        move_first_row(id::chat_edit, scaled(62, dpi_));
+        move_first_row(id::chat_retry, scaled(70, dpi_));
+
+        review_x = 0;
+        const auto second_row_y = review_y + row + gap;
+        const auto move_second_row = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), review_x, second_row_y, control_width, row);
+            review_x += control_width + gap;
+        };
+        move_second_row(id::chat_accept, scaled(140, dpi_));
+        move_second_row(id::chat_reject, scaled(82, dpi_));
+        move_second_row(id::chat_learning_preview, scaled(92, dpi_));
+    } else {
+        const auto review_fixed_width =
+            scaled(62 + 62 + 70 + 120 + 70 + 80, dpi_) + gap * 6;
+        const auto reply_selector_width = std::clamp(
+            conversation_width - review_fixed_width,
+            scaled(80, dpi_),
+            scaled(180, dpi_));
+        auto review_x = 0;
+        const auto move_review_action = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), review_x, review_y, control_width, row);
+            review_x += control_width + gap;
+        };
+        move_review_action(id::chat_turn, reply_selector_width);
+        move_review_action(id::chat_copy, scaled(62, dpi_));
+        move_review_action(id::chat_edit, scaled(62, dpi_));
+        move_review_action(id::chat_retry, scaled(70, dpi_));
+        move_review_action(id::chat_accept, scaled(120, dpi_));
+        move_review_action(id::chat_reject, scaled(70, dpi_));
+        move_review_action(id::chat_learning_preview, scaled(80, dpi_));
+    }
 
     move_control(
         control(id::chat_prompt_label),
@@ -3250,13 +3476,13 @@ void MainWindow::layout_controls() {
         control(id::chat_include_context),
         scaled(74, dpi_),
         prompt_label_y,
-        scaled(130, dpi_),
+        scaled(270, dpi_),
         row);
     move_control(
         control(id::chat_attachment_status),
-        scaled(208, dpi_),
+        scaled(348, dpi_),
         prompt_label_y,
-        std::max(1, conversation_width - scaled(208, dpi_)),
+        std::max(1, conversation_width - scaled(348, dpi_)),
         row);
     move_control(
         control(id::chat_prompt),
@@ -3265,43 +3491,59 @@ void MainWindow::layout_controls() {
         conversation_width,
         prompt_height);
 
-    auto action_x = 0;
-    const auto move_workspace_action = [&](const int identifier, const int control_width) {
-        move_control(control(identifier), action_x, action_y, control_width, row);
-        action_x += control_width + gap;
-    };
-    move_workspace_action(id::chat_send, scaled(88, dpi_));
-    move_workspace_action(id::chat_stop, scaled(72, dpi_));
-    move_workspace_action(id::chat_clear, scaled(88, dpi_));
-    move_workspace_action(id::chat_attach, scaled(104, dpi_));
-    move_workspace_action(id::chat_open_output, scaled(112, dpi_));
-    move_control(
-        control(id::chat_hint),
-        action_x,
-        action_y,
-        std::max(1, conversation_width - action_x),
-        row);
+    if (compact_bottom_actions) {
+        auto action_x = 0;
+        const auto move_first_action = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), action_x, action_y, control_width, row);
+            action_x += control_width + gap;
+        };
+        move_first_action(id::chat_send, scaled(110, dpi_));
+        move_first_action(id::chat_stop, scaled(82, dpi_));
+        move_first_action(id::chat_clear, scaled(110, dpi_));
+        action_x = 0;
+        const auto second_action_y = action_y + row + gap;
+        const auto move_second_action = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), action_x, second_action_y, control_width, row);
+            action_x += control_width + gap;
+        };
+        move_second_action(id::chat_attach, scaled(125, dpi_));
+        move_second_action(id::chat_open_output, scaled(135, dpi_));
+        move_control(control(id::chat_hint), action_x, second_action_y,
+            std::max(1, conversation_width - action_x), row);
+    } else {
+        auto action_x = 0;
+        const auto move_workspace_action = [&](const int identifier, const int control_width) {
+            move_control(control(identifier), action_x, action_y, control_width, row);
+            action_x += control_width + gap;
+        };
+        move_workspace_action(id::chat_send, scaled(110, dpi_));
+        move_workspace_action(id::chat_stop, scaled(82, dpi_));
+        move_workspace_action(id::chat_clear, scaled(105, dpi_));
+        move_workspace_action(id::chat_attach, scaled(120, dpi_));
+        move_workspace_action(id::chat_open_output, scaled(130, dpi_));
+        move_control(control(id::chat_hint), action_x, action_y,
+            std::max(1, conversation_width - action_x), row);
+    }
 
     move_control(
         control(id::chat_plan_label),
         sidebar_x,
         workspace_content_top,
-        sidebar_width - scaled(126, dpi_) - gap,
+        sidebar_width - scaled(140, dpi_) - gap,
         row);
     move_control(
         control(id::chat_route),
-        width - scaled(126, dpi_),
+        width - scaled(140, dpi_),
         workspace_content_top,
-        scaled(126, dpi_),
+        scaled(140, dpi_),
         row);
     const auto sidebar_available = height - workspace_content_top - row - gap;
-    const auto sidebar_status_reserve =
-        row + gap + scaled(64, dpi_) + gap + scaled(54, dpi_);
+    const auto sidebar_status_reserve = row + gap + scaled(70, dpi_);
     const auto maximum_plan_height = std::max(
         scaled(120, dpi_),
         sidebar_available - sidebar_status_reserve);
     const auto plan_height = std::clamp(
-        sidebar_available * 55 / 100,
+        sidebar_available * 62 / 100,
         scaled(120, dpi_),
         maximum_plan_height);
     move_control(
@@ -3323,14 +3565,7 @@ void MainWindow::layout_controls() {
         sidebar_x,
         workspace_learning_y + row + gap,
         sidebar_width,
-        scaled(64, dpi_));
-    move_control(
-        control(id::chat_mcp_status),
-        sidebar_x,
-        workspace_learning_y + row + gap + scaled(68, dpi_),
-        sidebar_width,
-        scaled(54, dpi_));
-
+        scaled(70, dpi_));
     // Dedicated coding workspace remains available as the second primary tab.
     auto coding_x = 0;
     move_control(control(id::coding_source_label), coding_x, 0, scaled(82, dpi_), row);
@@ -4152,7 +4387,9 @@ void MainWindow::handle_command(const int identifier) {
         show_selected_learning_preview();
         break;
     case id::chat_include_context:
-        show_selected_learning_preview();
+        set_status(checked(id::chat_include_context)
+            ? L"Earlier chat will help answer the next message only; it will never be learned"
+            : L"The next message will stand alone");
         break;
     case id::chat_repository_browse: {
         const auto selected = choose_directory(L"Select a repository for this task");
@@ -4385,12 +4622,33 @@ void MainWindow::update_workspace_mode() {
         }
         return L"Prompt";
     }();
+    const auto action = [&]() -> const wchar_t* {
+        switch (task) {
+        case WorkspaceTask::ask: return L"Send";
+        case WorkspaceTask::code_help: return L"Ask";
+        case WorkspaceTask::repository: return L"Run";
+        case WorkspaceTask::image: return L"Create image";
+        case WorkspaceTask::speech: return L"Create audio";
+        case WorkspaceTask::tool: return L"Run tool";
+        }
+        return L"Send";
+    }();
+    const auto result_label = [&]() -> const wchar_t* {
+        switch (task) {
+        case WorkspaceTask::ask:
+        case WorkspaceTask::code_help: return L"Conversation";
+        case WorkspaceTask::repository: return L"Repository run";
+        case WorkspaceTask::image:
+        case WorkspaceTask::speech: return L"Generated result";
+        case WorkspaceTask::tool: return L"Tool result";
+        }
+        return L"Conversation";
+    }();
     set_control_text(
         id::chat_prompt_label,
         label);
-    set_control_text(
-        id::chat_response_label,
-        task == WorkspaceTask::repository ? L"Task and verified run result" : L"Task output");
+    set_control_text(id::chat_response_label, result_label);
+    set_control_text(id::chat_send, action);
     set_status(L"Task changed. EngCoder updated the available AI choices.");
     refresh_model_selectors();
     layout_controls();
@@ -4845,7 +5103,8 @@ void MainWindow::load_chat_session(const std::string_view id_value) {
     }
 
     current_chat_id_ = summary->id;
-    workspace_transcript_ = core::json::string_or(document->find("workspace_transcript"));
+    workspace_transcript_ = modernize_saved_transcript(
+        core::json::string_or(document->find("workspace_transcript")));
     conversation_history_.clear();
     response_turns_.clear();
     attached_files_.clear();
@@ -5257,33 +5516,31 @@ std::wstring MainWindow::runtime_summary(
 }
 std::string MainWindow::requested_runtime_heading() const {
     if (preferred_model_id_ == internal_pool_selection_id) {
-        return "ASSISTANT — THREADSPIRE INTERNAL MODEL";
+        return "ENGCODER — BUILT-IN";
     }
     switch (inference_source_) {
     case InferenceSource::local_bridge:
-        return "ASSISTANT — CONNECTED LOCAL LLM";
+        return "ENGCODER — CONNECTED AI";
     case InferenceSource::custom_model:
-        return "ASSISTANT — THREADSPIRE INTERNAL MODEL";
+        return "ENGCODER — BUILT-IN";
     case InferenceSource::automatic:
-        return "ASSISTANT — AUTOMATIC AI SOURCE";
+        return "ENGCODER — CHOOSING AI";
     }
     return "ASSISTANT";
 }
 
 std::string MainWindow::actual_runtime_heading(const std::string_view model_id) const {
     if (model_id == "verified-memory") {
-        return "ASSISTANT — THREADSPIRE VERIFIED MEMORY";
+        return "ENGCODER — VERIFIED MEMORY";
     }
     const auto snapshot = runtime_model_snapshot();
     const auto* model = snapshot.find(model_id);
     if (model == nullptr) {
         return requested_runtime_heading();
     }
-    std::string result = models::is_internal_model(*model)
-        ? "ASSISTANT — THREADSPIRE INTERNAL MODEL — "
-        : "ASSISTANT — CONNECTED LOCAL LLM — ";
-    result += model->display_name;
-    return result;
+    return models::is_internal_model(*model)
+        ? "ENGCODER — BUILT-IN"
+        : "ENGCODER — CONNECTED AI";
 }
 
 bool MainWindow::is_workspace_surface(const RequestSurface surface) const noexcept {
@@ -5662,8 +5919,7 @@ void MainWindow::send_request(const RequestSurface surface) {
             if (!workspace_transcript_.ends_with("\r\n\r\n")) {
                 workspace_transcript_ += "\r\n\r\n";
             }
-            workspace_transcript_ +=
-                "------------------------------------------------------------\r\n\r\n";
+            workspace_transcript_ += "\r\n";
         }
         workspace_transcript_ += coding ? "YOU — CODING REQUEST\r\n\r\n" : "YOU\r\n\r\n";
         workspace_transcript_ += raw_prompt;
@@ -5953,11 +6209,6 @@ memory::Episode MainWindow::learning_episode_for(
     const ResponseTurn& turn,
     const bool accepted) const {
     std::string learning_prompt = turn.prompt;
-    if (checked(id::chat_include_context) && !turn.earlier_context.empty()) {
-        learning_prompt =
-            "EARLIER CONVERSATION INCLUDED BY USER\n" + turn.earlier_context +
-            "\nCURRENT USER MESSAGE\n" + turn.prompt;
-    }
     return memory::Episode{
         .id = {},
         .skill = skill_for(turn.analysis),
@@ -5991,8 +6242,6 @@ memory::Episode MainWindow::learning_episode_for(
 std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
     const auto episode = learning_episode_for(turn, true);
     const auto preview = learning_service_->preview(episode);
-    const auto context_included =
-        checked(id::chat_include_context) && !turn.earlier_context.empty();
 
     std::wostringstream output;
     const auto already_saved = turn.review == ResponseReview::accepted;
@@ -6012,8 +6261,7 @@ std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
            << L" of " << response_turns_.size() << L"\n"
            << L"Model: " << widen(turn.model_id) << L"\n"
            << L"Skill: " << widen(episode.skill) << L"\n"
-           << L"Earlier chat: " << (context_included ? L"INCLUDED" : L"NOT INCLUDED")
-           << L"\n"
+           << L"Earlier chat used to answer: NEVER LEARNED\n"
            << L"Other replies, routing details, status text, and error messages: NOT INCLUDED\n\n"
            << L"Training cleanup: "
            << (preview.training_text_adjusted
@@ -8774,27 +9022,21 @@ void MainWindow::recreate_ui_font() {
         font_ = nullptr;
     }
 
-    NONCLIENTMETRICSW metrics{};
-    metrics.cbSize = static_cast<UINT>(sizeof(metrics));
-    if (::SystemParametersInfoForDpi(
-            SPI_GETNONCLIENTMETRICS,
-            static_cast<UINT>(sizeof(metrics)),
-            &metrics,
-            0,
-            dpi_) != FALSE) {
-        font_ = ::CreateFontIndirectW(&metrics.lfMessageFont);
-    }
-
+    LOGFONTW interface_font{};
+    interface_font.lfHeight = -::MulDiv(12, static_cast<int>(dpi_), 72);
+    interface_font.lfWeight = FW_NORMAL;
+    interface_font.lfQuality = CLEARTYPE_NATURAL_QUALITY;
+    static_cast<void>(::lstrcpynW(
+        interface_font.lfFaceName,
+        L"Segoe UI Variable Text",
+        LF_FACESIZE));
+    font_ = ::CreateFontIndirectW(&interface_font);
     if (font_ == nullptr) {
-        LOGFONTW fallback{};
-        fallback.lfHeight = -::MulDiv(10, static_cast<int>(dpi_), 72);
-        fallback.lfWeight = FW_NORMAL;
-        fallback.lfQuality = CLEARTYPE_QUALITY;
         static_cast<void>(::lstrcpynW(
-            fallback.lfFaceName,
+            interface_font.lfFaceName,
             L"Segoe UI",
             LF_FACESIZE));
-        font_ = ::CreateFontIndirectW(&fallback);
+        font_ = ::CreateFontIndirectW(&interface_font);
     }
 
     for (const auto& [identifier, handle] : controls_) {
@@ -8802,8 +9044,8 @@ void MainWindow::recreate_ui_font() {
         apply_font(handle);
         if (is_edit_control(handle)) {
             const auto margin = static_cast<LPARAM>(MAKELONG(
-                scaled(6, dpi_),
-                scaled(6, dpi_)));
+                scaled(12, dpi_),
+                scaled(12, dpi_)));
             static_cast<void>(::SendMessageW(
                 handle,
                 EM_SETMARGINS,
