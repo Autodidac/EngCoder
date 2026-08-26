@@ -79,3 +79,15 @@ This report is updated as changes are implemented. Claims about other platforms 
 - Visual Studio 2022 Release build after the storage and first visual-QA pass: passed.
 - Release CTest after the storage and first visual-QA pass: 4/4 passed.
 - Final Visual Studio 2022 Release rebuild after the compact-toolbar polish: passed. Final Release CTest: 4/4 passed, including the base-footprint and curriculum-guard checks.
+
+### Safe model-history compaction
+
+- Audited the existing post-training cleanup and found that it removed entire old generation directories, which discarded the audit evidence along with redundant weights.
+- Replaced that behavior with transactional weight compaction. EngCoder protects the active model, the just-completed generation, and the newest prior verified generation for rollback/repair. Older redundant weights and their matching checkpoints are removed only after an atomic manifest update is published.
+- Preserved each compacted generation's manifest, configuration, metrics, provenance, and retention facts. Interrupted compaction restores the temporary weight unless the audit manifest was already committed.
+- Added exact storage counters for full model-weight copies and audit-only generation records. The Files & Activity card and report now explain the retention policy in plain language instead of treating every historical record as another full model.
+- Extended tests for retained audit records, exact generation counts, protected weights, and the absence of whole-generation deletion.
+- Ran an isolated five-generation retention simulation outside live AppData. Three protected weight copies survived, two redundant copies were compacted, exactly 201 fixture bytes were reclaimed, every audit file remained, and a second run was idempotent.
+- Repeated visual QA on the built Release executable at the minimum supported size and a wide size. The Chat and Files & Activity pages remained dark, readable, non-overlapping, and retained all five primary tabs. The live installation still truthfully shows six full copies because no live AppData mutation was performed; automatic compaction takes effect after a future completed learning pass.
+
+Verification for this checkpoint: Python bytecode compilation passed, `git diff --check` passed, the Visual Studio 2022 Release build passed, and Release CTest passed 4/4.

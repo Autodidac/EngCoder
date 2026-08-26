@@ -226,6 +226,46 @@ template <typename Integer>
     return static_cast<Integer>(number);
 }
 
+void read_generation_retention_details(StorageSnapshot& snapshot) {
+    const auto generations_root =
+        snapshot.root / "models" / "internal" / "generations";
+    std::error_code error;
+    std::filesystem::directory_iterator iterator(
+        generations_root,
+        std::filesystem::directory_options::skip_permission_denied,
+        error);
+    const std::filesystem::directory_iterator end;
+    while (iterator != end) {
+        const auto status = iterator->symlink_status(error);
+        if (!error && std::filesystem::is_directory(status) &&
+            !std::filesystem::is_symlink(status)) {
+            const auto manifest = read_json_file(iterator->path() / "manifest.json");
+            if (manifest.has_value()) {
+                if (core::json::bool_or(manifest->find("weights_pruned"), false)) {
+                    ++snapshot.compacted_generation_records;
+                } else {
+                    const auto weights_name =
+                        core::json::string_or(manifest->find("weights_file"));
+                    const std::filesystem::path component(weights_name);
+                    if (!weights_name.empty() && component.filename() == component &&
+                        weights_name.find('/') == std::string::npos &&
+                        weights_name.find('\\') == std::string::npos) {
+                        const auto weights_status = std::filesystem::symlink_status(
+                            iterator->path() / component, error);
+                        if (!error && std::filesystem::is_regular_file(weights_status) &&
+                            !std::filesystem::is_symlink(weights_status)) {
+                            ++snapshot.generation_weight_copies;
+                        }
+                    }
+                }
+            }
+        }
+        error.clear();
+        iterator.increment(error);
+        error.clear();
+    }
+}
+
 void read_active_model_details(StorageSnapshot& snapshot) {
     if (snapshot.active_generation.empty()) {
         return;
@@ -381,6 +421,7 @@ StorageSnapshot inspect_storage_with_growth(
             : 0;
         snapshot.generation_directories = directory_count(
             snapshot.root / "models" / "internal" / "generations");
+        read_generation_retention_details(snapshot);
         snapshot.trajectory_directories = directory_count(snapshot.root / "trajectories");
         read_active_model_details(snapshot);
 

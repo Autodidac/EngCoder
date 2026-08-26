@@ -1141,7 +1141,8 @@ void test_storage_monitor_reports_exact_background_footprint() {
 
     constexpr std::size_t legacy_runtime_bytes = 1024U;
     constexpr std::size_t active_weights_bytes = 4096U;
-    constexpr std::size_t inactive_weights_bytes = 512U;
+    const std::string compacted_manifest_text{
+        R"({"generation":"g000001","status":"candidate-rejected","weights_file":"weights.bin","weights_pruned":true,"weights_pruned_bytes":512})"};
     constexpr std::size_t torch_library_bytes = 2048U;
     constexpr std::size_t torch_code_bytes = 128U;
     constexpr std::size_t private_support_bytes = 64U;
@@ -1150,8 +1151,8 @@ void test_storage_monitor_reports_exact_background_footprint() {
         << std::string(legacy_runtime_bytes, 'r');
     std::ofstream(active / "weights.bin", std::ios::binary)
         << std::string(active_weights_bytes, 'm');
-    std::ofstream(inactive / "weights.bin", std::ios::binary)
-        << std::string(inactive_weights_bytes, 'i');
+    std::ofstream(inactive / "manifest.json", std::ios::binary)
+        << compacted_manifest_text;
     std::ofstream(torch / "lib" / "torch_cpu.dll", std::ios::binary)
         << std::string(torch_library_bytes, 'l');
     std::ofstream(torch / "__init__.py", std::ios::binary)
@@ -1178,15 +1179,17 @@ void test_storage_monitor_reports_exact_background_footprint() {
 
     const auto snapshot = threadspire::ai::runtime::inspect_storage(root, 3U);
     const auto active_model_bytes = active_weights_bytes + manifest_text.size() + config_text.size();
-    const auto all_generation_bytes = active_model_bytes + inactive_weights_bytes;
+    const auto all_generation_bytes = active_model_bytes + compacted_manifest_text.size();
     const auto expected_total = legacy_runtime_bytes + all_generation_bytes +
         torch_library_bytes + torch_code_bytes + private_support_bytes + pack_manifest_bytes +
         pointer_text.size() + 16U + 64U + 32U;
     require(snapshot.total_bytes == expected_total && snapshot.files == 13U,
             "storage monitor must report exact recursive bytes and files");
     require(snapshot.generation_directories == 2U &&
+                snapshot.generation_weight_copies == 1U &&
+                snapshot.compacted_generation_records == 1U &&
                 snapshot.trajectory_directories == 1U,
-            "storage monitor must count model generations and repository trajectories");
+            "storage monitor must distinguish runnable weight copies, compacted audit records, and repository trajectories");
     require(snapshot.training_data_bytes == 96U &&
                 snapshot.training_data_files == 2U &&
                 snapshot.active_generation == "g000000" &&
@@ -1194,7 +1197,7 @@ void test_storage_monitor_reports_exact_background_footprint() {
                 snapshot.active_model_files == 3U &&
                 snapshot.active_weights_bytes == active_weights_bytes &&
                 snapshot.all_generation_bytes == all_generation_bytes &&
-                snapshot.inactive_generation_bytes == inactive_weights_bytes,
+                snapshot.inactive_generation_bytes == compacted_manifest_text.size(),
             "storage monitor must distinguish the active weights from stored rollback generations");
     require(snapshot.training_pack_bytes ==
                 torch_library_bytes + torch_code_bytes + private_support_bytes +
@@ -1464,6 +1467,10 @@ void test_windows_ui_source_contract() {
                 internal_model.find("\"accumulation_steps\": accumulation_steps") != std::string::npos &&
                 internal_model.find("def blocked_no_repeat_tokens") != std::string::npos &&
                 internal_model.find("def assess_generation_quality") != std::string::npos &&
+                internal_model.find("def prune_internal_artifacts") != std::string::npos &&
+                internal_model.find("weights_pruned") != std::string::npos &&
+                internal_model.find("retention_full_weight_copies") != std::string::npos &&
+                internal_model.find("shutil.rmtree(path)") == std::string::npos &&
                 worker.find("internal.load_active_model") != std::string::npos &&
                 worker.find("threadspire://") != std::string::npos &&
                 worker.find("promote-internal") != std::string::npos &&

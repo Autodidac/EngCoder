@@ -8949,9 +8949,7 @@ void MainWindow::update_storage_report(const bool force) {
                 : -static_cast<std::intmax_t>(previous - current);
         };
         const auto models_bytes = all_models == nullptr ? 0U : all_models->bytes;
-        const auto models_growth = storage_sample_available_
-            ? growth_between(models_bytes, previous_models_bytes_)
-            : 0;
+
         const auto ram_growth = storage_sample_available_
             ? growth_between(memory.resident_bytes, previous_ram_bytes_)
             : 0;
@@ -8988,12 +8986,13 @@ void MainWindow::update_storage_report(const bool force) {
         set_control_text(id::chat_active_model_size, model_card.str());
 
         std::wostringstream all_models_card;
-        all_models_card << L"ALL MODELS\r\n"
+        all_models_card << L"ALL MODEL HISTORY\r\n"
                         << format_bytes_compact(models_bytes)
-                        << L" • " << snapshot->generation_directories
-                        << L" stored version"
-                        << (snapshot->generation_directories == 1U ? L"" : L"s")
-                        << L" • " << growth_text(models_growth);
+                        << L" • " << snapshot->generation_weight_copies
+                        << L" full weight cop"
+                        << (snapshot->generation_weight_copies == 1U ? L"y" : L"ies")
+                        << L" • " << snapshot->compacted_generation_records
+                        << L" audit-only";
         set_control_text(id::chat_all_models_size, all_models_card.str());
 
         std::wostringstream training_card;
@@ -9059,12 +9058,15 @@ void MainWindow::update_storage_report(const bool force) {
                    << L"\r\n"
                    << L"  The weights contain learned numeric patterns. The training engine below is software and is not inside these weights.\r\n";
         }
-        report << L"\r\nSTORED MODEL VERSIONS\r\n"
-               << L"  All generations: " << format_bytes(snapshot->all_generation_bytes)
-               << L" • " << snapshot->generation_directories << L" versions\r\n"
+        report << L"\r\nSTORED MODEL HISTORY\r\n"
+               << L"  Full runnable weight copies: " << snapshot->generation_weight_copies
+               << L" • " << format_bytes(snapshot->all_generation_bytes) << L" total generation storage\r\n"
+               << L"  Audit-only records after safe compaction: "
+               << snapshot->compacted_generation_records << L"\r\n"
                << L"  Active version: " << format_bytes(snapshot->active_model_bytes) << L"\r\n"
-               << L"  Inactive candidates and rollback versions: "
-               << format_bytes(snapshot->inactive_generation_bytes) << L"\r\n";
+               << L"  Inactive candidates and rollback copies: "
+               << format_bytes(snapshot->inactive_generation_bytes) << L"\r\n"
+               << L"  After each completed learning pass, EngCoder automatically keeps the active weights, one working rollback, and the newest repair copy. Older duplicate weights are removed; their manifest, configuration, and exact metrics stay visible for audit.\r\n";
 
         report << L"\r\nTRAINING ENGINE (SOFTWARE, NOT LEARNED KNOWLEDGE)\r\n"
                << L"  Internal PyTorch capability pack: "
@@ -9101,7 +9103,9 @@ void MainWindow::update_storage_report(const bool force) {
                << L"\r\n  EngCoder-owned private committed memory: "
                << format_bytes(memory.private_commit_bytes)
                << L"\r\n  Other AI applications, including LM Studio, are not counted in EngCoder RAM.\r\n";
-        report << L"\r\nModel generations: " << snapshot->generation_directories
+        report << L"\r\nModel history records: " << snapshot->generation_directories
+               << L" • full weight copies: " << snapshot->generation_weight_copies
+               << L" • compacted audit-only: " << snapshot->compacted_generation_records
                << L" • repository trajectories: " << snapshot->trajectory_directories
                << L"\r\nGrowth since previous sample: " << growth_text(snapshot->growth_bytes)
                << L"\r\n\r\nTOP-LEVEL USAGE\r\n";

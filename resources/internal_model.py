@@ -689,6 +689,11 @@ def resolve_bootstrap_repair_generation(
             continue
         if manifest.get("status") != "candidate-rejected":
             continue
+        if (
+            bool(manifest.get("weights_pruned", False))
+            or _generation_weights_path(paths[generation], manifest) is None
+        ):
+            continue
         try:
             metrics = json.loads((paths[generation] / "metrics.json").read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError, json.JSONDecodeError):
@@ -718,43 +723,112 @@ def resolve_bootstrap_repair_generation(
     return max(candidates)[-1] if candidates else None
 
 
+def _generation_weights_path(path: Path, manifest: dict[str, Any]) -> Path | None:
+    weights_name = str(manifest.get("weights_file", "")).strip()
+    if not weights_name or Path(weights_name).name != weights_name:
+        return None
+    weights = path / weights_name
+    return weights if weights.is_file() and not weights.is_symlink() else None
+
+
 def prune_internal_artifacts(
     state_root: Path,
     protected_generations: set[str],
-    keep_generations: int = 4,
+    keep_generations: int = 3,
 ) -> tuple[int, int]:
-    """Bound recoverable history without touching the active or current lineage."""
+    """Compact redundant model copies while keeping their audit records.
+
+    Protected generations retain complete weights. Older trained, rejected, or
+    deferred candidates keep manifest/config/metrics files in place, but their
+    duplicate weights and matching checkpoints are removed transactionally.
+    """
     generations_root = internal_root(state_root) / "generations"
-    if not generations_root.is_dir():
+    if not generations_root.is_dir() or generations_root.is_symlink():
         return 0, 0
-    candidates: list[tuple[int, str, Path]] = []
+    candidates: list[tuple[int, str, Path, dict[str, Any]]] = []
     for path in generations_root.iterdir():
-        if not path.is_dir() or path.name.endswith(".tmp") or path.name in protected_generations:
+        if (
+            not path.is_dir()
+            or path.is_symlink()
+            or path.name.endswith(".tmp")
+            or path.name in protected_generations
+        ):
             continue
         try:
             manifest = generation_manifest(path)
         except (FileNotFoundError, ValueError, json.JSONDecodeError):
             continue
-        if manifest.get("status") not in {"candidate-rejected", "trained-candidate"}:
+        if manifest.get("status") not in {
+            "candidate-rejected", "trained-candidate", "trained"
+        }:
             continue
-        candidates.append((int(manifest.get("created_unix_ms", 0)), path.name, path))
+        if bool(manifest.get("weights_pruned", False)):
+            continue
+        if _generation_weights_path(path, manifest) is None:
+            continue
+        candidates.append((
+            int(manifest.get("created_unix_ms", 0)), path.name, path, manifest
+        ))
     candidates.sort(reverse=True)
     retained_total = len(protected_generations)
     removable = candidates[max(0, keep_generations - retained_total):]
-    removed = 0
+    compacted = 0
     reclaimed = 0
     checkpoints_root = internal_root(state_root) / "checkpoints"
-    for _, generation, path in removable:
-        try:
-            reclaimed += sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
-            shutil.rmtree(path)
-            removed += 1
-            if checkpoints_root.is_dir():
-                for checkpoint in checkpoints_root.glob(f"{generation}-*"):
-                    shutil.rmtree(checkpoint, ignore_errors=True)
-        except OSError:
+    for _, generation, path, manifest in removable:
+        weights = _generation_weights_path(path, manifest)
+        if weights is None:
             continue
-    return removed, reclaimed
+        temporary_weights = path / f"{weights.name}.retention.tmp"
+        manifest_published = False
+        try:
+            if temporary_weights.exists():
+                if temporary_weights.is_symlink():
+                    continue
+                temporary_weights.unlink()
+            weight_bytes = weights.stat().st_size
+            weights.replace(temporary_weights)
+            updated_manifest = dict(manifest)
+            updated_manifest["weights_pruned"] = True
+            updated_manifest["weights_pruned_unix_ms"] = int(time.time() * 1000)
+            updated_manifest["weights_pruned_bytes"] = weight_bytes
+            updated_manifest["retention_note"] = (
+                "Redundant weights removed; manifest, config, and metrics retained for audit"
+            )
+            try:
+                atomic_write_text(
+                    path / "manifest.json",
+                    json.dumps(updated_manifest, indent=2, ensure_ascii=False) + "\n",
+                )
+                manifest_published = True
+            except Exception:
+                temporary_weights.replace(weights)
+                raise
+            temporary_weights.unlink()
+            reclaimed += weight_bytes
+            compacted += 1
+            if checkpoints_root.is_dir() and not checkpoints_root.is_symlink():
+                for checkpoint in checkpoints_root.glob(f"{generation}-*"):
+                    if not checkpoint.is_dir() or checkpoint.is_symlink():
+                        continue
+                    checkpoint_bytes = sum(
+                        item.stat().st_size
+                        for item in checkpoint.rglob("*")
+                        if item.is_file() and not item.is_symlink()
+                    )
+                    shutil.rmtree(checkpoint)
+                    reclaimed += checkpoint_bytes
+        except OSError:
+            if temporary_weights.is_file() and not weights.exists():
+                try:
+                    if manifest_published:
+                        temporary_weights.unlink()
+                    else:
+                        temporary_weights.replace(weights)
+                except OSError:
+                    pass
+            continue
+    return compacted, reclaimed
 
 
 def bootstrap_learning_rate(
@@ -2774,12 +2848,37 @@ def train_candidate(
         )
     metrics["english_foundation_established"] = english_established
     active_pointer = resolve_active_generation(state_root).name
-    removed_generations, reclaimed_bytes = prune_internal_artifacts(
+    protected_generations = {active_pointer, generation}
+    rollback_candidates: list[tuple[int, str]] = []
+    for rollback_path in (internal_root(state_root) / "generations").iterdir():
+        if (
+            not rollback_path.is_dir()
+            or rollback_path.is_symlink()
+            or rollback_path.name in protected_generations
+        ):
+            continue
+        try:
+            rollback_manifest = generation_manifest(rollback_path)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            rollback_manifest.get("status") == "trained"
+            and not bool(rollback_manifest.get("weights_pruned", False))
+            and _generation_weights_path(rollback_path, rollback_manifest) is not None
+        ):
+            rollback_candidates.append((
+                int(rollback_manifest.get("promoted_unix_ms", 0)),
+                rollback_path.name,
+            ))
+    if rollback_candidates:
+        protected_generations.add(max(rollback_candidates)[1])
+    compacted_generations, reclaimed_bytes = prune_internal_artifacts(
         state_root,
-        {active_pointer, generation, parent},
+        protected_generations,
     )
-    metrics["retention_removed_generations"] = removed_generations
+    metrics["retention_compacted_generations"] = compacted_generations
     metrics["retention_reclaimed_bytes"] = reclaimed_bytes
+    metrics["retention_full_weight_copies"] = sorted(protected_generations)
     atomic_write_text(path / "metrics.json", json.dumps(metrics, indent=2) + "\n")
     needs_bootstrap_repair = bool(effective_bootstrap_target > 0 and not promoted)
     write_progress(

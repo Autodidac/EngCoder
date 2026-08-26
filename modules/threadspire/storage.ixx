@@ -215,6 +215,8 @@ struct StorageSnapshot final {
     std::uintmax_t private_runtime_other_bytes{0};
     std::string active_generation;
     std::size_t generation_directories{0};
+    std::size_t generation_weight_copies{0};
+    std::size_t compacted_generation_records{0};
     std::size_t trajectory_directories{0};
     std::int64_t sampled_unix_ms{0};
     std::vector<StorageCategory> categories;
