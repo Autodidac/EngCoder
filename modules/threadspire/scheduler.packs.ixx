@@ -36,6 +36,47 @@ struct CapabilityPackDescriptor final {
     std::uintmax_t projected_install_bytes{0};
     std::vector<std::string> required_files;
     std::vector<std::string> dependencies;
+    std::string purpose;
+    std::string origin;
+    std::string license;
+    std::string loading_condition;
+    std::string safe_removal_rule;
+};
+
+struct CapabilityPackDependencyAudit final {
+    std::string name;
+    std::string version;
+    std::string origin;
+    std::string license;
+    std::size_t file_count{0};
+    std::uintmax_t bytes{0};
+};
+
+struct CapabilityPackFileAudit final {
+    std::filesystem::path relative_path;
+    std::uintmax_t bytes{0};
+    std::string purpose;
+    std::string owner;
+    std::string duplicate_of;
+};
+
+struct CapabilityPackAudit final {
+    CapabilityPackDescriptor descriptor;
+    CapabilityPackState state{CapabilityPackState::available};
+    std::filesystem::path install_path;
+    std::uintmax_t installed_bytes{0};
+    std::size_t file_count{0};
+    std::size_t directory_count{0};
+    std::size_t model_weight_files{0};
+    std::uintmax_t model_weight_bytes{0};
+    std::uintmax_t runtime_bytes{0};
+    std::uintmax_t program_bytes{0};
+    std::uintmax_t metadata_bytes{0};
+    std::uintmax_t other_bytes{0};
+    std::vector<CapabilityPackDependencyAudit> packages;
+    std::vector<CapabilityPackFileAudit> files;
+    std::vector<std::string> required_by;
+    std::string error;
 };
 
 struct CapabilityPackRecord final {
@@ -69,6 +110,9 @@ public:
 
     [[nodiscard]] static std::vector<CapabilityPackDescriptor> catalog();
     [[nodiscard]] std::vector<CapabilityPackRecord> inspect() const;
+    [[nodiscard]] CapabilityPackAudit audit(
+        std::string_view id,
+        std::stop_token stop_token = {}) const;
     [[nodiscard]] CapabilityPackInstallResult install_transactional(
         const CapabilityPackInstallRequest& request,
         std::stop_token stop_token = {});

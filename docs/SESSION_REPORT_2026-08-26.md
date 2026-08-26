@@ -218,3 +218,13 @@ Post-verification visual pass: launched the real Release executable at 150% DPI,
 - Launched the real Release executable at the 980x680 logical minimum under 150% DPI and at 2100x1250. The dark page preserved its structure without white panes, overlap, or distorted controls; long activity and Training Library records wrap instead of forcing horizontal scrolling. The QA harness closed its own processes, and no EngCoder or native-host process remained.
 
 Verification for this checkpoint: Visual Studio 2022 Release build passed with `/W4 /WX`; Release CTest passed 5/5; minimum/wide visual QA passed; and `git diff --check` passed. The optional 4.2 GiB PyTorch trainer remains uninstalled after the authorized reset, so no dependency or weight-training run was triggered implicitly.
+
+### Exact optional add-on audit
+
+- Extended capability-pack descriptors and transactional manifests with purpose, origin, license, loading condition, dependencies, and safe-removal rules.
+- Added an explicit cancellation-aware installed-tree auditor. It never follows directory links; enumerates every file/directory and byte; separates model weights, native runtimes, Python program/bytecode, dependency metadata/licenses, and other data; reads Python `METADATA`/`RECORD` ownership; and labels redundancy only after exact same-path byte comparison against required installed packs.
+- Added **Show exact contents** to Capabilities. Catalog projections remain visibly separate from actual installed contents; an uninstalled add-on truthfully reports 0 installed files and 0 model weights. Audit and installation remain background operations isolated from Chat, AI selection, and training.
+- The `Apache-2.0` license in the regression output belongs only to the synthetic `peft 0.14.0` fixture used to prove installed metadata parsing. No Transformers/PEFT or PyTorch pack is currently installed, and the application does not claim otherwise.
+- Added a transactional synthetic-pack regression covering exact file counts, weight-byte accounting, dependency version/origin/license attribution, RECORD ownership, byte-confirmed duplication, and the zero-content uninstalled case.
+- Repeated autonomous DPI-aware visual QA at 150% through minimum → wide → minimum resizing. Both tab rows remained dark and labeled, rounded cards retained shape, add-on controls remained visible, and no stale/stretch pixels or overlap appeared.
+Verification for this checkpoint: clean Visual Studio 2022 Release and Debug builds passed; Release and Debug CTest each passed 5/5; the 100 MiB base-footprint test passed in both configurations; minimum → wide → minimum visual QA passed; and no optional dependency or model pack was installed.

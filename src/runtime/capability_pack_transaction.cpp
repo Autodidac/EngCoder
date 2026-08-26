@@ -89,12 +89,29 @@ void write_manifest(
     const std::filesystem::path& staging,
     const CapabilityPackDescriptor& descriptor,
     const std::uintmax_t bytes) {
+    core::json::Value::Array required_files;
+    required_files.reserve(descriptor.required_files.size());
+    for (const auto& required : descriptor.required_files) {
+        required_files.emplace_back(required);
+    }
+    core::json::Value::Array dependencies;
+    dependencies.reserve(descriptor.dependencies.size());
+    for (const auto& dependency : descriptor.dependencies) {
+        dependencies.emplace_back(dependency);
+    }
     core::json::Value::Object manifest{
         {"schema_version", 1.0},
         {"id", descriptor.id},
         {"name", descriptor.name},
         {"version", descriptor.version},
         {"kind", std::string(to_string(descriptor.kind))},
+        {"purpose", descriptor.purpose},
+        {"origin", descriptor.origin},
+        {"license", descriptor.license},
+        {"loading_condition", descriptor.loading_condition},
+        {"safe_removal_rule", descriptor.safe_removal_rule},
+        {"required_files", core::json::Value(std::move(required_files))},
+        {"dependencies", core::json::Value(std::move(dependencies))},
         {"installed_bytes", static_cast<double>(bytes)},
         {"installed_unix_ms", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count())},

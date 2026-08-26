@@ -1507,6 +1507,10 @@ void test_windows_ui_source_contract() {
                 ui.find("L\"OPTIONAL ADD-ONS\\r\\n") != std::string::npos &&
                 ui.find("L\"Use local package…\"") != std::string::npos &&
                 ui.find("L\"Install ready add-on\"") != std::string::npos &&
+                ui.find("L\"Show exact contents\"") != std::string::npos &&
+                ui.find("Reading every installed file") != std::string::npos &&
+                ui.find("Model weights:") != std::string::npos &&
+                ui.find("without following links") != std::string::npos &&
                 ui.find("WHAT ENGCODER CAN DO NOW") != std::string::npos &&
                 ui.find("id::skills_overview_card") != std::string::npos &&
                 ui.find("id::skills_learning_card") != std::string::npos &&
@@ -1515,7 +1519,8 @@ void test_windows_ui_source_contract() {
                 ui.find("L\"Area to improve\"") == std::string::npos &&
                 ui.find("L\"Improve selected area\"") == std::string::npos &&
                 ui.find("L\"Queue LoRA update\"") == std::string::npos,
-            "Capabilities must show automatic built-in/learning state in real cards and keep manual jargon in backup-only paths");    const auto optional_pack_begin = ui.find("void MainWindow::install_selected_capability_pack()");
+            "Capabilities must show automatic state in real cards and provide an explicit, link-safe, exact installed-content audit");
+    const auto optional_pack_begin = ui.find("void MainWindow::install_selected_capability_pack()");
     const auto optional_pack_end = ui.find("void MainWindow::update_capability_pack_result()", optional_pack_begin);
     require(optional_pack_begin != std::string::npos && optional_pack_end > optional_pack_begin,
             "the optional add-on transaction must remain inspectable");

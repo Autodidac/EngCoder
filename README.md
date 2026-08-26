@@ -187,6 +187,11 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 
 Backup-only AI connection entries can declare what an AI can do, such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Workspace Action selector filters models by those capabilities when used; Automatic infers the required capability from the message. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
 
+## Exact optional add-on audit
+
+**Settings → Capabilities → Show exact contents** performs an explicit, cancellation-aware audit of the selected installed add-on without following directory links. It enumerates every file and directory, measures actual bytes, distinguishes model weights from native runtimes, Python code, dependency metadata/licenses, and other data, and attributes files through installed Python `METADATA` and `RECORD` manifests when present. Required add-ons are compared only at matching paths and reported as redundant only after a byte-for-byte match.
+
+The report also shows each add-on's purpose, declared origin/license, loading condition, required add-ons, and whole-pack safe-removal rule. Catalog projections are not presented as installed content: an uninstalled add-on always reports **0 installed files and 0 model weights**. Selecting, installing, or auditing an add-on never starts training, changes the selected AI, or interrupts Chat.
 ## Storage limits
 
 **Activity** keeps eight dark live cards in view: **Current Model**, **All Model Versions**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), **Free Disk**, and **Live RAM**. It also reports exact active-model contents, EngCoder-owned helper memory, largest files/directories, projected pack download/install sizes, category quotas, and dry-run cleanup without cluttering Chat.

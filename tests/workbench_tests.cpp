@@ -308,6 +308,99 @@ void test_pack_transaction_rollback_and_selection_isolation() {
     std::filesystem::remove_all(root);
 }
 
+void test_pack_audit_reports_exact_files_licenses_roles_and_weights() {
+    using namespace threadspire::ai::runtime;
+    const auto root = temporary_root();
+    const auto dependency_source = root / "dependency-source";
+    const auto source = root / "audit-source";
+    write_text(dependency_source / "runtime" / "shared.dll", "identical-runtime-bytes");
+    write_text(dependency_source / "pack.ready", "dependency-ready");
+    write_text(source / "runtime" / "shared.dll", "identical-runtime-bytes");
+    write_text(source / "pack.ready", "audit-ready");
+    write_text(
+        source / "runtime" / "Lib" / "site-packages" / "peft" / "__init__.py",
+        "__version__ = '0.14.0'\n");
+    write_text(
+        source / "runtime" / "Lib" / "site-packages" /
+            "peft-0.14.0.dist-info" / "METADATA",
+        "Metadata-Version: 2.1\n"
+        "Name: peft\n"
+        "Version: 0.14.0\n"
+        "License-Expression: Apache-2.0\n"
+        "Home-page: https://github.com/huggingface/peft\n\n");
+    write_text(
+        source / "runtime" / "Lib" / "site-packages" /
+            "peft-0.14.0.dist-info" / "RECORD",
+        "peft/__init__.py,,\n"
+        "peft-0.14.0.dist-info/METADATA,,\n"
+        "peft-0.14.0.dist-info/RECORD,,\n");
+    write_text(source / "models" / "adapter.safetensors", "weights");
+
+    CapabilityPackManager manager(root / "packs");
+    const CapabilityPackDescriptor dependency{
+        .id = "audit-dependency",
+        .name = "Audit Dependency",
+        .version = "3",
+        .kind = CapabilityPackKind::internal_pytorch_training,
+        .required_files = {"pack.ready"},
+    };
+    require(manager.install_transactional({
+                .descriptor = dependency,
+                .source_directory = dependency_source,
+            }).succeeded,
+            "audit dependency fixture must install transactionally");
+    const CapabilityPackDescriptor descriptor{
+        .id = "audit-pack",
+        .name = "Audit Pack",
+        .version = "7",
+        .kind = CapabilityPackKind::transformers_peft_finetuning,
+        .required_files = {"pack.ready"},
+        .dependencies = {"audit-dependency"},
+        .purpose = "fixture purpose",
+        .origin = "fixture origin",
+        .license = "fixture wrapper license",
+        .loading_condition = "fixture explicit job only",
+        .safe_removal_rule = "fixture whole-pack removal only",
+    };
+    require(manager.install_transactional({
+                .descriptor = descriptor,
+                .source_directory = source,
+            }).succeeded,
+            "audited fixture must install transactionally");
+
+    const auto audit = manager.audit("audit-pack");
+    require(audit.state == CapabilityPackState::installed &&
+                audit.descriptor.version == "7" && audit.descriptor.purpose == "fixture purpose" &&
+                audit.file_count == 7U && audit.installed_bytes > 0U,
+            "audit must report the installed manifest version, metadata, and exact complete tree");
+    require(audit.model_weight_files == 1U && audit.model_weight_bytes == 7U,
+            "audit must distinguish actual model-weight files from training infrastructure");
+    const auto package = std::ranges::find_if(audit.packages, [](const auto& item) {
+        return item.name == "peft";
+    });
+    require(package != audit.packages.end() && package->version == "0.14.0" &&
+                package->license == "Apache-2.0" &&
+                package->origin == "https://github.com/huggingface/peft" &&
+                package->file_count == 3U,
+            "installed METADATA and RECORD must attribute exact version, origin, license, and files");
+    const auto program = std::ranges::find_if(audit.files, [](const auto& file) {
+        return file.relative_path.generic_string().ends_with("peft/__init__.py");
+    });
+    require(program != audit.files.end() && program->purpose == "Python program code" &&
+                program->owner == "peft 0.14.0",
+            "every file must expose a concrete role and owning dependency version");
+    const auto duplicate = std::ranges::find_if(audit.files, [](const auto& file) {
+        return file.relative_path.generic_string() == "runtime/shared.dll";
+    });
+    require(duplicate != audit.files.end() &&
+                duplicate->duplicate_of == "audit-dependency/runtime/shared.dll",
+            "redundancy must be confirmed byte-for-byte against required installed packs");
+    const auto missing = manager.audit("not-installed");
+    require(missing.state == CapabilityPackState::available && missing.file_count == 0U &&
+                missing.model_weight_files == 0U,
+            "an uninstalled catalog/source must never be represented as installed files or weights");
+    std::filesystem::remove_all(root);
+}
 void test_persistent_serialized_training_resume_and_coalescing() {
     using namespace threadspire::ai::learning;
     const auto root = temporary_root();
@@ -677,6 +770,7 @@ int main() {
         test_unified_routing_profiles_multimodal_and_artifacts();
         test_unified_cancellation();
         test_pack_transaction_rollback_and_selection_isolation();
+        test_pack_audit_reports_exact_files_licenses_roles_and_weights();
         test_persistent_serialized_training_resume_and_coalescing();
         test_persistent_queue_survives_concurrent_readers();
         test_service_recovers_serialized_job_before_candidate_creation();

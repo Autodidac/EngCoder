@@ -272,6 +272,7 @@ constexpr int skills_pack_source = 509;
 constexpr int skills_pack_browse = 510;
 constexpr int skills_pack_install = 511;
 constexpr int skills_pack_status = 512;
+constexpr int skills_pack_audit = 513;
 
 constexpr int learning_pause = 600;
 constexpr int learning_policy = 601;
@@ -3490,13 +3491,18 @@ void MainWindow::create_skills_page() {
         L"BUTTON", L"Install ready add-on", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_pack_install, parent);
     create_control(
+        L"BUTTON", L"Show exact contents", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::skills_pack_audit, parent);
+    create_control(
         L"STATIC", L"Checking optional add-ons…",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, id::skills_pack_status, parent);
-    create_control(
+    const auto skills_report = create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::skills_report, parent);
+    static_cast<void>(::SendMessageW(
+        skills_report, EM_SETLIMITTEXT, static_cast<WPARAM>(16U * 1024U * 1024U), 0));
     refresh_capability_pack_controls();
 }
 void MainWindow::create_long_horizon_page() {
@@ -4758,15 +4764,20 @@ void MainWindow::layout_controls() {
     const auto pack_row_y = addons_y + scaled(62, dpi_);
     const auto pack_browse_width = scaled(150, dpi_);
     const auto pack_install_width = scaled(164, dpi_);
+    const auto pack_audit_width = scaled(174, dpi_);
     const auto pack_choice_width = std::max(
-        scaled(260, dpi_), width - pack_browse_width - pack_install_width - gap * 4 - scaled(32, dpi_));
+        scaled(220, dpi_),
+        width - pack_browse_width - pack_install_width - pack_audit_width -
+            gap * 3 - scaled(32, dpi_));
     move_control(control(id::skills_pack_choice), scaled(16, dpi_), pack_row_y,
         pack_choice_width, row + scaled(220, dpi_));
     move_control(control(id::skills_pack_browse), scaled(16, dpi_) + pack_choice_width + gap,
         pack_row_y, pack_browse_width, row);
+    const auto pack_install_x = scaled(16, dpi_) + pack_choice_width + pack_browse_width + gap * 2;
     move_control(control(id::skills_pack_install),
-        scaled(16, dpi_) + pack_choice_width + pack_browse_width + gap * 2,
-        pack_row_y, pack_install_width, row);
+        pack_install_x, pack_row_y, pack_install_width, row);
+    move_control(control(id::skills_pack_audit),
+        pack_install_x + pack_install_width + gap, pack_row_y, pack_audit_width, row);
     move_control(control(id::skills_pack_source), 0, 0, 1, 1);
     move_control(control(id::skills_pack_status), scaled(16, dpi_),
         pack_row_y + row + gap, std::max(1, width - scaled(32, dpi_)), row);
@@ -5172,6 +5183,7 @@ void MainWindow::handle_command(const int identifier) {
         bootstrap_core_skills();
         break;
     case id::skills_refresh:
+        refresh_capability_pack_controls();
         update_skill_report();
         break;
     case id::skills_queue:
@@ -5188,6 +5200,9 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::skills_pack_install:
         install_selected_capability_pack();
+        break;
+    case id::skills_pack_audit:
+        audit_selected_capability_pack();
         break;
     case id::horizon_browse:
         browse_repository();
@@ -9852,6 +9867,103 @@ void MainWindow::update_skill_report() {
            << L"Optional add-ons\r\n"
            << L"  Installed: " << installed << L" of " << packs.size() << L"\r\n"
            << L"  Add-ons do not start training, switch the chosen AI, or interrupt Chat.\r\n";
+    const auto selected_pack = selected_capability_pack();
+    if (selected_pack.has_value()) {
+        const auto selected_record = std::ranges::find_if(packs, [&](const auto& pack) {
+            return pack.descriptor.id == selected_pack->id;
+        });
+        const auto selected_installed = selected_record != packs.end() &&
+            selected_record->state == runtime::CapabilityPackState::installed;
+        report << L"\r\nSELECTED ADD-ON AUDIT\r\n"
+               << L"Name: " << widen(selected_pack->name) << L"\r\n"
+               << L"Catalog version: " << widen(selected_pack->version) << L"\r\n"
+               << L"Status: " << (selected_installed ? L"installed" : L"not installed") << L"\r\n"
+               << L"Purpose: " << widen(selected_pack->purpose) << L"\r\n"
+               << L"Origin: " << widen(selected_pack->origin) << L"\r\n"
+               << L"License: " << widen(selected_pack->license) << L"\r\n"
+               << L"Loaded when: " << widen(selected_pack->loading_condition) << L"\r\n"
+               << L"Projected transfer/install: "
+               << format_bytes_compact(selected_pack->projected_download_bytes) << L" / "
+               << format_bytes_compact(selected_pack->projected_install_bytes) << L"\r\n";
+        if (selected_pack->dependencies.empty()) {
+            report << L"Required add-ons: none\r\n";
+        } else {
+            report << L"Required add-ons:\r\n";
+            for (const auto& dependency : selected_pack->dependencies) {
+                report << L"  " << widen(dependency) << L" — "
+                       << (pack_manager.installed(dependency) ? L"installed" : L"not installed")
+                       << L"\r\n";
+            }
+        }
+        report << L"Safe removal: " << widen(selected_pack->safe_removal_rule) << L"\r\n";
+
+        const auto& cached_audit = selected_capability_pack_audit_;
+        if (!selected_installed) {
+            report << L"Installed contents: 0 files, 0 B. This catalog entry is software only until explicitly installed.\r\n";
+        } else if (!cached_audit.has_value() || cached_audit->descriptor.id != selected_pack->id) {
+            report << L"Installed contents: choose Show exact contents to read the complete tree without following links.\r\n";
+        } else {
+            const auto& audit = *cached_audit;
+            std::size_t duplicate_files = 0U;
+            std::uintmax_t duplicate_bytes = 0U;
+            for (const auto& file : audit.files) {
+                if (!file.duplicate_of.empty()) {
+                    ++duplicate_files;
+                    duplicate_bytes += file.bytes;
+                }
+            }
+            report << L"\r\nEXACT INSTALLED CONTENTS\r\n"
+                   << L"Manifest version: " << widen(audit.descriptor.version) << L"\r\n"
+                   << L"Root: " << audit.install_path.wstring() << L"\r\n"
+                   << L"Files/directories: " << audit.file_count << L" / "
+                   << audit.directory_count << L"\r\n"
+                   << L"Measured installed bytes: " << format_bytes_compact(audit.installed_bytes)
+                   << L" (" << audit.installed_bytes << L" bytes)\r\n"
+                   << L"Model weights: " << audit.model_weight_files << L" files / "
+                   << format_bytes_compact(audit.model_weight_bytes) << L"\r\n"
+                   << L"Native/runtime files: " << format_bytes_compact(audit.runtime_bytes) << L"\r\n"
+                   << L"Program/bytecode files: " << format_bytes_compact(audit.program_bytes) << L"\r\n"
+                   << L"Metadata/license files: " << format_bytes_compact(audit.metadata_bytes) << L"\r\n"
+                   << L"Other configuration/data: " << format_bytes_compact(audit.other_bytes) << L"\r\n"
+                   << L"Exact duplicates already present in required packs: " << duplicate_files
+                   << L" / " << format_bytes_compact(duplicate_bytes) << L"\r\n";
+            if (audit.model_weight_files == 0U) {
+                report << L"Conclusion: this installed tree contains software/runtime data, not model weights.\r\n";
+            }
+            if (!audit.required_by.empty()) {
+                report << L"Cannot remove while required by:";
+                for (const auto& dependent : audit.required_by) {
+                    report << L" " << widen(dependent);
+                }
+                report << L"\r\n";
+            }
+            if (!audit.error.empty()) {
+                report << L"Audit warning: " << widen(audit.error) << L"\r\n";
+            }
+            report << L"\r\nINSTALLED PACKAGE METADATA\r\n";
+            if (audit.packages.empty()) {
+                report << L"No Python distribution metadata was found. Pack-level origin/license above is the only declaration.\r\n";
+            } else {
+                for (const auto& package : audit.packages) {
+                    report << L"  " << widen(package.name) << L" " << widen(package.version)
+                           << L" — " << package.file_count << L" files / "
+                           << format_bytes_compact(package.bytes) << L"\r\n"
+                           << L"    Origin: " << widen(package.origin) << L"\r\n"
+                           << L"    License: " << widen(package.license) << L"\r\n";
+                }
+            }
+            report << L"\r\nEVERY INSTALLED FILE\r\n"
+                   << L"Each line is: exact bytes | path | purpose | owning package | exact duplicate, if any.\r\n";
+            for (const auto& file : audit.files) {
+                report << L"  " << file.bytes << L" | " << file.relative_path.wstring()
+                       << L" | " << widen(file.purpose) << L" | " << widen(file.owner);
+                if (!file.duplicate_of.empty()) {
+                    report << L" | DUPLICATES " << widen(file.duplicate_of);
+                }
+                report << L"\r\n";
+            }
+        }
+    }
 
     if (!modules.empty()) {
         report << L"\r\nLEARNED AREAS\r\n";
@@ -9892,6 +10004,7 @@ void MainWindow::refresh_capability_pack_controls() {
     }
     if (selected_capability_pack_id_ != descriptor->id) {
         selected_capability_pack_id_ = descriptor->id;
+        selected_capability_pack_audit_.reset();
         selected_capability_pack_source_ = paths_.root / "pack-inbox" / descriptor->id;
         set_control_text(id::skills_pack_source, selected_capability_pack_source_.wstring());
     }
@@ -9902,20 +10015,84 @@ void MainWindow::refresh_capability_pack_controls() {
         return item.descriptor.id == descriptor->id;
     });
     std::wostringstream status;
-    if (record != records.end() && record->state == runtime::CapabilityPackState::installed) {
+    const auto is_installed =
+        record != records.end() && record->state == runtime::CapabilityPackState::installed;
+    if (is_installed) {
         status << L"Installed (" << format_bytes_compact(record->installed_bytes)
-               << L"). Reinstalling replaces only this add-on and leaves Chat untouched.";
+               << L"). Exact contents are available below; reinstalling replaces only this add-on.";
     } else {
-        status << L"Not installed. Optional and separate from Chat.";
+        status << L"Not installed. It has no installed files or weights to audit.";
+        selected_capability_pack_audit_ = manager.audit(descriptor->id);
     }
     if (!descriptor->dependencies.empty()) {
         status << L" Advanced fine-tuning also needs the optional learning add-on.";
     }
     set_control_text(id::skills_pack_status, status.str());
+    const auto operation_running = capability_pack_operation_.running();
     static_cast<void>(::EnableWindow(
-        control(id::skills_pack_install), capability_pack_operation_.running() ? FALSE : TRUE));
+        control(id::skills_pack_install), operation_running ? FALSE : TRUE));
+    static_cast<void>(::EnableWindow(
+        control(id::skills_pack_audit), is_installed && !operation_running ? TRUE : FALSE));
+    update_skill_report();
 }
 
+void MainWindow::audit_selected_capability_pack() {
+    if (capability_pack_operation_.running()) {
+        set_status(L"An optional add-on operation is already running");
+        return;
+    }
+    const auto descriptor = selected_capability_pack();
+    if (!descriptor.has_value()) {
+        set_status(L"Choose an optional add-on first");
+        return;
+    }
+    runtime::CapabilityPackManager manager(paths_.packs);
+    if (!manager.installed(descriptor->id)) {
+        selected_capability_pack_audit_ = manager.audit(descriptor->id);
+        set_status(L"That add-on is not installed, so it contains no installed files to audit");
+        update_skill_report();
+        return;
+    }
+
+    active_capability_pack_name_ = descriptor->name;
+    const auto packs_root = paths_.packs;
+    const auto pack_id = descriptor->id;
+    const auto started = capability_pack_operation_.start(
+        [this, packs_root, pack_id](const std::stop_token token) {
+            runtime::CapabilityPackManager audit_manager(packs_root);
+            auto audit = audit_manager.audit(pack_id, token);
+            const auto failed = audit.state == runtime::CapabilityPackState::failed;
+            const auto cancelled = token.stop_requested() || audit.error == "capability-pack audit cancelled";
+            const auto message = audit.error;
+            {
+                std::lock_guard lock(result_mutex_);
+                pending_capability_pack_audit_ = std::move(audit);
+            }
+            return util::OperationResult{
+                .state = cancelled
+                    ? util::OperationState::cancelled
+                    : (failed ? util::OperationState::failed : util::OperationState::succeeded),
+                .exit_code = failed ? 1 : 0,
+                .message = message.empty() ? "optional add-on audit complete" : message,
+            };
+        },
+        "auditing every installed add-on file");
+    if (!started) {
+        set_status(L"The exact add-on audit could not be started");
+        return;
+    }
+    for (const auto identifier : {
+             id::skills_pack_choice,
+             id::skills_pack_browse,
+             id::skills_pack_install,
+             id::skills_pack_audit}) {
+        static_cast<void>(::EnableWindow(control(identifier), FALSE));
+    }
+    const auto status = L"Reading every installed file for " + widen(descriptor->name) +
+        L" in the background. Chat and the chosen AI are unchanged.";
+    set_control_text(id::skills_pack_status, status);
+    set_status(status);
+}
 void MainWindow::browse_capability_pack_source() {
     if (capability_pack_operation_.running()) {
         set_status(L"An optional add-on is already being added");
@@ -10001,15 +10178,20 @@ void MainWindow::install_selected_capability_pack() {
 }
 
 void MainWindow::update_capability_pack_result() {
-    std::optional<runtime::CapabilityPackInstallResult> result;
+    std::optional<runtime::CapabilityPackInstallResult> install_result;
+    std::optional<runtime::CapabilityPackAudit> audit_result;
     {
         std::lock_guard lock(result_mutex_);
         if (pending_capability_pack_result_.has_value()) {
-            result = std::move(pending_capability_pack_result_);
+            install_result = std::move(pending_capability_pack_result_);
             pending_capability_pack_result_.reset();
         }
+        if (pending_capability_pack_audit_.has_value()) {
+            audit_result = std::move(pending_capability_pack_audit_);
+            pending_capability_pack_audit_.reset();
+        }
     }
-    if (!result.has_value()) {
+    if (!install_result.has_value() && !audit_result.has_value()) {
         return;
     }
 
@@ -10017,32 +10199,59 @@ void MainWindow::update_capability_pack_result() {
              id::skills_pack_choice,
              id::skills_pack_source,
              id::skills_pack_browse,
-             id::skills_pack_install}) {
+             id::skills_pack_install,
+             id::skills_pack_audit}) {
         static_cast<void>(::EnableWindow(control(identifier), TRUE));
     }
     const auto pack_name = active_capability_pack_name_.empty()
         ? std::wstring{L"Optional add-on"}
         : widen(active_capability_pack_name_);
     active_capability_pack_name_.clear();
-    refresh_capability_pack_controls();
 
+    if (audit_result.has_value()) {
+        selected_capability_pack_audit_ = std::move(*audit_result);
+        const auto& audit = *selected_capability_pack_audit_;
+        std::wostringstream status;
+        if (audit.error == "capability-pack audit cancelled") {
+            status << pack_name << L" audit was cancelled; no installed file was changed.";
+        } else if (audit.state == runtime::CapabilityPackState::failed) {
+            status << pack_name << L" could not be audited completely: " << widen(audit.error)
+                   << L". No installed file was changed.";
+        } else {
+            status << pack_name << L" audit complete: " << audit.file_count << L" files, "
+                   << format_bytes_compact(audit.installed_bytes) << L", "
+                   << audit.model_weight_files << L" model-weight file"
+                   << (audit.model_weight_files == 1U ? L"." : L"s.");
+        }
+        refresh_capability_pack_controls();
+        set_control_text(id::skills_pack_status, status.str());
+        set_status(status.str());
+        update_skill_report();
+        return;
+    }
+
+    selected_capability_pack_audit_.reset();
+    refresh_capability_pack_controls();
     std::wostringstream status;
-    if (result->succeeded) {
+    if (install_result->succeeded) {
         status << pack_name << L" was added safely ("
-               << format_bytes_compact(result->installed_bytes)
+               << format_bytes_compact(install_result->installed_bytes)
                << L"). No task was started and the chosen AI was not changed.";
-    } else if (result->cancelled) {
+    } else if (install_result->cancelled) {
         status << pack_name << L" was cancelled. The previous working copy was "
-               << (result->previous_install_preserved ? L"kept." : L"not restored; inspect Files & Activity.");
+               << (install_result->previous_install_preserved ? L"kept." : L"not restored; inspect Activity.");
     } else {
-        status << pack_name << L" was not added: " << widen(result->error)
+        status << pack_name << L" was not added: " << widen(install_result->error)
                << L". The previous working copy was "
-               << (result->previous_install_preserved ? L"kept." : L"not restored; inspect Files & Activity.");
+               << (install_result->previous_install_preserved ? L"kept." : L"not restored; inspect Activity.");
     }
     set_control_text(id::skills_pack_status, status.str());
     set_status(status.str());
     static_cast<void>(::EnableWindow(control(id::skills_pack_install), TRUE));
     update_storage_report(true);
+    if (install_result->succeeded) {
+        audit_selected_capability_pack();
+    }
 }
 void MainWindow::update_user_memory_controls(const std::string_view selected_id) {
     const auto selector = control(id::learning_memory_selector);

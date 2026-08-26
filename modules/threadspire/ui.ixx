@@ -221,6 +221,7 @@ private:
     void queue_skill_update();
     void rollback_skill();
     [[nodiscard]] std::optional<runtime::CapabilityPackDescriptor> selected_capability_pack() const;
+    void audit_selected_capability_pack();
     void browse_coding_repository();
     void run_coding_agent();
     void browse_repository();
@@ -336,6 +337,8 @@ private:
     std::optional<runtime::StorageSnapshot> pending_storage_snapshot_;
     std::optional<runtime::StorageCleanupResult> pending_storage_cleanup_result_;
     std::optional<runtime::CapabilityPackInstallResult> pending_capability_pack_result_;
+    std::optional<runtime::CapabilityPackAudit> pending_capability_pack_audit_;
+    std::optional<runtime::CapabilityPackAudit> selected_capability_pack_audit_;
     mutable std::mutex stream_mutex_;
     std::string pending_stream_text_;
     int stream_target_control_{0};
