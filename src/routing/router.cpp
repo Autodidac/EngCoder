@@ -124,7 +124,9 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
             continue;
         }
         if (is_coding_task(analysis) && !model.coding_agent &&
-            !models::has_capability(model, "cpp23")) {
+            !models::has_capability(model, "cpp23") &&
+            !models::has_capability(model, "code") &&
+            !models::has_capability(model, "repository")) {
             continue;
         }
         if (!satisfies_required_capabilities(model, analysis)) {
@@ -148,7 +150,9 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
             continue;
         }
         if (is_coding_task(analysis) && !model.coding_agent &&
-            !models::has_capability(model, "cpp23")) {
+            !models::has_capability(model, "cpp23") &&
+            !models::has_capability(model, "code") &&
+            !models::has_capability(model, "repository")) {
             continue;
         }
         if (best == nullptr ||
@@ -181,11 +185,17 @@ RoutingPlan AdaptiveRouter::plan(
     }
 
     const auto minimum_quality = required_quality(analysis);
-    const auto preferred = is_coding_task(analysis) ? std::string_view{"cpp23"} : std::string_view{};
+    const auto preferred = !is_coding_task(analysis)
+        ? std::string_view{}
+        : std::ranges::find(analysis.required_capabilities, "cpp23") !=
+                analysis.required_capabilities.end()
+            ? std::string_view{"cpp23"}
+            : std::string_view{"code"};
     const auto* fast = fastest_capable(analysis, registry, minimum_quality, preferred);
     const auto* coder = is_coding_task(analysis)
         ? strongest_matching(registry, [](const models::ModelProfile& model) {
               return model.coding_agent || models::has_capability(model, "cpp23") ||
+                     models::has_capability(model, "code") ||
                      models::has_capability(model, "repository") ||
                      models::has_capability(model, "debugging");
           })

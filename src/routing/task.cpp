@@ -67,6 +67,10 @@ std::string_view to_string(const TaskKind kind) noexcept {
         return "code-debugging";
     case TaskKind::repository_task:
         return "repository-task";
+    case TaskKind::image_generation:
+        return "image-generation";
+    case TaskKind::audio_generation:
+        return "audio-generation";
     case TaskKind::planning:
         return "planning";
     case TaskKind::tool_action:
@@ -102,6 +106,10 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
         "c++", "cpp", "std::", "cmake", "msvc", "visual studio", ".hpp", ".cpp",
         "compiler", "linker", "undefined behavior", "template", "constexpr", "concept",
     });
+    const auto development_signal = cpp_signal || contains_any(lower, {
+        "python", "rust", "javascript", "typescript", "c#", ".cs", "java",
+        "golang", "html", "css", "sql", "powershell", "bash", "cmakelists",
+    });
     const auto debugging_signal = contains_any(lower, {
         "error ", "warning ", "fails", "failed", "crash", "bug", "debug", "diagnose",
         "stack trace", "assert", "sanitizer", "doesn't compile", "does not compile",
@@ -123,6 +131,16 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
     const auto transformation_signal = contains_any(lower, {
         "rewrite", "rephrase", "shorten", "summarize", "format this", "convert this",
     });
+    const auto image_signal = contains_any(lower, {
+        "generate an image", "generate image", "create an image", "create image", "draw ",
+        "make a picture", "edit this image", "edit the image", "image of", "picture of",
+        "photo of", "illustration of", "logo for", "icon for",
+    });
+    const auto audio_signal = contains_any(lower, {
+        "create music", "generate music", "compose music", "compose a song", "compose an instrumental", "background music",
+        "soundtrack", "sound effect", "create audio", "generate audio", "voiceover",
+        "text to speech", "read this aloud", "read aloud", "create a song", "generate a song",
+    });
     const auto explanation_signal = contains_any(lower, {
         "what is", "how does", "explain", "why ", "difference between", "define ",
     });
@@ -134,7 +152,19 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
         "medical", "legal", "kernel", "driver", "unsafe", "data loss",
     });
 
-    if (calculation.recognized) {
+    if (image_signal) {
+        result.kind = TaskKind::image_generation;
+        result.tier = ComplexityTier::standard;
+        result.estimated_output_tokens = 0U;
+        add_capability(result, "image");
+        add_signal(result, "image generation or editing request");
+    } else if (audio_signal) {
+        result.kind = TaskKind::audio_generation;
+        result.tier = ComplexityTier::standard;
+        result.estimated_output_tokens = 0U;
+        add_capability(result, "audio");
+        add_signal(result, "audio or music generation request");
+    } else if (calculation.recognized) {
         result.kind = TaskKind::calculation;
         result.tier = ComplexityTier::instant;
         result.estimated_output_tokens = 64U;
@@ -146,33 +176,35 @@ TaskAnalysis TaskAnalyzer::analyze(const std::string_view prompt) const {
         result.estimated_output_tokens = std::max<std::size_t>(96, result.estimated_input_tokens);
         add_capability(result, "translation");
         add_signal(result, "translation request");
-    } else if (repository_signal && cpp_signal) {
+    } else if (repository_signal && (development_signal || tool_signal)) {
         result.kind = TaskKind::repository_task;
         result.tier = ComplexityTier::deep;
         result.needs_repository = true;
         result.needs_tools = true;
         result.estimated_output_tokens = 1536;
-        add_capability(result, "cpp23");
+        add_capability(result, cpp_signal ? "cpp23" : "code");
         add_capability(result, "repository");
         add_capability(result, "planning");
-        add_signal(result, "repository-level C++ task");
-    } else if (cpp_signal && debugging_signal) {
+        add_signal(result, cpp_signal
+            ? "repository-level C++ task"
+            : "repository-level development task");
+    } else if (development_signal && debugging_signal) {
         result.kind = TaskKind::code_debugging;
         result.tier = has_code_block || result.estimated_input_tokens > 350
             ? ComplexityTier::deep
             : ComplexityTier::standard;
         result.needs_tools = tool_signal;
         result.estimated_output_tokens = result.tier == ComplexityTier::deep ? 1200U : 700U;
-        add_capability(result, "cpp23");
+        add_capability(result, cpp_signal ? "cpp23" : "code");
         add_capability(result, "debugging");
-        add_signal(result, "C++ diagnostics");
-    } else if (cpp_signal || has_code_block) {
+        add_signal(result, "code diagnostics");
+    } else if (development_signal || has_code_block) {
         result.kind = TaskKind::code_generation;
         result.tier = result.estimated_input_tokens > 350 || planning_signal
             ? ComplexityTier::deep
             : ComplexityTier::standard;
         result.estimated_output_tokens = result.tier == ComplexityTier::deep ? 1400U : 800U;
-        add_capability(result, "cpp23");
+        add_capability(result, cpp_signal ? "cpp23" : "code");
         add_signal(result, "code request");
     } else if (planning_signal) {
         result.kind = TaskKind::planning;

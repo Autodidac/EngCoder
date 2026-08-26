@@ -16,6 +16,8 @@ enum class TaskKind {
     code_generation,
     code_debugging,
     repository_task,
+    image_generation,
+    audio_generation,
     planning,
     tool_action,
 };

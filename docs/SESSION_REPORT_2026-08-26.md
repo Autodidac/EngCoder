@@ -168,3 +168,15 @@ Only after those gates passed, the explicitly authorized reset was performed for
 Verification for this checkpoint: Visual Studio 2022 Release build passed with `/W4 /WX`; Release CTest passed 5/5; the real first-start loopback smoke passed; minimum/wide Chat and Capabilities visual QA passed; and `git diff --check` passed.
 
 Final post-v2 gate: a clean Visual Studio 2022 Release rebuild and Release CTest passed 5/5; Debug build and Debug CTest passed 5/5. The fresh staged EngCoder.exe is 5,123,072 bytes (4.88 MiB); the optional compact native host is 286,208 bytes, for a 5,409,280-byte staged total. The base executable passed the 100 MiB footprint check.
+
+### Unified composer capability routing
+
+- Audited the current surface against the unified-workbench brief and recorded the remaining work in `docs/UNIFIED_WORKBENCH_QUEUE.md`.
+- Made the composer action automatic by default. Natural requests now classify and dispatch text/writing, supporting-language code help, repository build/test work, image generation, audio/music generation, and tools without requiring a top-level mode change.
+- Moved the plain-language `Action` override beside Send. Manual selection remains authoritative; choosing a specific action does not silently fall through to a different class of work.
+- Kept image, audio, text, coding, project, and tool requests inside the same conversation and existing unified provider contract. Repository requests ask for a folder only when one is actually needed.
+- Expanded task analysis and routing beyond C++ to common supporting languages, while retaining the stricter C++23 capability path where appropriate. Image and audio/music now have first-class task kinds and capability requirements.
+- Added regression coverage for natural image/audio prompts, repository build/test intent, supporting-language debugging, concise composer controls, and automatic action dispatch.
+- Reworked the responsive composer geometry so the Action selector remains visible at minimum size without crowding the AI controls. Corrected combo item sizing and shortened the empty reply selector after autonomous minimum/wide visual QA.
+
+Verification for this checkpoint: clean Visual Studio 2022 Release build passed; Release CTest passed 5/5; Debug build and Debug CTest passed 5/5; the base-footprint test passed; minimum and wide dark-interface screenshots were captured and inspected; and `git diff --check` passed.

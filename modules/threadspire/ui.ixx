@@ -63,11 +63,12 @@ private:
     };
 
     enum class WorkspaceTask {
+        automatic,
         ask,
         code_help,
         repository,
         image,
-        speech,
+        audio,
         tool,
     };
 
@@ -223,8 +224,12 @@ private:
     [[nodiscard]] models::ModelRegistry runtime_model_snapshot() const;
     [[nodiscard]] std::optional<models::ModelProfile> best_coding_model() const;
     [[nodiscard]] WorkspaceTask workspace_task() const noexcept;
+    [[nodiscard]] WorkspaceTask effective_workspace_task(std::string_view prompt) const;
     [[nodiscard]] bool workspace_coding_mode() const;
     [[nodiscard]] bool model_supports_workspace_task(const models::ModelProfile& model) const noexcept;
+    [[nodiscard]] bool model_supports_workspace_task(
+        const models::ModelProfile& model,
+        WorkspaceTask task) const noexcept;
     [[nodiscard]] std::optional<std::string> selected_model_id() const;
     [[nodiscard]] bool source_accepts(const models::ModelProfile& model) const noexcept;
     void apply_source_filter(models::ModelRegistry& registry) const;

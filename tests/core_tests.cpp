@@ -49,6 +49,24 @@ void test_task_analyzer_fast_path() {
             "short explanation should avoid deep planning");
     require(analysis.kind == threadspire::ai::routing::TaskKind::explanation,
             "RAII prompt should be an explanation");
+
+    const auto image = analyzer.analyze("Generate an image of an eagle editing C++ code.");
+    require(image.kind == threadspire::ai::routing::TaskKind::image_generation &&
+                std::ranges::find(image.required_capabilities, "image") !=
+                    image.required_capabilities.end(),
+            "natural image requests must route to the image specialist");
+    const auto audio = analyzer.analyze("Create background music matching this scene.");
+    require(audio.kind == threadspire::ai::routing::TaskKind::audio_generation &&
+                std::ranges::find(audio.required_capabilities, "audio") !=
+                    audio.required_capabilities.end(),
+            "natural music requests must route to the audio specialist");
+    const auto project = analyzer.analyze("Build and test this project, then repair every failure.");
+    require(project.kind == threadspire::ai::routing::TaskKind::repository_task &&
+                project.needs_repository && project.needs_tools,
+            "natural project requests must route to isolated repository work");
+    const auto python = analyzer.analyze("Debug this Python traceback and fix the function.");
+    require(python.kind == threadspire::ai::routing::TaskKind::code_debugging,
+            "supporting development languages must use the coding route");
 }
 
 void test_verified_calculator_avoids_models_and_training() {
@@ -1303,9 +1321,15 @@ void test_windows_ui_source_contract() {
                 ui.find("MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH") != std::string::npos &&
                 ui.find(".input_files = std::move(input_files)") != std::string::npos,
             "the primary workspace must expose an explicit synchronized runtime source and complete conversation controls");
-    require(ui.find("L\"Generate image\"") != std::string::npos &&
-                ui.find("L\"Generate speech\"") != std::string::npos &&
-                ui.find("L\"Use tools\"") != std::string::npos &&
+    require(ui.find("L\"Automatic\"") != std::string::npos &&
+                ui.find("L\"Ask or write\"") != std::string::npos &&
+                ui.find("L\"Code\"") != std::string::npos &&
+                ui.find("L\"Project\"") != std::string::npos &&
+                ui.find("L\"Image\"") != std::string::npos &&
+                ui.find("L\"Audio or music\"") != std::string::npos &&
+                ui.find("L\"Tools\"") != std::string::npos &&
+                ui.find("effective_workspace_task(prompt)") != std::string::npos &&
+                ui.find("move_first_action(id::chat_mode") != std::string::npos &&
                 ui.find("backend::UnifiedProviderRouter") != std::string::npos &&
                 ui.find("backend::ExecutionProfile::coding_agent") != std::string::npos &&
                 ui.find("backend::ExecutionProfile::long_horizon") != std::string::npos &&

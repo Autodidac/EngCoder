@@ -767,6 +767,10 @@ std::string AgentOrchestrator::skill_for(const routing::TaskAnalysis& analysis) 
         return "cpp23-generation";
     case routing::TaskKind::repository_task:
         return "cpp23-repository";
+    case routing::TaskKind::image_generation:
+        return "image-generation";
+    case routing::TaskKind::audio_generation:
+        return "audio-generation";
     case routing::TaskKind::planning:
         return "planning";
     case routing::TaskKind::translation:

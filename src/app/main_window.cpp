@@ -1451,6 +1451,10 @@ LRESULT CALLBACK page_host_subclass(
         return "cpp23-generation";
     case routing::TaskKind::repository_task:
         return "cpp23-repository";
+    case routing::TaskKind::image_generation:
+        return "image-generation";
+    case routing::TaskKind::audio_generation:
+        return "audio-generation";
     case routing::TaskKind::planning:
         return "planning";
     case routing::TaskKind::translation:
@@ -2500,22 +2504,24 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Delete chat", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_delete_session, parent);
 
-    create_control(L"STATIC", L"Task", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
+    create_control(L"STATIC", L"Action", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
     const auto mode = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_mode, parent);
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Ask / write")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Automatic")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Code help")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Ask or write")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Repository task")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Code")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Generate image")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Project")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Generate speech")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Image")));
     static_cast<void>(::SendMessageW(
-        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Use tools")));
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Audio or music")));
+    static_cast<void>(::SendMessageW(
+        mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
     create_control(L"STATIC", L"AI access", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
@@ -2580,7 +2586,11 @@ void MainWindow::create_chat_page() {
         reply,
         CB_ADDSTRING,
         0,
-        reinterpret_cast<LPARAM>(L"No replies yet")));
+        reinterpret_cast<LPARAM>(L"Replies")));
+    static_cast<void>(::SendMessageW(
+        reply, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), scaled(30, dpi_)));
+    static_cast<void>(::SendMessageW(
+        reply, CB_SETITEMHEIGHT, 0, scaled(30, dpi_)));
     create_control(
         L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_copy, parent);
@@ -3362,11 +3372,8 @@ void MainWindow::layout_controls() {
         row);
 
     const auto workspace_top = row + gap;
+    ::ShowWindow(control(id::chat_mode_label), SW_HIDE);
     auto workspace_x = 0;
-    move_control(control(id::chat_mode_label), workspace_x, workspace_top, scaled(40, dpi_), row);
-    workspace_x += scaled(44, dpi_);
-    move_control(control(id::chat_mode), workspace_x, workspace_top, scaled(175, dpi_), row + scaled(160, dpi_));
-    workspace_x += scaled(175, dpi_) + gap;
     move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(75, dpi_), row);
     workspace_x += scaled(79, dpi_);
     move_control(control(id::chat_source), workspace_x, workspace_top, scaled(220, dpi_), row + scaled(120, dpi_));
@@ -3438,7 +3445,7 @@ void MainWindow::layout_controls() {
     const auto conversation_width = width - sidebar_width - gap;
     const auto sidebar_x = conversation_width + gap;
     const auto compact_actions = conversation_width < scaled(550, dpi_);
-    const auto compact_bottom_actions = conversation_width < scaled(560, dpi_);
+    const auto compact_bottom_actions = conversation_width < scaled(850, dpi_);
     const auto compact_vertical = height < scaled(760, dpi_);
     const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
     const auto action_y = height - action_block_height;
@@ -3486,7 +3493,10 @@ void MainWindow::layout_controls() {
             scaled(140, dpi_),
             conversation_width - scaled(62 + 62 + 70, dpi_) - gap * 3);
         const auto move_first_row = [&](const int identifier, const int control_width) {
-            move_control(control(identifier), review_x, first_row_y, control_width, row);
+            const auto control_height = identifier == id::chat_turn
+                ? row + scaled(220, dpi_)
+                : row;
+            move_control(control(identifier), review_x, first_row_y, control_width, control_height);
             review_x += control_width + gap;
         };
         move_first_row(id::chat_turn, selector_width);
@@ -3512,7 +3522,10 @@ void MainWindow::layout_controls() {
             scaled(180, dpi_));
         auto review_x = 0;
         const auto move_review_action = [&](const int identifier, const int control_width) {
-            move_control(control(identifier), review_x, review_y, control_width, row);
+            const auto control_height = identifier == id::chat_turn
+                ? row + scaled(220, dpi_)
+                : row;
+            move_control(control(identifier), review_x, review_y, control_width, control_height);
             review_x += control_width + gap;
         };
         move_review_action(id::chat_turn, reply_selector_width);
@@ -3528,19 +3541,19 @@ void MainWindow::layout_controls() {
         control(id::chat_prompt_label),
         0,
         prompt_label_y,
-        scaled(70, dpi_),
+        scaled(140, dpi_),
         row);
     move_control(
         control(id::chat_include_context),
-        scaled(74, dpi_),
+        scaled(144, dpi_),
         prompt_label_y,
         scaled(270, dpi_),
         row);
     move_control(
         control(id::chat_attachment_status),
-        scaled(348, dpi_),
+        scaled(418, dpi_),
         prompt_label_y,
-        std::max(1, conversation_width - scaled(348, dpi_)),
+        std::max(1, conversation_width - scaled(418, dpi_)),
         row);
     move_control(
         control(id::chat_prompt),
@@ -3552,12 +3565,16 @@ void MainWindow::layout_controls() {
     if (compact_bottom_actions) {
         auto action_x = 0;
         const auto move_first_action = [&](const int identifier, const int control_width) {
-            move_control(control(identifier), action_x, action_y, control_width, row);
+            const auto control_height = identifier == id::chat_mode
+                ? row + scaled(220, dpi_)
+                : row;
+            move_control(control(identifier), action_x, action_y, control_width, control_height);
             action_x += control_width + gap;
         };
-        move_first_action(id::chat_send, scaled(110, dpi_));
-        move_first_action(id::chat_stop, scaled(82, dpi_));
-        move_first_action(id::chat_clear, scaled(110, dpi_));
+        move_first_action(id::chat_mode, scaled(230, dpi_));
+        move_first_action(id::chat_send, scaled(100, dpi_));
+        move_first_action(id::chat_stop, scaled(75, dpi_));
+        move_first_action(id::chat_clear, scaled(100, dpi_));
         action_x = 0;
         const auto second_action_y = action_y + row + gap;
         const auto move_second_action = [&](const int identifier, const int control_width) {
@@ -3571,14 +3588,18 @@ void MainWindow::layout_controls() {
     } else {
         auto action_x = 0;
         const auto move_workspace_action = [&](const int identifier, const int control_width) {
-            move_control(control(identifier), action_x, action_y, control_width, row);
+            const auto control_height = identifier == id::chat_mode
+                ? row + scaled(220, dpi_)
+                : row;
+            move_control(control(identifier), action_x, action_y, control_width, control_height);
             action_x += control_width + gap;
         };
-        move_workspace_action(id::chat_send, scaled(110, dpi_));
-        move_workspace_action(id::chat_stop, scaled(82, dpi_));
-        move_workspace_action(id::chat_clear, scaled(105, dpi_));
-        move_workspace_action(id::chat_attach, scaled(120, dpi_));
-        move_workspace_action(id::chat_open_output, scaled(130, dpi_));
+        move_workspace_action(id::chat_mode, scaled(240, dpi_));
+        move_workspace_action(id::chat_send, scaled(100, dpi_));
+        move_workspace_action(id::chat_stop, scaled(75, dpi_));
+        move_workspace_action(id::chat_clear, scaled(100, dpi_));
+        move_workspace_action(id::chat_attach, scaled(115, dpi_));
+        move_workspace_action(id::chat_open_output, scaled(125, dpi_));
         move_control(control(id::chat_hint), action_x, action_y,
             std::max(1, conversation_width - action_x), row);
     }
@@ -4702,33 +4723,36 @@ void MainWindow::update_workspace_mode() {
     const auto task = workspace_task();
     const auto label = [&]() -> const wchar_t* {
         switch (task) {
-        case WorkspaceTask::ask: return L"Prompt";
-        case WorkspaceTask::code_help: return L"Code question or requested change";
-        case WorkspaceTask::repository: return L"Repository task";
-        case WorkspaceTask::image: return L"Image prompt";
-        case WorkspaceTask::speech: return L"Text to speak";
-        case WorkspaceTask::tool: return L"Tool task";
+        case WorkspaceTask::automatic: return L"Message";
+        case WorkspaceTask::ask: return L"Message";
+        case WorkspaceTask::code_help: return L"Code request";
+        case WorkspaceTask::repository: return L"Project request";
+        case WorkspaceTask::image: return L"Image description";
+        case WorkspaceTask::audio: return L"Audio or music";
+        case WorkspaceTask::tool: return L"Tool request";
         }
         return L"Prompt";
     }();
     const auto action = [&]() -> const wchar_t* {
         switch (task) {
+        case WorkspaceTask::automatic: return L"Send";
         case WorkspaceTask::ask: return L"Send";
         case WorkspaceTask::code_help: return L"Ask";
         case WorkspaceTask::repository: return L"Run";
         case WorkspaceTask::image: return L"Create image";
-        case WorkspaceTask::speech: return L"Create audio";
+        case WorkspaceTask::audio: return L"Create audio";
         case WorkspaceTask::tool: return L"Run tool";
         }
         return L"Send";
     }();
     const auto result_label = [&]() -> const wchar_t* {
         switch (task) {
+        case WorkspaceTask::automatic:
         case WorkspaceTask::ask:
         case WorkspaceTask::code_help: return L"Conversation";
         case WorkspaceTask::repository: return L"Repository run";
         case WorkspaceTask::image:
-        case WorkspaceTask::speech: return L"Generated result";
+        case WorkspaceTask::audio: return L"Generated result";
         case WorkspaceTask::tool: return L"Tool result";
         }
         return L"Conversation";
@@ -4738,7 +4762,9 @@ void MainWindow::update_workspace_mode() {
         label);
     set_control_text(id::chat_response_label, result_label);
     set_control_text(id::chat_send, action);
-    set_status(L"Task changed. EngCoder updated the available AI choices.");
+    set_status(task == WorkspaceTask::automatic
+        ? L"Automatic action selection is on. EngCoder will understand each message."
+        : L"Action selected. EngCoder updated the available AI choices.");
     refresh_model_selectors();
     layout_controls();
 }
@@ -5456,7 +5482,38 @@ void MainWindow::open_local_ai_page() {
 MainWindow::WorkspaceTask MainWindow::workspace_task() const noexcept {
     const auto selection = static_cast<int>(::SendMessageW(
         control(id::chat_mode), CB_GETCURSEL, 0, 0));
-    return static_cast<WorkspaceTask>(std::clamp(selection, 0, 5));
+    return static_cast<WorkspaceTask>(std::clamp(selection, 0, 6));
+}
+
+MainWindow::WorkspaceTask MainWindow::effective_workspace_task(
+    const std::string_view prompt) const {
+    const auto selected = workspace_task();
+    if (selected != WorkspaceTask::automatic) {
+        return selected;
+    }
+
+    const auto analysis = routing::TaskAnalyzer{}.analyze(prompt);
+    switch (analysis.kind) {
+    case routing::TaskKind::image_generation:
+        return WorkspaceTask::image;
+    case routing::TaskKind::audio_generation:
+        return WorkspaceTask::audio;
+    case routing::TaskKind::repository_task:
+        return WorkspaceTask::repository;
+    case routing::TaskKind::code_generation:
+    case routing::TaskKind::code_debugging:
+        return WorkspaceTask::code_help;
+    case routing::TaskKind::tool_action:
+        return WorkspaceTask::tool;
+    case routing::TaskKind::conversation:
+    case routing::TaskKind::calculation:
+    case routing::TaskKind::explanation:
+    case routing::TaskKind::transformation:
+    case routing::TaskKind::translation:
+    case routing::TaskKind::planning:
+        return WorkspaceTask::ask;
+    }
+    return WorkspaceTask::ask;
 }
 
 bool MainWindow::workspace_coding_mode() const {
@@ -5464,11 +5521,20 @@ bool MainWindow::workspace_coding_mode() const {
     return task == WorkspaceTask::code_help || task == WorkspaceTask::repository;
 }
 
-bool MainWindow::model_supports_workspace_task(const models::ModelProfile& model) const noexcept {
-    switch (workspace_task()) {
+bool MainWindow::model_supports_workspace_task(
+    const models::ModelProfile& model) const noexcept {
+    return model_supports_workspace_task(model, workspace_task());
+}
+
+bool MainWindow::model_supports_workspace_task(
+    const models::ModelProfile& model,
+    const WorkspaceTask task) const noexcept {
+    switch (task) {
+    case WorkspaceTask::automatic:
+        return true;
     case WorkspaceTask::image:
         return models::has_capability(model, "image") || models::has_capability(model, "image-generation");
-    case WorkspaceTask::speech:
+    case WorkspaceTask::audio:
         return models::has_capability(model, "audio") || models::has_capability(model, "speech") ||
                models::has_capability(model, "audio-generation");
     case WorkspaceTask::repository:
@@ -5481,6 +5547,7 @@ bool MainWindow::model_supports_workspace_task(const models::ModelProfile& model
         return models::has_capability(model, "chat") || models::has_capability(model, "english");
     }
     return false;
+
 }
 
 std::optional<std::string> MainWindow::selected_model_id() const {
@@ -5711,58 +5778,124 @@ void MainWindow::preview_route() {
         return;
     }
 
+    const auto task = effective_workspace_task(prompt);
     auto snapshot = runtime_model_snapshot();
     apply_model_choice_filter(snapshot);
+    for (auto& model : snapshot.models()) {
+        model.enabled = model.enabled && model_supports_workspace_task(model, task);
+    }
 
     routing::TaskAnalyzer analyzer;
     auto analysis = analyzer.analyze(prompt);
-    if (workspace_coding_mode()) {
-        analysis.kind = routing::TaskKind::code_generation;
-        analysis.tier = std::max(
-            analysis.tier,
-            routing::ComplexityTier::fast);
-        analysis.risk = std::max(analysis.risk, 0.22);
-        if (std::ranges::find(analysis.required_capabilities, "cpp23") ==
+    const auto add_capability = [&analysis](std::string capability) {
+        if (std::ranges::find(analysis.required_capabilities, capability) ==
             analysis.required_capabilities.end()) {
-            analysis.required_capabilities.push_back("cpp23");
+            analysis.required_capabilities.push_back(std::move(capability));
         }
-    }
-
-    if (workspace_task() == WorkspaceTask::tool) {
+    };
+    switch (task) {
+    case WorkspaceTask::automatic:
+    case WorkspaceTask::ask:
+        break;
+    case WorkspaceTask::code_help:
+        analysis.kind = routing::TaskKind::code_generation;
+        analysis.tier = std::max(analysis.tier, routing::ComplexityTier::fast);
+        analysis.risk = std::max(analysis.risk, 0.22);
+        add_capability("code");
+        break;
+    case WorkspaceTask::repository:
+        analysis.kind = routing::TaskKind::repository_task;
+        analysis.tier = routing::ComplexityTier::deep;
+        analysis.needs_repository = true;
+        analysis.needs_tools = true;
+        add_capability("code");
+        add_capability("repository");
+        break;
+    case WorkspaceTask::image:
+        analysis.kind = routing::TaskKind::image_generation;
+        analysis.tier = routing::ComplexityTier::standard;
+        analysis.estimated_output_tokens = 0U;
+        add_capability("image");
+        break;
+    case WorkspaceTask::audio:
+        analysis.kind = routing::TaskKind::audio_generation;
+        analysis.tier = routing::ComplexityTier::standard;
+        analysis.estimated_output_tokens = 0U;
+        add_capability("audio");
+        break;
+    case WorkspaceTask::tool:
         analysis.kind = routing::TaskKind::tool_action;
         analysis.needs_tools = true;
-        if (std::ranges::find(analysis.required_capabilities, "tools") ==
-            analysis.required_capabilities.end()) {
-            analysis.required_capabilities.push_back("tools");
-        }
+        add_capability("tools");
+        break;
     }
+
     routing::AdaptiveRouter router;
     const auto plan = router.plan(analysis, snapshot);
     set_control_text(id::chat_plan_label, L"How it would run");
     set_control_text(id::chat_plan, format_plan(plan, &snapshot));
     set_status(plan.stages.empty()
-        ? L"No responding model in the selected AI source can handle this message"
-        : L"Choices checked; no AI was run");
+        ? L"No responding AI in the selected source can handle this action"
+        : L"Action and AI choices checked; nothing was run");
 }
 
 void MainWindow::send_prompt() {
-    switch (workspace_task()) {
+    const auto prompt = narrow(control_text(id::chat_prompt));
+    if (prompt.empty()) {
+        set_status(L"Enter a message first");
+        return;
+    }
+
+    const auto selected_task = workspace_task();
+    const auto task = effective_workspace_task(prompt);
+    if (task == WorkspaceTask::repository &&
+        control_text(id::chat_repository).empty()) {
+        const auto selected = choose_directory(L"Choose the project folder for this request");
+        if (!selected.has_value()) {
+            set_status(L"Project work needs a folder. The message was not sent.");
+            return;
+        }
+        set_control_text(id::chat_repository, selected->wstring());
+    }
+
+    const auto automatic_override =
+        selected_task == WorkspaceTask::automatic && task != WorkspaceTask::automatic;
+    if (automatic_override) {
+        static_cast<void>(::SendMessageW(
+            control(id::chat_mode),
+            CB_SETCURSEL,
+            static_cast<WPARAM>(task),
+            0));
+    }
+
+    switch (task) {
     case WorkspaceTask::repository:
         run_coding_agent();
-        return;
+        break;
     case WorkspaceTask::image:
         run_media_request(backend::MediaKind::image);
-        return;
-    case WorkspaceTask::speech:
+        break;
+    case WorkspaceTask::audio:
         run_media_request(backend::MediaKind::speech);
-        return;
+        break;
     case WorkspaceTask::code_help:
         send_request(RequestSurface::workspace_coding);
-        return;
+        break;
     case WorkspaceTask::tool:
     case WorkspaceTask::ask:
+    case WorkspaceTask::automatic:
         send_request(RequestSurface::assistant);
-        return;
+        break;
+    }
+
+    if (automatic_override) {
+        static_cast<void>(::SendMessageW(
+            control(id::chat_mode),
+            CB_SETCURSEL,
+            static_cast<WPARAM>(WorkspaceTask::automatic),
+            0));
+        refresh_model_selectors();
+        layout_controls();
     }
 }
 
@@ -5776,7 +5909,7 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
     if (prompt.empty()) {
         set_status(kind == backend::MediaKind::image
             ? L"Enter an image prompt first"
-            : L"Enter text to speak first");
+            : L"Enter an audio or music description first");
         return;
     }
 
@@ -5812,7 +5945,7 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
         }
     }
     if (selected == nullptr) {
-        const auto capability = kind == backend::MediaKind::image ? L"image" : L"speech/audio";
+        const auto capability = kind == backend::MediaKind::image ? L"image" : L"audio or music";
         const auto error = L"No ready " + std::wstring(capability) +
             L" model is configured. Add an OpenAI-compatible endpoint in AI & Tools and mark that ability.";
         set_control_text(id::chat_response, error);
@@ -6266,7 +6399,7 @@ void MainWindow::update_response_turn_controls() {
             selector,
             CB_ADDSTRING,
             0,
-            reinterpret_cast<LPARAM>(L"No replies yet")));
+            reinterpret_cast<LPARAM>(L"Replies")));
         static_cast<void>(::SendMessageW(selector, CB_SETCURSEL, 0, 0));
         selected_response_turn_index_ = std::string::npos;
     } else {
