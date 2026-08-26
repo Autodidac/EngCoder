@@ -457,6 +457,84 @@ void test_interactive_priority_uses_nested_leases() {
     std::filesystem::remove_all(root);
 }
 
+void test_improvement_session_is_bounded_persistent_and_recoverable() {
+    const auto root = temporary_root();
+    {
+        threadspire::ai::learning::LearningSettings settings;
+        settings.python_executable = root / "missing-python.exe";
+        settings.worker_script = root / "missing-worker.py";
+        settings.state_root = root;
+        settings.base_model = "threadspire://coder";
+        settings.maximum_improvement_session = std::chrono::hours(12);
+        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+        const auto automatic = service.improvement_session_snapshot();
+        require(automatic.phase == threadspire::ai::learning::ImprovementSessionPhase::running &&
+                    automatic.budget == std::chrono::hours(12) && automatic.remaining.count() > 0,
+                "a fresh install must start one automatic improvement session with a hard 12-hour cap");
+        service.pause(true);
+        const auto paused = service.improvement_session_snapshot();
+        require(paused.phase == threadspire::ai::learning::ImprovementSessionPhase::paused &&
+                    paused.remaining.count() > 0 && service.paused(),
+                "pausing must retain the unused session time and stop new background work");
+        service.request_stop();
+    }
+    require(std::filesystem::is_regular_file(root / "state" / "improvement-session.ini"),
+            "bounded improvement-session state must be persisted atomically");
+    {
+        threadspire::ai::learning::LearningSettings settings;
+        settings.python_executable = root / "missing-python.exe";
+        settings.worker_script = root / "missing-worker.py";
+        settings.state_root = root;
+        settings.base_model = "threadspire://coder";
+        settings.maximum_improvement_session = std::chrono::hours(12);
+        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+        require(service.improvement_session_snapshot().phase ==
+                    threadspire::ai::learning::ImprovementSessionPhase::paused,
+                "a paused improvement session must remain paused after restart");
+        require(service.resume_improvement_session() && !service.paused(),
+                "a paused session must resume with its saved time rather than resetting its budget");
+        service.start_improvement_session(std::chrono::hours(24));
+        require(service.improvement_session_snapshot().budget == std::chrono::hours(12),
+                "even a larger request must be clamped to the hard 12-hour limit");
+        service.cancel_improvement_session();
+        require(service.improvement_session_snapshot().phase ==
+                    threadspire::ai::learning::ImprovementSessionPhase::ended && service.paused(),
+                "ending a session must stop new work while retaining durable evidence and checkpoints");
+        service.request_stop();
+    }
+    {
+        threadspire::ai::learning::LearningSettings settings;
+        settings.python_executable = root / "missing-python.exe";
+        settings.worker_script = root / "missing-worker.py";
+        settings.state_root = root;
+        settings.base_model = "threadspire://coder";
+        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+        require(service.improvement_session_snapshot().phase ==
+                    threadspire::ai::learning::ImprovementSessionPhase::ended,
+                "an ended session must not silently restart after process restart");
+        service.request_stop();
+    }
+    {
+        std::ofstream corrupt(root / "state" / "improvement-session.ini", std::ios::trunc);
+        corrupt << "phase=running\nbudget_ms=not-a-number\n";
+    }
+    {
+        threadspire::ai::learning::LearningSettings settings;
+        settings.python_executable = root / "missing-python.exe";
+        settings.worker_script = root / "missing-worker.py";
+        settings.state_root = root;
+        settings.base_model = "threadspire://coder";
+        settings.maximum_improvement_session = std::chrono::hours(12);
+        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+        const auto recovered = service.improvement_session_snapshot();
+        require(recovered.phase == threadspire::ai::learning::ImprovementSessionPhase::running &&
+                    recovered.budget == std::chrono::hours(12) && recovered.remaining.count() > 0,
+                "a malformed improvement-session file must recover to one bounded default session");
+        service.request_stop();
+    }
+    std::filesystem::remove_all(root);
+}
+
 void test_episode_dedup_and_negative_evidence() {
     const auto root = temporary_root();
     threadspire::ai::memory::EpisodeStore store(root / "episodes.jsonl");
@@ -1474,6 +1552,16 @@ void test_windows_ui_source_contract() {
                 learning_service.find("contains_positive_prompt") != std::string::npos &&
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
             "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
+    require(ui.find("Session time limit") != std::string::npos &&
+                ui.find("12 hours — maximum") != std::string::npos &&
+                ui.find("Resume saved session") != std::string::npos &&
+                ui.find("Show backup example controls") != std::string::npos &&
+                ui.find("At pause, foreground use, or the limit") != std::string::npos &&
+                ui.find("WHAT CAN CHANGE") != std::string::npos &&
+                learning_service.find("improvement-session.ini") != std::string::npos &&
+                learning_service.find("std::clamp(budget, std::chrono::minutes(1), maximum)") != std::string::npos &&
+                learning_service.find("return !queue_.empty() && !paused() && !interactive_busy()") != std::string::npos,
+            "automatic improvement must expose and enforce a persistent 12-hour-capped session with plain pause, resume, end, engine-boundary, and foreground-priority status");
 
     const auto foundry = read_text_file(source / "src/learning/piggyback_foundry.cpp");
     require(foundry.find("std::launch::async") != std::string::npos &&
@@ -1739,7 +1827,7 @@ void test_windows_ui_source_contract() {
                 ui.find("Held out from training; used only to check the candidate") != std::string::npos &&
                 ui.find("No prompt or answer below is shortened") != std::string::npos &&
                 ui.find("id::learning_library_filter") != std::string::npos &&
-                ui.find("width >= scaled(980, dpi_)") != std::string::npos,
+                ui.find("width >= scaled(760, dpi_)") != std::string::npos,
             "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");
     require(ui.find("Permanent user memory — separate from weights") != std::string::npos &&
                 ui.find("user_memory_store_.remember_from_prompt(command.subject)") != std::string::npos &&
@@ -2036,6 +2124,7 @@ int main() {
         test_expert_lifecycle_thresholds();
         test_learning_service_stores_before_training();
         test_interactive_priority_uses_nested_leases();
+        test_improvement_session_is_bounded_persistent_and_recoverable();
         test_episode_dedup_and_negative_evidence();
         test_learning_preview_blocks_errors_and_repetition();
         test_episode_index_recovers_after_restart();

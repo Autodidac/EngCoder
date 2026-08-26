@@ -150,6 +150,8 @@ For the EngCoder internal model, each newly admitted independently verified epis
 
 The **Learning** page exposes the actual pipeline rather than only the evidence collector: pending evidence per skill, queued weight updates, the active candidate, trainer phase and step, loss, verified-token count, elapsed time, measured ETA, progress-file path, and the live trainer-log tail.
 
+Automatic improvement is a persistent, bounded session—not an unlimited background switch. A fresh state starts with a visible 12-hour maximum; shorter 1, 4, or 8-hour budgets are available. Pause and restart preserve the exact remaining time, End remains ended after reopening, Chat preempts learning, and all transitions retain approved evidence and safe checkpoints without replacing the working model. Manual example-source controls are hidden behind **Show backup example controls**; the default page keeps session state, permanent memory, current activity, and the complete searchable Training Library visible.
+
 ## Internal-output quality boundary
 
 The Small model is intentionally compact and begins undertrained. EngCoder therefore applies exact byte n-gram blocking during generation and a conservative structural gate before an internal draft reaches the UI. A repetitive or structurally corrupt draft is retried once with greedy decoding. If it still fails, the draft is discarded as `low_confidence`; Automatic source mode can move the request to another eligible connected local model.

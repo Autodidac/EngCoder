@@ -334,6 +334,20 @@ std::string_view to_string(const LearningJobState state) noexcept {
     return "queued";
 }
 
+std::string_view to_string(const ImprovementSessionPhase phase) noexcept {
+    switch (phase) {
+    case ImprovementSessionPhase::running:
+        return "running";
+    case ImprovementSessionPhase::paused:
+        return "paused";
+    case ImprovementSessionPhase::ended:
+        return "ended";
+    case ImprovementSessionPhase::time_limit_reached:
+        return "time-limit-reached";
+    }
+    return "ended";
+}
+
 ContinualLearningService::ContinualLearningService(LearningSettings settings)
     : settings_(std::move(settings)),
       memory_store_(settings_.state_root / "memory" / "episodes.jsonl"),
@@ -344,6 +358,7 @@ ContinualLearningService::ContinualLearningService(LearningSettings settings)
       interactive_leases_(settings_.initial_interactive_priority ? 1U : 0U) {
     std::filesystem::create_directories(settings_.state_root / "jobs");
     std::filesystem::create_directories(settings_.state_root / "control");
+    load_improvement_session();
     expert_registry_.load();
     candidate_registry_.load();
     try {
@@ -589,9 +604,103 @@ void ContinualLearningService::queue_request(LearningRequest request) {
 }
 
 void ContinualLearningService::pause(const bool value) {
-    paused_.store(value, std::memory_order_release);
+    if (value) {
+        const auto phase = improvement_session_phase_.load(std::memory_order_acquire);
+        if (phase == ImprovementSessionPhase::running) {
+            const auto now = memory::now_unix_ms();
+            const auto deadline = improvement_session_deadline_unix_ms_.load(std::memory_order_acquire);
+            improvement_session_remaining_ms_.store(
+                std::max<std::int64_t>(0, deadline - now),
+                std::memory_order_release);
+            improvement_session_phase_.store(ImprovementSessionPhase::paused, std::memory_order_release);
+        }
+        paused_.store(true, std::memory_order_release);
+        persist_improvement_session();
+        publish_control_files();
+        condition_.notify_all();
+        return;
+    }
+    static_cast<void>(resume_improvement_session());
+}
+
+void ContinualLearningService::start_improvement_session(const std::chrono::minutes budget) {
+    const auto maximum = std::max(std::chrono::minutes(1), settings_.maximum_improvement_session);
+    const auto bounded = std::clamp(budget, std::chrono::minutes(1), maximum);
+    const auto now = memory::now_unix_ms();
+    const auto budget_ms = std::chrono::duration_cast<std::chrono::milliseconds>(bounded).count();
+    improvement_session_budget_ms_.store(budget_ms, std::memory_order_release);
+    improvement_session_remaining_ms_.store(budget_ms, std::memory_order_release);
+    improvement_session_started_unix_ms_.store(now, std::memory_order_release);
+    improvement_session_deadline_unix_ms_.store(now + budget_ms, std::memory_order_release);
+    improvement_session_phase_.store(ImprovementSessionPhase::running, std::memory_order_release);
+    paused_.store(false, std::memory_order_release);
+    persist_improvement_session();
     publish_control_files();
     condition_.notify_all();
+}
+
+bool ContinualLearningService::resume_improvement_session() {
+    if (improvement_session_phase_.load(std::memory_order_acquire) !=
+        ImprovementSessionPhase::paused) {
+        return false;
+    }
+    const auto remaining = improvement_session_remaining_ms_.load(std::memory_order_acquire);
+    if (remaining <= 0) {
+        improvement_session_phase_.store(
+            ImprovementSessionPhase::time_limit_reached,
+            std::memory_order_release);
+        paused_.store(true, std::memory_order_release);
+        persist_improvement_session();
+        publish_control_files();
+        return false;
+    }
+    const auto now = memory::now_unix_ms();
+    improvement_session_deadline_unix_ms_.store(now + remaining, std::memory_order_release);
+    improvement_session_phase_.store(ImprovementSessionPhase::running, std::memory_order_release);
+    paused_.store(false, std::memory_order_release);
+    persist_improvement_session();
+    publish_control_files();
+    condition_.notify_all();
+    return true;
+}
+
+void ContinualLearningService::cancel_improvement_session() {
+    improvement_session_phase_.store(ImprovementSessionPhase::ended, std::memory_order_release);
+    improvement_session_remaining_ms_.store(0, std::memory_order_release);
+    improvement_session_deadline_unix_ms_.store(0, std::memory_order_release);
+    paused_.store(true, std::memory_order_release);
+    persist_improvement_session();
+    publish_control_files();
+    condition_.notify_all();
+}
+
+ImprovementSessionSnapshot ContinualLearningService::improvement_session_snapshot() {
+    auto phase = improvement_session_phase_.load(std::memory_order_acquire);
+    const auto now = memory::now_unix_ms();
+    auto remaining = improvement_session_remaining_ms_.load(std::memory_order_acquire);
+    const auto deadline = improvement_session_deadline_unix_ms_.load(std::memory_order_acquire);
+    if (phase == ImprovementSessionPhase::running) {
+        remaining = std::max<std::int64_t>(0, deadline - now);
+        if (remaining == 0) {
+            improvement_session_phase_.store(
+                ImprovementSessionPhase::time_limit_reached,
+                std::memory_order_release);
+            improvement_session_remaining_ms_.store(0, std::memory_order_release);
+            paused_.store(true, std::memory_order_release);
+            phase = ImprovementSessionPhase::time_limit_reached;
+            persist_improvement_session();
+            publish_control_files();
+            condition_.notify_all();
+        }
+    }
+    return ImprovementSessionSnapshot{
+        .phase = phase,
+        .budget = std::chrono::milliseconds(
+            std::max<std::int64_t>(0, improvement_session_budget_ms_.load(std::memory_order_acquire))),
+        .remaining = std::chrono::milliseconds(std::max<std::int64_t>(0, remaining)),
+        .started_unix_ms = improvement_session_started_unix_ms_.load(std::memory_order_acquire),
+        .deadline_unix_ms = deadline,
+    };
 }
 
 void ContinualLearningService::set_interactive_busy(const bool value) {
@@ -704,7 +813,13 @@ bool ContinualLearningService::rollback_skill(const std::string_view skill) {
 }
 
 bool ContinualLearningService::paused() const noexcept {
-    return paused_.load(std::memory_order_acquire);
+    if (paused_.load(std::memory_order_acquire) ||
+        improvement_session_phase_.load(std::memory_order_acquire) !=
+            ImprovementSessionPhase::running) {
+        return true;
+    }
+    const auto deadline = improvement_session_deadline_unix_ms_.load(std::memory_order_acquire);
+    return deadline <= 0 || memory::now_unix_ms() >= deadline;
 }
 
 bool ContinualLearningService::interactive_busy() const noexcept {
@@ -821,8 +936,7 @@ void ContinualLearningService::worker_loop(const std::stop_token stop_token) {
         {
             std::unique_lock lock(mutex_);
             condition_.wait(lock, stop_token, [this] {
-                return !queue_.empty() && !paused_.load(std::memory_order_acquire) &&
-                       !interactive_busy();
+                return !queue_.empty() && !paused() && !interactive_busy();
             });
             if (stop_token.stop_requested()) {
                 break;
@@ -1988,6 +2102,86 @@ void ContinualLearningService::commit_candidate(const CandidateRecord& candidate
         *existing = candidate;
     }
     candidate_registry_.save(candidate);
+}
+
+void ContinualLearningService::load_improvement_session() {
+    const auto path = settings_.state_root / "state" / "improvement-session.ini";
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        start_improvement_session(settings_.maximum_improvement_session);
+        return;
+    }
+
+    auto phase = ImprovementSessionPhase::ended;
+    std::int64_t budget_ms = 0;
+    std::int64_t remaining_ms = 0;
+    std::int64_t started_ms = 0;
+    std::int64_t deadline_ms = 0;
+    try {
+        std::string line;
+        while (std::getline(stream, line)) {
+            const auto separator = line.find('=');
+            if (separator == std::string::npos) {
+                continue;
+            }
+            const auto key = line.substr(0, separator);
+            const auto value = line.substr(separator + 1U);
+            if (key == "phase") {
+                if (value == "running") {
+                    phase = ImprovementSessionPhase::running;
+                } else if (value == "paused") {
+                    phase = ImprovementSessionPhase::paused;
+                } else if (value == "time-limit-reached") {
+                    phase = ImprovementSessionPhase::time_limit_reached;
+                } else {
+                    phase = ImprovementSessionPhase::ended;
+                }
+            } else if (key == "budget_ms") {
+                budget_ms = std::stoll(value);
+            } else if (key == "remaining_ms") {
+                remaining_ms = std::stoll(value);
+            } else if (key == "started_unix_ms") {
+                started_ms = std::stoll(value);
+            } else if (key == "deadline_unix_ms") {
+                deadline_ms = std::stoll(value);
+            }
+        }
+    } catch (...) {
+        stream.close();
+        start_improvement_session(settings_.maximum_improvement_session);
+        return;
+    }
+
+    stream.close();
+    const auto maximum_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::max(std::chrono::minutes(1), settings_.maximum_improvement_session)).count();
+    budget_ms = std::clamp<std::int64_t>(budget_ms, 1, maximum_ms);
+    remaining_ms = std::clamp<std::int64_t>(remaining_ms, 0, budget_ms);
+    const auto now = memory::now_unix_ms();
+    if (phase == ImprovementSessionPhase::running) {
+        remaining_ms = std::max<std::int64_t>(0, deadline_ms - now);
+        if (remaining_ms == 0) {
+            phase = ImprovementSessionPhase::time_limit_reached;
+        }
+    }
+    improvement_session_phase_.store(phase, std::memory_order_release);
+    improvement_session_budget_ms_.store(budget_ms, std::memory_order_release);
+    improvement_session_remaining_ms_.store(remaining_ms, std::memory_order_release);
+    improvement_session_started_unix_ms_.store(started_ms, std::memory_order_release);
+    improvement_session_deadline_unix_ms_.store(deadline_ms, std::memory_order_release);
+    paused_.store(phase != ImprovementSessionPhase::running, std::memory_order_release);
+    persist_improvement_session();
+}
+
+void ContinualLearningService::persist_improvement_session() const {
+    std::ostringstream stream;
+    stream << "phase="
+           << to_string(improvement_session_phase_.load(std::memory_order_acquire)) << '\n'
+           << "budget_ms=" << improvement_session_budget_ms_.load(std::memory_order_acquire) << '\n'
+           << "remaining_ms=" << improvement_session_remaining_ms_.load(std::memory_order_acquire) << '\n'
+           << "started_unix_ms=" << improvement_session_started_unix_ms_.load(std::memory_order_acquire) << '\n'
+           << "deadline_unix_ms=" << improvement_session_deadline_unix_ms_.load(std::memory_order_acquire) << '\n';
+    publish_file(settings_.state_root / "state" / "improvement-session.ini", stream.str());
 }
 
 void ContinualLearningService::publish_control_files() const {

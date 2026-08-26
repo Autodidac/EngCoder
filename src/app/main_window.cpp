@@ -304,6 +304,11 @@ constexpr int learning_memory_selector = 627;
 constexpr int learning_memory_editor = 628;
 constexpr int learning_memory_save = 629;
 constexpr int learning_memory_forget = 630;
+constexpr int learning_session_status = 631;
+constexpr int learning_session_label = 632;
+constexpr int learning_session_budget = 633;
+constexpr int learning_session_start = 634;
+constexpr int learning_advanced_sources = 635;
 
 constexpr int horizon_repository_label = 700;
 constexpr int horizon_repository = 701;
@@ -1169,6 +1174,32 @@ void draw_workspace_card(
     stream << L" • saved automatically • not used for answers until every check passes";
     return stream.str();
 }
+[[nodiscard]] std::wstring friendly_learning_stage(const learning::LearningJobState state) {
+    switch (state) {
+    case learning::LearningJobState::queued:
+        return L"Saved and waiting";
+    case learning::LearningJobState::waiting_for_resources:
+        return L"Waiting for safe CPU, memory, and GPU headroom";
+    case learning::LearningJobState::training_lora:
+        return L"Optional Transformers/PEFT practice copy is learning";
+    case learning::LearningJobState::training_internal:
+        return L"Built-in EngCoder practice copy is learning";
+    case learning::LearningJobState::validating:
+        return L"Independent checks are testing the practice copy";
+    case learning::LearningJobState::consolidating:
+        return L"Verified optional changes are being prepared";
+    case learning::LearningJobState::succeeded:
+        return L"Checks passed and the verified copy was promoted";
+    case learning::LearningJobState::failed:
+        return L"Checks failed; the working AI was kept";
+    case learning::LearningJobState::cancelled:
+        return L"Stopped safely; saved evidence remains";
+    case learning::LearningJobState::interrupted:
+        return L"Paused at a saved checkpoint";
+    }
+    return L"Waiting";
+}
+
 [[nodiscard]] std::wstring format_duration(const double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) {
         return L"unknown";
@@ -2019,11 +2050,13 @@ void append_training_library_file(
     }
 
     std::wostringstream summary_stream;
-    summary_stream << L"Training Library — " << visible.size() << L" shown of " << records.size()
-                   << L" records • " << training_count << L" training • " << approved_count
-                   << L" approved • " << rejected_count << L" rejected • "
-                   << superseded_count << L" superseded • "
-                   << held_out_count << L" held-out checks";
+    summary_stream << L"Training Library • " << records.size() << L" total";
+    if (visible.size() != records.size()) {
+        summary_stream << L" • " << visible.size() << L" shown";
+    }
+    summary_stream << L" • " << approved_count << L" approved • "
+                   << rejected_count << L" rejected • "
+                   << superseded_count << L" superseded";
     if (unreadable_records > 0U) {
         summary_stream << L" • " << unreadable_records << L" unreadable";
     }
@@ -3182,21 +3215,48 @@ void MainWindow::create_models_page() {
 void MainWindow::create_learning_page() {
     const auto parent = control(id::page_learning);
     create_control(
-        L"STATIC", L"Learning — automatic by default; every accepted example is visible below",
+        L"STATIC", L"Automatic improvement — time-limited and safe for the working AI",
         WS_CHILD | WS_VISIBLE, 0, id::learning_header, parent);
     create_control(
-        L"BUTTON", L"Pause background learning",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        L"STATIC", L"Improvement session is starting",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_session_status, parent);
+    create_control(
+        L"STATIC", L"Session time limit",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_session_label, parent);
+    const auto session_budget = create_control(
+        L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, id::learning_session_budget, parent);
+    for (const auto* option : {
+             L"1 hour", L"4 hours", L"8 hours", L"12 hours — maximum"}) {
+        static_cast<void>(::SendMessageW(
+            session_budget, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(option)));
+    }
+    const auto session = learning_service_->improvement_session_snapshot();
+    const auto budget_hours = std::chrono::duration_cast<std::chrono::hours>(session.budget).count();
+    const auto budget_selection = budget_hours <= 1 ? 0 : budget_hours <= 4 ? 1 : budget_hours <= 8 ? 2 : 3;
+    static_cast<void>(::SendMessageW(session_budget, CB_SETCURSEL, budget_selection, 0));
+    create_control(
+        L"BUTTON", L"Start / resume",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_session_start, parent);
+    create_control(
+        L"BUTTON", L"Pause",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_pause, parent);
     create_control(
-        L"BUTTON", L"Learn automatically while the app is idle",
+        L"BUTTON", L"End session",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_stop, parent);
+    create_control(
+        L"BUTTON", L"Create verified practice examples while the app is idle",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::learning_auto, parent);
     set_checked(id::learning_auto, automatic_training_enabled_);
     create_control(
-        L"BUTTON", L"Stop learning",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, id::learning_stop, parent);
+        L"BUTTON", L"Show backup example controls",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, id::learning_advanced_sources, parent);
 
     create_control(
         L"STATIC", L"Improve",
@@ -3262,11 +3322,11 @@ void MainWindow::create_learning_page() {
         WS_CHILD | WS_VISIBLE, 0, id::learning_piggyback_status, parent);
     create_control(
         L"STATIC",
-        L"CUSTOM TRAINING WORKFLOW\r\n"
-        L"1. Select exactly what this pass should teach. English foundation is the upgrade default.\r\n"
-        L"2. Generate examples with an external local teacher plus an independent verifier, or browse to your own JSONL and import it as trusted data.\r\n"
-        L"3. Verified evidence automatically queues a shadow update. Queue/retry can manually coalesce another update for the selected target.\r\n"
-        L"4. EngCoder evaluates the shadow candidate before promotion. Changing the target cancels only the active example pass and applies immediately to the next pass. Existing weights and accepted records are preserved.",
+        L"HOW AUTOMATIC IMPROVEMENT WORKS\r\n"
+        L"1. EngCoder keeps only approved examples and independently checked results.\r\n"
+        L"2. During the chosen time, a separate practice copy learns only while resources are safely available.\r\n"
+        L"3. Chat keeps using the last working AI; the practice copy cannot answer until every check passes.\r\n"
+        L"4. Pause, foreground work, or the time limit saves a checkpoint. Ending a session keeps all evidence and the working AI unchanged.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL,
         0,
         id::learning_policy,
@@ -3298,7 +3358,7 @@ void MainWindow::create_learning_page() {
     create_control(
         L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
-        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         0, id::learning_jobs, parent);
     create_control(
         L"STATIC", L"Current learning activity",
@@ -3339,7 +3399,7 @@ void MainWindow::create_learning_page() {
     const auto library = create_control(
         L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL |
-        ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        ES_READONLY | WS_VSCROLL,
         0, id::learning_library, parent);
     static_cast<void>(::SendMessageW(
         library,
@@ -4328,24 +4388,68 @@ void MainWindow::layout_controls() {
     auto learning_y = 0;
     move_control(control(id::learning_header), 0, learning_y, width, row);
     learning_y += row;
+    move_control(control(id::learning_session_status), 0, learning_y, width, row);
+    learning_y += row + gap;
 
-    const auto stop_width = scaled(150, dpi_);
-    const auto pause_width = scaled(255, dpi_);
-    move_control(control(id::learning_pause), 0, learning_y, pause_width, row);
+    const auto session_label_width = scaled(170, dpi_);
+    const auto session_budget_width = scaled(190, dpi_);
+    const auto session_start_width = scaled(175, dpi_);
+    const auto pause_width = scaled(120, dpi_);
+    const auto stop_width = scaled(140, dpi_);
+    auto session_x = 0;
+    move_control(control(id::learning_session_label), session_x, learning_y, session_label_width, row);
+    session_x += session_label_width + gap;
     move_control(
-        control(id::learning_auto),
-        pause_width + gap,
+        control(id::learning_session_budget),
+        session_x,
         learning_y,
-        std::max(1, width - pause_width - stop_width - gap * 2),
-        row);
+        session_budget_width,
+        row + scaled(130, dpi_));
+    session_x += session_budget_width + gap;
+    move_control(control(id::learning_session_start), session_x, learning_y, session_start_width, row);
+    session_x += session_start_width + gap;
+    move_control(control(id::learning_pause), session_x, learning_y, pause_width, row);
+    session_x += pause_width + gap;
     move_control(
         control(id::learning_stop),
-        std::max(0, width - stop_width),
+        session_x,
         learning_y,
-        stop_width,
+        std::min(stop_width, std::max(1, width - session_x)),
+        row);
+    learning_y += row + gap;
+    const auto auto_width = std::max(1, width * 58 / 100);
+    move_control(control(id::learning_auto), 0, learning_y, auto_width, row);
+    move_control(
+        control(id::learning_advanced_sources),
+        auto_width + gap,
+        learning_y,
+        std::max(1, width - auto_width - gap),
         row);
     learning_y += row + gap;
 
+    const auto advanced_sources = checked(id::learning_advanced_sources);
+    constexpr std::array advanced_source_controls{
+        id::learning_skill_label,
+        id::learning_piggyback_skill,
+        id::learning_custom_skill_label,
+        id::learning_custom_skill,
+        id::learning_count_label,
+        id::learning_piggyback_count,
+        id::learning_piggyback,
+        id::learning_build_custom,
+        id::learning_dataset_label,
+        id::learning_dataset_path,
+        id::learning_dataset_browse,
+        id::learning_dataset_import,
+        id::learning_dataset_template,
+        id::learning_piggyback_status,
+        id::learning_policy,
+    };
+    for (const auto identifier : advanced_source_controls) {
+        ::ShowWindow(control(identifier), advanced_sources ? SW_SHOW : SW_HIDE);
+    }
+
+    if (advanced_sources) {
     const auto target_label_width = scaled(112, dpi_);
     const auto custom_label_width = scaled(130, dpi_);
     const auto target_combo_width = std::clamp(
@@ -4462,7 +4566,7 @@ void MainWindow::layout_controls() {
         width,
         row);
     learning_y += row + gap;
-    const auto policy_height = scaled(124, dpi_);
+    const auto policy_height = std::max(scaled(124, dpi_), height - learning_y);
     move_control(
         control(id::learning_policy),
         0,
@@ -4470,7 +4574,26 @@ void MainWindow::layout_controls() {
         width,
         policy_height);
     learning_y += policy_height + gap;
+    }
 
+    constexpr std::array default_learning_controls{
+        id::learning_memory_header,
+        id::learning_memory_selector,
+        id::learning_memory_editor,
+        id::learning_memory_save,
+        id::learning_memory_forget,
+        id::learning_activity_header,
+        id::learning_jobs,
+        id::learning_library_header,
+        id::learning_library_filter,
+        id::learning_library_source,
+        id::learning_library_refresh,
+        id::learning_library,
+    };
+    for (const auto identifier : default_learning_controls) {
+        ::ShowWindow(control(identifier), advanced_sources ? SW_HIDE : SW_SHOW);
+    }
+    if (!advanced_sources) {
     move_control(control(id::learning_memory_header), 0, learning_y, width, row);
     learning_y += row + gap;
     const auto memory_selector_width = std::clamp(
@@ -4511,7 +4634,7 @@ void MainWindow::layout_controls() {
 
     const auto library_source_width = scaled(170, dpi_);
     const auto library_refresh_width = scaled(175, dpi_);
-    if (width >= scaled(980, dpi_)) {
+    if (width >= scaled(760, dpi_)) {
         const auto activity_width = std::max(scaled(320, dpi_), (width - gap) * 34 / 100);
         const auto library_x = activity_width + gap;
         const auto library_width = std::max(1, width - library_x);
@@ -4609,6 +4732,7 @@ void MainWindow::layout_controls() {
             library_y,
             width,
             std::max(1, height - library_y));
+    }
     }
     const auto capability_card_height = scaled(92, dpi_);
     const auto capability_half_width = (width - gap) / 2;
@@ -4944,15 +5068,44 @@ void MainWindow::handle_command(const int identifier) {
     case id::models_save:
         save_models_editor();
         break;
-    case id::learning_pause:
-        learning_service_->pause(checked(id::learning_pause));
-        if (checked(id::learning_pause)) {
-            piggyback_operation_.cancel();
-        } else if (checked(id::learning_auto)) {
-            next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    case id::learning_session_start: {
+        const auto session = learning_service_->improvement_session_snapshot();
+        if (session.phase == learning::ImprovementSessionPhase::paused &&
+            learning_service_->resume_improvement_session()) {
+            set_status(L"Improvement session resumed from its saved checkpoint and remaining time");
+        } else {
+            const auto selection = static_cast<int>(::SendMessageW(
+                control(id::learning_session_budget), CB_GETCURSEL, 0, 0));
+            constexpr std::array budgets{
+                std::chrono::hours(1), std::chrono::hours(4),
+                std::chrono::hours(8), std::chrono::hours(12)};
+            const auto index = std::clamp(selection, 0, static_cast<int>(budgets.size() - 1U));
+            learning_service_->start_improvement_session(
+                std::chrono::duration_cast<std::chrono::minutes>(budgets[static_cast<std::size_t>(index)]));
+            set_status(L"New bounded improvement session started; Chat and the working AI remain available");
+        }
+        if (checked(id::learning_auto)) {
+            next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         }
         update_learning_report();
+        break;
+    }
+    case id::learning_pause:
+        learning_service_->pause(true);
+        piggyback_operation_.cancel();
+        set_status(L"Improvement paused; accepted evidence and the latest safe checkpoint were kept");
+        update_learning_report();
+        break;
+    case id::learning_advanced_sources:
+        layout_controls();
+        ::RedrawWindow(
+            control(id::page_learning),
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        set_status(checked(id::learning_advanced_sources)
+            ? L"Backup example-source controls shown; automatic improvement remains unchanged"
+            : L"Automatic improvement, memory, activity, and the complete Training Library are visible");
         break;
     case id::learning_auto:
         automatic_training_enabled_ = checked(id::learning_auto);
@@ -7874,11 +8027,10 @@ void MainWindow::stop_training_pass() {
     if (had_foundry) {
         piggyback_operation_.cancel();
     }
-    learning_service_->pause(true);
-    set_checked(id::learning_pause, true);
+    learning_service_->cancel_improvement_session();
     set_status(had_foundry
-        ? L"Stopping the current example pass; weight training pauses at its next safe checkpoint"
-        : L"Background weight training is paused; accepted evidence and checkpoints remain intact");
+        ? L"Ending the session; the active practice pass is stopping at a safe checkpoint"
+        : L"Improvement session ended; accepted evidence, checkpoints, and the working AI were kept");
     update_learning_report();
 }
 
@@ -9117,6 +9269,7 @@ void MainWindow::update_periodic_state() {
     const auto summary = runtime_summary(snapshot, backend_running);
     const auto teacher_available = has_available_teacher(runtime_model_snapshot());
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
+    const auto improvement_session = learning_service_->improvement_session_snapshot();
     const auto weight_update_busy =
         learning_pipeline.active_job.has_value() ||
         learning_pipeline.queued_updates > 0U;
@@ -9158,7 +9311,26 @@ void MainWindow::update_periodic_state() {
                << L" waiting.";
         set_control_text(id::chat_learning_status, queued.str());
     } else if (learning_service_->paused()) {
-        set_control_text(id::chat_learning_status, L"Automatic learning is paused.");
+        switch (improvement_session.phase) {
+        case learning::ImprovementSessionPhase::paused:
+            set_control_text(
+                id::chat_learning_status,
+                L"Automatic improvement is paused; approved evidence and checkpoints are saved.");
+            break;
+        case learning::ImprovementSessionPhase::time_limit_reached:
+            set_control_text(
+                id::chat_learning_status,
+                L"Automatic improvement reached its time limit; start another bounded session when wanted.");
+            break;
+        case learning::ImprovementSessionPhase::ended:
+            set_control_text(
+                id::chat_learning_status,
+                L"Automatic improvement session ended; approved evidence remains available.");
+            break;
+        case learning::ImprovementSessionPhase::running:
+            set_control_text(id::chat_learning_status, L"Automatic improvement is waiting safely.");
+            break;
+        }
     } else if (!checked(id::learning_auto)) {
         set_control_text(
             id::chat_learning_status,
@@ -10015,6 +10187,7 @@ void MainWindow::update_learning_report() {
     const auto modules = learning_service_->expert_snapshot();
     const auto settings = learning_service_->settings_snapshot();
     const auto pipeline = learning_service_->pipeline_snapshot();
+    const auto session = learning_service_->improvement_session_snapshot();
     const auto foundry = piggyback_operation_.snapshot();
     const auto automatic_teacher = checked(id::learning_auto);
     const auto teacher_available = has_available_teacher(runtime_model_snapshot());
@@ -10023,8 +10196,65 @@ void MainWindow::update_learning_report() {
     const auto selected_dataset = selected_training_dataset();
     const auto selected_evidence =
         learning_service_->memory_store().training_count_for_skill(selected_skill);
+    const auto session_seconds = static_cast<double>(session.remaining.count()) / 1000.0;
+    std::wostringstream session_status;
+    switch (session.phase) {
+    case learning::ImprovementSessionPhase::running:
+        session_status << L"Running • " << format_duration(session_seconds)
+                       << L" remains • Chat has priority";
+        break;
+    case learning::ImprovementSessionPhase::paused:
+        session_status << L"Paused • " << format_duration(session_seconds)
+                       << L" remains • checkpoint and evidence saved";
+        break;
+    case learning::ImprovementSessionPhase::time_limit_reached:
+        session_status << L"Time limit reached • working AI unchanged • evidence saved";
+        break;
+    case learning::ImprovementSessionPhase::ended:
+        session_status << L"Ended • working AI unchanged • evidence saved";
+        break;
+    }
+    set_control_text(id::learning_session_status, session_status.str());
+    set_control_text(
+        id::learning_session_start,
+        session.phase == learning::ImprovementSessionPhase::paused
+            ? L"Resume saved session"
+            : L"Start new session");
+    static_cast<void>(::EnableWindow(
+        control(id::learning_pause),
+        session.phase == learning::ImprovementSessionPhase::running));
+    static_cast<void>(::EnableWindow(
+        control(id::learning_stop),
+        session.phase == learning::ImprovementSessionPhase::running ||
+        session.phase == learning::ImprovementSessionPhase::paused));
+
+    runtime::CapabilityPackManager pack_manager(paths_.packs);
+    const auto internal_training_installed = pack_manager.installed("internal-pytorch-training");
+    const auto peft_installed = pack_manager.installed("transformers-peft-finetuning");
+    const auto image_installed = pack_manager.installed("image-engine");
+    const auto audio_installed = pack_manager.installed("audio-engine");
+
     std::wostringstream report;
-    report << L"SELECTED TRAINING TARGET: " << widen(selected_skill)
+    report << L"IMPROVEMENT SESSION\r\n"
+           << L"  Status: " << session_status.str() << L"\r\n"
+           << L"  Hard limit: "
+           << format_duration(static_cast<double>(session.budget.count()) / 1000.0)
+           << L" for this session; never more than 12:00:00\r\n"
+           << L"  At pause, foreground use, or the limit: save at a safe checkpoint and keep the working AI online\r\n"
+           << L"  Retained verified examples for the selected topic: " << selected_evidence
+           << L"\r\n\r\n"
+           << L"WHAT CAN CHANGE\r\n"
+           << L"  Verified memory: active immediately; no weight update required\r\n"
+           << L"  Built-in weight trainer: "
+           << (internal_training_installed ? L"installed; runs only inside this bounded session" :
+               L"not installed; verified memory still works") << L"\r\n"
+           << L"  Transformers/PEFT fine-tuning: "
+           << (peft_installed ? L"installed but used only for an explicitly compatible external base" :
+               L"not installed") << L"\r\n"
+           << L"  Image engine: " << (image_installed ? L"installed" : L"not installed")
+           << L"; audio engine: " << (audio_installed ? L"installed" : L"not installed")
+           << L"; neither is trained by this session\r\n\r\n"
+           << L"SELECTED TRAINING TARGET: " << widen(selected_skill)
            << L"\r\nTrainable verified evidence for this target: " << selected_evidence
            << L"\r\nAutomatic source: bundled seed.jsonl, filtered to this target"
            << L"\r\nCustom import file: " << selected_dataset.wstring()
@@ -10083,7 +10313,7 @@ void MainWindow::update_learning_report() {
         const auto& active = *pipeline.active_job;
         const auto progress = read_learning_progress(active.progress_path);
         report << L"\r\nACTIVE WEIGHT UPDATE\r\n"
-               << L"  state: " << widen(learning::to_string(active.state)) << L"\r\n"
+               << L"  stage: " << friendly_learning_stage(active.state) << L"\r\n"
                << L"  skill: " << widen(active.skill) << L"\r\n"
                << L"  candidate: " << widen(active.candidate_id) << L"\r\n"
                << L"  status: " << widen(active.message) << L"\r\n";

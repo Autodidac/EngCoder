@@ -80,6 +80,15 @@ At configured intervals and before cooperative preemption, the worker saves:
 - Python, CPU PyTorch, and CUDA RNG states.
 
 A foreground inference marker causes a checkpoint and exit code `75`. The C++ coordinator marks the candidate interrupted and requeues it. The next worker resumes the same candidate state.
+## Bounded automatic-improvement sessions
+
+A fresh application state begins one automatic-improvement session with a 12-hour budget. The user may start a shorter 1, 4, or 8-hour session, pause it, resume the exact saved remainder, or end it. Requests above 12 hours are clamped rather than accepted silently.
+
+The session is persisted atomically in `state/improvement-session.ini`. Restarting while paused remains paused; restarting after End remains ended; reaching the deadline remains time-limited until the user starts another bounded session. A restart never resets elapsed time or silently creates an unlimited worker.
+
+The session gate is checked by the serialized queue and by active worker cancellation. Foreground Chat always has priority. Pause, foreground use, End, and the deadline stop work at the established checkpoint boundary, preserve admitted evidence and resumable candidate state, and keep the last promoted model serving. Ending a session does not delete evidence or alter the selected AI.
+
+The visible report deliberately separates what can change: permanent verified memory is immediately retrievable but never weights; internal weights require the optional PyTorch trainer; Transformers/PEFT applies only to an explicitly compatible external base; image and audio engines are separate optional packs and are not trained by this session. Selecting or installing any pack remains isolated from the training queue.
 
 ## Evaluation and promotion
 
