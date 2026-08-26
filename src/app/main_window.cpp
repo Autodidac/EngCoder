@@ -186,6 +186,10 @@ constexpr int chat_attach = 344;
 constexpr int chat_attachment_status = 345;
 constexpr int chat_all_models_size = 346;
 constexpr int chat_live_ram_size = 347;
+constexpr int chat_setup_card = 900;
+constexpr int chat_conversation_card = 901;
+constexpr int chat_composer_card = 902;
+constexpr int chat_activity_card = 903;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -782,6 +786,11 @@ void draw_dark_text(
     return text;
 }
 
+void draw_workspace_card(
+    HDC device_context,
+    const RECT& rectangle,
+    int radius) noexcept;
+
 [[nodiscard]] bool draw_dark_control_item(
     const DRAWITEMSTRUCT& item) {
     const auto control_font = reinterpret_cast<HFONT>(
@@ -805,6 +814,17 @@ void draw_dark_text(
     const auto focused = (item.itemState & ODS_FOCUS) != 0U;
     const auto foreground = disabled ? disabled_text_color : text_color;
 
+    if (item.CtlType == ODT_STATIC &&
+        (item.CtlID == id::chat_setup_card ||
+         item.CtlID == id::chat_conversation_card ||
+         item.CtlID == id::chat_composer_card ||
+         item.CtlID == id::chat_activity_card)) {
+        draw_workspace_card(
+            item.hDC,
+            item.rcItem,
+            scaled(12, ::GetDpiForWindow(item.hwndItem)));
+        return true;
+    }
     if (item.CtlType == ODT_STATIC &&
         (item.CtlID == id::chat_training_data_size ||
          item.CtlID == id::chat_active_model_size ||
@@ -1283,47 +1303,6 @@ void move_control(
     }
 }
 
-[[nodiscard]] RECT combined_control_bounds(
-    const HWND page,
-    const std::initializer_list<int> identifiers,
-    const int padding) noexcept {
-    RECT bounds{};
-    bool initialized = false;
-    for (const auto identifier : identifiers) {
-        const auto child = ::GetDlgItem(page, identifier);
-        if (child == nullptr || ::IsWindowVisible(child) == FALSE) {
-            continue;
-        }
-        RECT rectangle{};
-        if (::GetWindowRect(child, &rectangle) == FALSE) {
-            continue;
-        }
-        std::array<POINT, 2> points{{
-            POINT{rectangle.left, rectangle.top},
-            POINT{rectangle.right, rectangle.bottom},
-        }};
-        static_cast<void>(::MapWindowPoints(
-            HWND_DESKTOP,
-            page,
-            points.data(),
-            static_cast<UINT>(points.size())));
-        rectangle = RECT{points[0].x, points[0].y, points[1].x, points[1].y};
-        if (!initialized) {
-            bounds = rectangle;
-            initialized = true;
-        } else {
-            bounds.left = std::min(bounds.left, rectangle.left);
-            bounds.top = std::min(bounds.top, rectangle.top);
-            bounds.right = std::max(bounds.right, rectangle.right);
-            bounds.bottom = std::max(bounds.bottom, rectangle.bottom);
-        }
-    }
-    if (initialized) {
-        ::InflateRect(&bounds, padding, padding);
-    }
-    return bounds;
-}
-
 void draw_workspace_card(
     const HDC device_context,
     const RECT& rectangle,
@@ -1356,38 +1335,6 @@ void draw_workspace_card(
     static_cast<void>(::SelectObject(device_context, previous_pen));
     static_cast<void>(::DeleteObject(brush));
     static_cast<void>(::DeleteObject(pen));
-}
-
-void paint_chat_cards(const HWND page, const HDC device_context) noexcept {
-    const auto dpi = ::GetDpiForWindow(page);
-    const auto padding = scaled(5, dpi);
-    const auto radius = scaled(12, dpi);
-    const auto draw = [&](const std::initializer_list<int> identifiers) {
-        draw_workspace_card(
-            device_context,
-            combined_control_bounds(page, identifiers, padding),
-            radius);
-    };
-    draw({
-        id::chat_session_label, id::chat_session, id::chat_delete_session,
-        id::chat_mode_label, id::chat_mode, id::chat_source_label, id::chat_source,
-        id::chat_model_label, id::chat_model, id::chat_backend,
-        id::chat_discover, id::chat_open_models,
-    });
-    draw({
-        id::chat_response_label, id::chat_response, id::chat_turn,
-        id::chat_copy, id::chat_edit, id::chat_retry, id::chat_accept,
-        id::chat_reject, id::chat_learning_preview,
-    });
-    draw({
-        id::chat_prompt_label, id::chat_include_context,
-        id::chat_attachment_status, id::chat_prompt, id::chat_send,
-        id::chat_stop, id::chat_clear, id::chat_attach, id::chat_open_output,
-    });
-    draw({
-        id::chat_plan_label, id::chat_route, id::chat_plan,
-        id::chat_auto_learning, id::chat_learning_status,
-    });
 }
 
 LRESULT CALLBACK prompt_edit_subclass(
@@ -1450,9 +1397,6 @@ LRESULT CALLBACK page_host_subclass(
         RECT client{};
         static_cast<void>(::GetClientRect(page, &client));
         fill_solid_rect(reinterpret_cast<HDC>(wparam), client, window_color);
-        if (::GetDlgCtrlID(page) == id::page_chat) {
-            paint_chat_cards(page, reinterpret_cast<HDC>(wparam));
-        }
         return 1;
     }
     case WM_NCDESTROY:
@@ -2121,10 +2065,10 @@ bool MainWindow::create(const int show_command) {
     const auto work_height = std::max(1L, work_area.bottom - work_area.top);
     const auto initial_width = std::max(
         std::min(scaled(980, initial_dpi), static_cast<int>(work_width)),
-        std::min(scaled(1450, initial_dpi), static_cast<int>(work_width * 94 / 100)));
+        std::min(scaled(1180, initial_dpi), static_cast<int>(work_width * 92 / 100)));
     const auto initial_height = std::max(
         std::min(scaled(680, initial_dpi), static_cast<int>(work_height)),
-        std::min(scaled(900, initial_dpi), static_cast<int>(work_height * 94 / 100)));
+        std::min(scaled(820, initial_dpi), static_cast<int>(work_height * 92 / 100)));
 
     window_ = ::CreateWindowExW(
         0,
@@ -2506,6 +2450,15 @@ void MainWindow::create_controls() {
 
 void MainWindow::create_chat_page() {
     const auto parent = control(id::page_chat);
+    for (const auto identifier : {
+             id::chat_setup_card,
+             id::chat_conversation_card,
+             id::chat_composer_card,
+             id::chat_activity_card}) {
+        create_control(
+            L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+            0, identifier, parent);
+    }
 
     create_control(L"STATIC", L"Chat", WS_CHILD | WS_VISIBLE, 0, id::chat_session_label, parent);
     create_control(
@@ -3407,6 +3360,17 @@ void MainWindow::layout_controls() {
     const auto conversation_height = std::max(
         scaled(compact_vertical ? 80 : 120, dpi_),
         review_y - gap - conversation_y);
+    move_control(control(id::chat_setup_card), 0, 0, width,
+        std::max(1, workspace_content_top - gap));
+    move_control(control(id::chat_conversation_card), 0, workspace_content_top,
+        conversation_width,
+        std::max(1, review_y + review_block_height - workspace_content_top));
+    move_control(control(id::chat_composer_card), 0, prompt_label_y,
+        conversation_width,
+        std::max(1, height - prompt_label_y));
+    move_control(control(id::chat_activity_card), sidebar_x, workspace_content_top,
+        sidebar_width,
+        std::max(1, height - workspace_content_top));
 
     move_control(
         control(id::chat_response_label),
@@ -5155,7 +5119,7 @@ void MainWindow::load_chat_session(const std::string_view id_value) {
             turn.review = static_cast<ResponseReview>(std::clamp(
                 static_cast<int>(core::json::number_or(entry.find("review"))),
                 0,
-                3));
+                4));
             turn.learning_weight_eligible =
                 core::json::bool_or(entry.find("learning_weight_eligible"), false);
             turn.learning_destination =
@@ -5184,6 +5148,8 @@ void MainWindow::load_chat_session(const std::string_view id_value) {
         last_tool_events_.clear();
         selected_response_turn_index_ = std::string::npos;
     }
+
+    reconcile_response_reviews_from_memory();
 
     set_control_text(id::chat_prompt, L"");
     set_control_text(id::chat_response, workspace_transcript_.empty()
@@ -6083,7 +6049,8 @@ void MainWindow::send_request(const RequestSurface surface) {
     if (started && workspace) {
         attached_files_.clear();
         update_attachment_controls();
-    }    if (!started) {
+    }
+    if (!started) {
         learning_service_->set_interactive_busy(false);
         if (workspace && pending_transcript_heading_offset_ != std::string::npos) {
             const auto heading = std::string{"ERROR — REQUEST NOT STARTED"};
@@ -6153,6 +6120,7 @@ void MainWindow::update_response_turn_controls() {
                 case ResponseReview::accepted: return L"accepted";
                 case ResponseReview::rejected: return L"rejected";
                 case ResponseReview::blocked: return L"not learnable";
+                case ResponseReview::already_known: return L"accepted • already known";
                 }
                 return L"not reviewed";
             }();
@@ -6239,24 +6207,98 @@ memory::Episode MainWindow::learning_episode_for(
     };
 }
 
+std::size_t MainWindow::apply_hard_corrections_for(const ResponseTurn& approved) {
+    const auto approved_prompt = lower_ascii(trim_line_endings(approved.prompt));
+    if (approved_prompt.empty() || approved.response.empty()) {
+        return 0U;
+    }
+
+    const auto registry = runtime_model_snapshot();
+    std::size_t stored_count = 0U;
+    for (auto& candidate : response_turns_) {
+        if (&candidate == &approved ||
+            candidate.review != ResponseReview::unreviewed ||
+            lower_ascii(trim_line_endings(candidate.prompt)) != approved_prompt ||
+            candidate.response == approved.response) {
+            continue;
+        }
+        const auto* profile = registry.find(candidate.model_id);
+        if (profile == nullptr || !models::is_internal_model(*profile)) {
+            continue;
+        }
+
+        auto correction = learning_episode_for(candidate, false);
+        correction.correction = approved.response;
+        correction.provenance = "interactive-hard-correction";
+        correction.verification_notes =
+            "A human-approved answer corrected this built-in reply for the same message";
+        const auto inspection = learning_service_->preview(correction);
+        const auto stored = inspection.would_store && learning_service_->submit(correction);
+        if (stored) {
+            ++stored_count;
+        }
+        if (stored || inspection.duplicate) {
+            candidate.review = ResponseReview::rejected;
+            candidate.learning_weight_eligible = false;
+            candidate.learning_destination = "negative-correction";
+        }
+    }
+
+    if (stored_count > 0U) {
+        const auto skill = skill_for(approved.analysis);
+        if (learning_service_->memory_store().human_acceptance_count_for_skill(skill) >= 4U) {
+            learning_service_->request_skill_update(skill);
+        }
+    }
+    return stored_count;
+}
+
+void MainWindow::reconcile_response_reviews_from_memory() {
+    std::vector<std::size_t> known_turns;
+    auto changed = false;
+    for (std::size_t index = 0; index < response_turns_.size(); ++index) {
+        auto& turn = response_turns_[index];
+        if (turn.review != ResponseReview::unreviewed) {
+            continue;
+        }
+        const auto inspection = learning_service_->preview(learning_episode_for(turn, true));
+        if (inspection.duplicate &&
+            learning_service_->memory_store().contains_hash(inspection.content_hash)) {
+            turn.review = ResponseReview::already_known;
+            turn.learning_weight_eligible = false;
+            turn.learning_destination = "already-stored";
+            known_turns.push_back(index);
+            changed = true;
+        }
+    }
+    for (const auto index : known_turns) {
+        changed = apply_hard_corrections_for(response_turns_[index]) > 0U || changed;
+    }
+    if (changed) {
+        persist_current_chat();
+    }
+}
+
 std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
     const auto episode = learning_episode_for(turn, true);
     const auto preview = learning_service_->preview(episode);
 
     std::wostringstream output;
     const auto already_saved = turn.review == ResponseReview::accepted;
-    const auto available_from_memory = already_saved || preview.would_store;
-    const auto weight_eligible = already_saved
+    const auto already_known = turn.review == ResponseReview::already_known ||
+        learning_service_->memory_store().contains_hash(preview.content_hash);
+    const auto available_from_memory = already_saved || already_known || preview.would_store;
+    const auto adds_weight_evidence = already_saved
         ? turn.learning_weight_eligible
-        : preview.eligible_for_weight_training && preview.would_store;
-    const auto accepted_examples = already_saved
+        : !already_known && preview.eligible_for_weight_training && preview.would_store;
+    const auto accepted_examples = already_saved || already_known
         ? learning_service_->memory_store().human_acceptance_count_for_skill(episode.skill)
         : preview.accepted_skill_examples;
-    const auto destination = already_saved && !turn.learning_destination.empty()
+    const auto destination = (already_saved || already_known) && !turn.learning_destination.empty()
         ? turn.learning_destination
         : std::string(learning::to_string(preview.destination));
 
-    output << L"WHAT ACCEPT + LEARN WILL USE\n\n"
+    output << L"WHAT ACCEPT + LEARN USES\n\n"
            << L"Selected reply: " << (selected_response_turn_index_ + 1U)
            << L" of " << response_turns_.size() << L"\n"
            << L"Model: " << widen(turn.model_id) << L"\n"
@@ -6273,22 +6315,23 @@ std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
            << widen(preview.stored_response)
            << L"\n\nLEARNING DECISION\n"
            << L"Save status: "
-           << (already_saved ? L"ALREADY SAVED" : (preview.would_store ? L"WILL SAVE ONCE" : L"BLOCKED")) << L"\n"
-           << L"Already represented: " << (preview.duplicate ? L"YES" : L"NO") << L"\n"
+           << (already_saved ? L"ALREADY SAVED" :
+               (already_known ? L"ALREADY REPRESENTED — NO COPY ADDED" :
+                (preview.would_store ? L"WILL SAVE ONCE" : L"BLOCKED"))) << L"\n"
+           << L"Already represented: " << (already_known || preview.duplicate ? L"YES" : L"NO") << L"\n"
            << L"Available immediately from memory: "
            << (available_from_memory ? L"YES" : L"NO") << L"\n"
-           << L"Eligible for background weight training: "
-           << (weight_eligible ? L"YES" : L"NO")
-           << L"\n"
-           << L"Unique human-approved examples in this skill after saving: "
+           << L"Adds new weight-training evidence: "
+           << (adds_weight_evidence ? L"YES" : L"NO") << L"\n"
+           << L"Current promoted weights guaranteed to reproduce it: NO — storage and weights are separate\n"
+           << L"Unique human-approved examples in this skill: "
            << accepted_examples << L"\n"
-           << L"Destination: " << widen(destination)
-           << L"\n"
+           << L"Destination: " << widen(destination) << L"\n"
            << L"Reason: " << widen(preview.reason) << L"\n"
            << L"Deduplication ID: " << widen(preview.content_hash) << L"\n\n"
-           << L"Repeated clicks and another approved answer for the same normalized skill/message "
-              L"cannot add training weight. Weight updates train a shadow copy and still require "
-              L"independent evaluation before promotion.";
+           << L"One stored lesson is enough for exact recall. Four diverse approvals form a training batch; "
+              L"redundant raw chat does not need to be retained forever. Training changes only a shadow copy, "
+              L"and the working model is replaced only after independent checks pass.";
     return output.str();
 }
 
@@ -6389,29 +6432,10 @@ void MainWindow::accept_last_response() {
         return;
     }
 
-    const auto episode = learning_episode_for(*turn, true);
-    const auto preview = learning_service_->preview(episode);
-    if (!preview.would_store) {
-        set_control_text(id::chat_plan_label, L"What Accept + learn uses");
-        set_control_text(id::chat_plan, learning_preview_text(*turn));
-        set_status(widen(preview.reason));
-        return;
-    }
-    if (!learning_service_->submit(episode)) {
-        set_status(L"The learning record changed or was already stored; no duplicate was added");
-        show_selected_learning_preview();
-        return;
-    }
-
-    turn->learning_weight_eligible = preview.eligible_for_weight_training;
-    turn->learning_destination = std::string(learning::to_string(preview.destination));
-    turn->review = ResponseReview::accepted;
-    auto models_used = turn->models_used;
-    std::ranges::sort(models_used);
-    models_used.erase(
-        std::ranges::unique(models_used).begin(),
-        models_used.end());
-    {
+    const auto record_positive_feedback = [&]() {
+        auto models_used = turn->models_used;
+        std::ranges::sort(models_used);
+        models_used.erase(std::ranges::unique(models_used).begin(), models_used.end());
         std::lock_guard lock(model_mutex_);
         for (const auto& model_id : models_used) {
             model_registry_.record_feedback(model_id, true);
@@ -6420,14 +6444,70 @@ void MainWindow::accept_last_response() {
             model_registry_.save(paths_.model_registry);
         } catch (...) {
         }
+    };
+    const auto mark_already_known = [&]() {
+        turn->review = ResponseReview::already_known;
+        turn->learning_weight_eligible = false;
+        turn->learning_destination = "already-stored";
+        const auto corrections = apply_hard_corrections_for(*turn);
+        record_positive_feedback();
+        update_response_turn_controls();
+        set_control_text(id::chat_plan_label, L"Approval result");
+        set_control_text(id::chat_plan, learning_preview_text(*turn));
+        set_status(corrections > 0U
+            ? L"Accepted • lesson already stored once • wrong built-in reply queued as one bounded correction"
+            : L"Accepted • lesson already stored once • no duplicate or extra weight added");
+        update_learning_report();
+        update_training_library();
+        persist_current_chat();
+    };
+
+    const auto episode = learning_episode_for(*turn, true);
+    auto preview = learning_service_->preview(episode);
+    if (!preview.would_store) {
+        if (preview.duplicate &&
+            learning_service_->memory_store().contains_hash(preview.content_hash)) {
+            mark_already_known();
+            return;
+        }
+        turn->review = ResponseReview::blocked;
+        update_response_turn_controls();
+        set_control_text(id::chat_plan_label, L"Learning blocked");
+        set_control_text(id::chat_plan, learning_preview_text(*turn));
+        set_status(widen(preview.reason));
+        persist_current_chat();
+        return;
     }
+    if (!learning_service_->submit(episode)) {
+        preview = learning_service_->preview(episode);
+        if (preview.duplicate &&
+            learning_service_->memory_store().contains_hash(preview.content_hash)) {
+            mark_already_known();
+            return;
+        }
+        turn->review = ResponseReview::blocked;
+        update_response_turn_controls();
+        set_status(L"The lesson changed before it could be saved; no partial or duplicate record was added");
+        persist_current_chat();
+        return;
+    }
+
+    turn->learning_weight_eligible = preview.eligible_for_weight_training;
+    turn->learning_destination = std::string(learning::to_string(preview.destination));
+    turn->review = ResponseReview::accepted;
+    const auto corrections = apply_hard_corrections_for(*turn);
+    record_positive_feedback();
 
     update_response_turn_controls();
     set_control_text(id::chat_plan_label, L"What Accept + learn saved");
     set_control_text(id::chat_plan, learning_preview_text(*turn));
-    set_status(preview.eligible_for_weight_training
-        ? L"Saved once to approved memory and the shadow weight-training pool; duplicates cannot add weight"
-        : L"Saved once to approved memory; it is not eligible for weight training yet");
+    if (corrections > 0U) {
+        set_status(L"Saved once • wrong built-in reply queued as one bounded correction");
+    } else if (preview.eligible_for_weight_training) {
+        set_status(L"Saved once to approved memory and the shadow weight-training pool; duplicates cannot add weight");
+    } else {
+        set_status(L"Saved once to approved memory; weight learning waits for four diverse approved lessons");
+    }
     update_skill_report();
     update_learning_report();
     update_training_library();

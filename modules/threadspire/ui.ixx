@@ -83,6 +83,7 @@ private:
         accepted,
         rejected,
         blocked,
+        already_known,
     };
 
     struct ChatSummary final {
@@ -177,6 +178,8 @@ private:
     void show_selected_learning_preview();
     void update_response_turn_controls();
     void select_response_turn();
+    std::size_t apply_hard_corrections_for(const ResponseTurn& approved);
+    void reconcile_response_reviews_from_memory();
     [[nodiscard]] ResponseTurn* selected_response_turn();
     [[nodiscard]] const ResponseTurn* selected_response_turn() const;
     [[nodiscard]] memory::Episode learning_episode_for(

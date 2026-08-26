@@ -397,10 +397,13 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
     episode.skill = normalize_skill(episode.skill);
     episode.deterministic_verified = episode.deterministic_verified ||
                                      (episode.compiler_passed && episode.tests_passed);
+    const auto hash_response = episode.human_rejected && !episode.correction.empty()
+        ? episode.response + "\nAPPROVED CORRECTION\n" + episode.correction
+        : (episode.response.empty() ? episode.correction : episode.response);
     result.content_hash = memory::make_content_hash(
         episode.skill,
         episode.prompt,
-        episode.response.empty() ? episode.correction : episode.response);
+        hash_response);
     const auto current_accepted_examples =
         memory_store_.human_acceptance_count_for_skill(episode.skill);
     const auto independently_validated =
@@ -479,11 +482,13 @@ bool ContinualLearningService::submit(memory::Episode episode) {
     }
     episode.deterministic_verified = episode.deterministic_verified ||
                                      (episode.compiler_passed && episode.tests_passed);
+    const auto hash_response = episode.human_rejected && !episode.correction.empty()
+        ? episode.response + "\nAPPROVED CORRECTION\n" + episode.correction
+        : (episode.response.empty() ? episode.correction : episode.response);
     episode.content_hash = memory::make_content_hash(
         episode.skill,
         episode.prompt,
-        episode.response.empty() ? episode.correction : episode.response);
-
+        hash_response);
     episode.eligible_for_training = inspection.eligible_for_weight_training;
     episode.knowledge_destination = std::string(to_string(inspection.destination));
     if (!memory_store_.append_if_new(episode)) {
@@ -545,7 +550,8 @@ void ContinualLearningService::queue_request(LearningRequest request) {
     } catch (...) {
         // Never launch an update that could not first be serialized.
         return;
-    }    {
+    }
+    {
         std::lock_guard lock(mutex_);
         if (request.candidate_id.has_value()) {
             std::erase_if(queue_, [&request](const LearningRequest& pending) {

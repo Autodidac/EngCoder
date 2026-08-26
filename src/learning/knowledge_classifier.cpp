@@ -413,6 +413,7 @@ KnowledgeDecision KnowledgeClassifier::classify(
     const auto skill = lower_ascii(episode.skill);
     const auto is_weight_skill =
         skill == "english-core" || skill == "english-foundation" ||
+        skill == "english-conversation" ||
         skill == "cpp23-core" || skill == "cpp23-debugging" ||
         skill == "planning";
     if (!is_weight_skill) {

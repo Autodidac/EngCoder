@@ -220,7 +220,7 @@ def main() -> int:
         assert model.verified_local_response([
             {"role": "system", "content": "Reply naturally in plain English."},
             {"role": "user", "content": "Hello, could you help with this?"},
-        ]) == "Yes. I can help with that problem."
+        ]) == "Hello! What would you like help with?"
         assert model.verified_local_response([
             {"role": "user", "content": "An unrelated request with no verified local result."},
         ]) is None
@@ -344,6 +344,8 @@ def main() -> int:
             }
             for index in range(2, 5)
         ])
+        for index, record in enumerate(human_records):
+            record["eligible_for_training"] = index == len(human_records) - 1
         human_episodes.write_text(
             "\n".join(json.dumps(record) for record in human_records) + "\n",
             encoding="utf-8",
@@ -366,16 +368,42 @@ def main() -> int:
             ) + "\n",
             encoding="utf-8",
         )
-        assert worker._load_episodes(  # pylint: disable=protected-access
+        assert len(worker._load_episodes(  # pylint: disable=protected-access
             memory_only_episodes,
             "english-conversation",
-        ) == []
-        assert model.load_training_sequences(
+        )) == 4
+        assert len(model.load_training_sequences(
             [memory_only_episodes],
             128,
             "english-conversation",
-        ) == []
+        )) == 4
 
+        hard_correction = {
+            **human_records[0],
+            "skill": "english-conversation",
+            "eligible_for_training": False,
+            "human_accepted": False,
+            "human_rejected": True,
+            "prompt": "hi",
+            "response": "Yes. I can help with that problem.",
+            "correction": "Hello!",
+            "provenance": "interactive-hard-correction",
+        }
+        with memory_only_episodes.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(hard_correction) + "\n")
+        loaded_corrections = worker._load_episodes(  # pylint: disable=protected-access
+            memory_only_episodes,
+            "english-conversation",
+        )
+        assert any(
+            record.get("hard_correction") and record["response"] == "Hello!"
+            for record in loaded_corrections
+        )
+        assert len(model.load_training_sequences(
+            [memory_only_episodes],
+            128,
+            "english-conversation",
+        )) == 5
         config = model.ModelConfig(
             name="EngCoder Internal Smoke",
             context_length=128,

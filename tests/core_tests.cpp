@@ -649,21 +649,27 @@ void test_knowledge_classifier_routes_volatile_state_to_retrieval() {
             "volatile state must never be weight-training input");
 }
 
-void test_knowledge_classifier_rejects_noncore_weight_topics() {
+void test_knowledge_classifier_batches_diverse_conversation_lessons() {
     threadspire::ai::learning::KnowledgeClassifier classifier;
-    const auto decision = classifier.classify(threadspire::ai::memory::Episode{
+    const threadspire::ai::memory::Episode lesson{
         .id = "conversation",
         .skill = "english-conversation",
         .prompt = "What's up?",
         .response = "Not much. What's on your mind?",
-        .model_id = "teacher",
-        .score = 0.99,
-        .reference_verified = true,
-        .self_generated = true,
-    }, 100U);
-    require(decision.destination == threadspire::ai::learning::KnowledgeDestination::retrieval_memory &&
-                !decision.eligible_for_weight_training,
-            "conversation phrases must remain memory even when reference-verified");
+        .model_id = "human-approved",
+        .score = 0.92,
+        .human_accepted = true,
+        .self_generated = false,
+    };
+    const auto single = classifier.classify(lesson, 1U);
+    require(single.destination == threadspire::ai::learning::KnowledgeDestination::retrieval_memory &&
+                !single.eligible_for_weight_training,
+            "one approved conversation phrase must remain a deduplicated memory lesson");
+
+    const auto batch = classifier.classify(lesson, 4U);
+    require(batch.destination == threadspire::ai::learning::KnowledgeDestination::lora_incubation &&
+                batch.eligible_for_weight_training,
+            "four diverse human-approved conversation lessons must form a weight-training batch");
 }
 
 void test_resource_governor_prioritizes_inference() {
@@ -1273,11 +1279,18 @@ void test_windows_ui_source_contract() {
                 ui.find("CLEARTYPE_NATURAL_QUALITY") != std::string::npos &&
                 ui.find("WM_GETFONT") != std::string::npos &&
                 ui.find("scaled(600, dpi_)") != std::string::npos &&
-                ui.find("paint_chat_cards") != std::string::npos &&
+                ui.find("id::chat_setup_card") != std::string::npos &&
+                ui.find("SS_OWNERDRAW") != std::string::npos &&
                 ui.find("RoundRect") != std::string::npos &&
                 ui.find("compact_actions") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
+    require(ui.find("ResponseReview::already_known") != std::string::npos &&
+                ui.find("interactive-hard-correction") != std::string::npos &&
+                ui.find("accepted • already known") != std::string::npos &&
+                ui.find("Adds new weight-training evidence") != std::string::npos &&
+                ui.find("reconcile_response_reviews_from_memory") != std::string::npos,
+            "duplicate approval must become a visible accepted state and link wrong built-in output to one bounded correction");
     require(ui.find("page_host_subclass") != std::string::npos &&
                 ui.find("WS_EX_CONTROLPARENT") != std::string::npos &&
                 ui.find("SetWindowSubclass failed for a page host") != std::string::npos &&
@@ -1729,7 +1742,7 @@ int main() {
         test_learning_preview_blocks_errors_and_repetition();
         test_episode_index_recovers_after_restart();
         test_knowledge_classifier_routes_volatile_state_to_retrieval();
-        test_knowledge_classifier_rejects_noncore_weight_topics();
+        test_knowledge_classifier_batches_diverse_conversation_lessons();
         test_resource_governor_prioritizes_inference();
         test_candidate_registry_marks_inflight_work_resumable();
         test_expert_registry_persists_generation_and_rollback();

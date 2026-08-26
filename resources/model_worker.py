@@ -1228,6 +1228,7 @@ _MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
 _WEIGHT_TRAINING_SKILLS = frozenset({
     "english-core",
     "english-foundation",
+    "english-conversation",
     "cpp23-core",
     "cpp23-debugging",
     "planning",
@@ -1262,6 +1263,7 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
     if skill not in _WEIGHT_TRAINING_SKILLS:
         return []
     records: list[dict[str, Any]] = []
+    diverse_human_prompts: set[str] = set()
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             if not line.strip():
@@ -1269,9 +1271,18 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
             record = json.loads(line)
             if record.get("skill") != skill:
                 continue
-            if not record.get("eligible_for_training", False):
+            normalized_prompt = _normalized_learning_prompt(record)
+            human_only = _human_only_training_record(record)
+            if human_only and normalized_prompt:
+                diverse_human_prompts.add(normalized_prompt)
+            hard_correction = bool(
+                record.get("human_rejected", False)
+                and str(record.get("provenance", "")) == "interactive-hard-correction"
+                and str(record.get("correction", "")).strip()
+            )
+            if not record.get("eligible_for_training", False) and not hard_correction and not human_only:
                 continue
-            if not (
+            if not hard_correction and not (
                 record.get("human_accepted", False)
                 or record.get("deterministic_verified", False)
                 or record.get("reference_verified", False)
@@ -1279,13 +1290,15 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
                 continue
             prompt = _strip_training_emoji(str(record.get("prompt", "")))
             response = _sanitize_training_response(
-                str(record.get("response", "")),
+                str(record.get("correction" if hard_correction else "response", "")),
                 str(record.get("model_id", "")),
             )
             if prompt and response:
                 cleaned = dict(record)
                 cleaned["prompt"] = prompt
                 cleaned["response"] = response
+                if hard_correction:
+                    cleaned["hard_correction"] = True
                 if "correction" in cleaned:
                     cleaned["correction"] = _sanitize_training_response(
                         str(cleaned.get("correction", "")),
@@ -1304,19 +1317,13 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
             ).hexdigest()
         unique[fingerprint] = record
     records = list(unique.values())
-    distinct_human_prompts = {
-        _normalized_learning_prompt(record)
-        for record in records
-        if _human_only_training_record(record) and _normalized_learning_prompt(record)
-    }
-    if len(distinct_human_prompts) < _MINIMUM_DIVERSE_HUMAN_APPROVALS:
+    if len(diverse_human_prompts) < _MINIMUM_DIVERSE_HUMAN_APPROVALS:
         records = [
             record
             for record in records
-            if not _human_only_training_record(record)
+            if not _human_only_training_record(record) and not record.get("hard_correction", False)
         ]
     return records
-
 
 def _seed_domains_for_skill(skill: str) -> set[str]:
     normalized = skill.lower()

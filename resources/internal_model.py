@@ -312,7 +312,7 @@ def canonical_training_scope(value: str) -> str:
     """Map UI curriculum labels to concrete internal expert identifiers."""
 
     normalized = normalize_skill(value)
-    if normalized in {"english", "english-foundation", "english-core"} or normalized.startswith(
+    if normalized in {"english", "english-foundation", "english-core", "english-conversation"} or normalized.startswith(
         "english-foundation-"
     ):
         return "english-core"
@@ -977,12 +977,12 @@ def _trusted_english_vocabulary(trusted_dataset: str = "") -> frozenset[str]:
 
     vocabulary = {
         "a", "an", "and", "are", "as", "at", "be", "because", "but",
-        "by", "can", "do", "for", "from", "has", "have", "help", "how",
+        "by", "can", "do", "for", "from", "has", "have", "hello", "help", "hey", "how",
         "i", "if", "in", "is", "it", "me", "not", "of", "on", "or",
         "please", "ready", "that", "the", "them", "this", "to", "was", "what",
         "when", "where", "which", "will", "with", "you", "your", "yes",
         "active", "after", "change", "check", "clarify", "differently",
-        "error", "every", "exit", "explain", "failed", "first", "identifies",
+        "error", "every", "exit", "explain", "failed", "first", "identifies", "like",
         "interrupt", "log", "message", "model", "only", "part", "passes",
         "previous", "problem", "replacement", "restore", "reversible",
         "service", "should", "state", "stopped", "switch", "undone", "usually",
@@ -1359,8 +1359,14 @@ def _verified_bounded_response(messages: Sequence[dict[str, str]]) -> str | None
     if lowered in {"what?", "what do you mean?", "what do you mean by that?", "what does that mean?"}:
         return "What part should I explain?"
 
-    if re.match(r"^(?:hi|hello|hey)(?:\b|[.!?,])", lowered):
-        return "Yes. I can help with that problem."
+    greeting = re.fullmatch(r"(?:hi|hello|hey)[.!?,]*", lowered)
+    if greeting:
+        return "Hey!" if lowered.startswith("hey") else "Hello!"
+    if (
+        re.match(r"^(?:hi|hello|hey)(?:\b|[.!?,])", lowered)
+        and re.search(r"\b(?:help|assist|problem)\b", lowered)
+    ):
+        return "Hello! What would you like help with?"
 
     return None
 
@@ -1852,6 +1858,7 @@ _MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
 _WEIGHT_TRAINING_SKILLS = frozenset({
     "english-core",
     "english-foundation",
+    "english-conversation",
     "cpp23-core",
     "cpp23-debugging",
     "planning",
@@ -1882,7 +1889,7 @@ def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not bool(record.get("eligible_for_training", False)) or not _human_only_training_record(record):
+                if not _human_only_training_record(record):
                     continue
                 if not _weight_training_skill(str(record.get("skill", record.get("domain", "general")))):
                     continue
@@ -2008,19 +2015,32 @@ def load_training_sequences(
                 if normalized_skill:
                     if not _capability_matches_scope(record_capabilities, normalized_skill):
                         continue
+                hard_correction = bool(
+                    record.get("human_rejected", False)
+                    and str(record.get("provenance", "")) == "interactive-hard-correction"
+                    and str(record.get("correction", "")).strip()
+                )
+                if hard_correction:
+                    record = dict(record)
+                    record["response"] = record.get("correction", "")
+                human_batch_ready = bool(
+                    _human_only_training_record(record)
+                    and human_approval_counts.get(record_skill, 0)
+                    >= _MINIMUM_DIVERSE_HUMAN_APPROVALS
+                )
                 if "eligible_for_training" in record:
-                    if not bool(record.get("eligible_for_training", False)):
+                    if not bool(record.get("eligible_for_training", False)) and not hard_correction and not human_batch_ready:
                         continue
                     if not _weight_training_skill(record_skill):
                         continue
-                    if not (
+                    if not hard_correction and not (
                         bool(record.get("human_accepted", False))
                         or bool(record.get("deterministic_verified", False))
                         or bool(record.get("reference_verified", False))
                     ):
                         continue
                     if (
-                        _human_only_training_record(record)
+                        (_human_only_training_record(record) or hard_correction)
                         and human_approval_counts.get(record_skill, 0)
                         < _MINIMUM_DIVERSE_HUMAN_APPROVALS
                     ):
