@@ -175,17 +175,15 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 
 ## Interface
 
-1. **Chat** — persistent named chats, New/Delete chat, file attachments, streaming/Stop, and Copy/Edit/Retry/Accept/Reject/Learn actions per reply. Choose Ask/write, Code help, optional Repository task, Generate image, Generate speech, or Use tools from the same surface. Repository controls appear only when that task needs them.
-2. **AI & Tools** — automatic readiness plus connected local AIs and optional tools; manual addresses and repair controls stay under **Backup and repair options**.
-3. **Memory & Learning** — the complete searchable training library, accepted/rejected teacher attempts, exact learning previews, permanent user-memory editing, live candidate progress, and backup recovery controls.
-4. **Capabilities** — plain-language controls for specialized capability areas, safe update/undo actions, and transactional advanced fine-tuning, image, and audio add-ons. Adding files starts no task and changes no AI choice.
-5. **Files & Activity** — eight live storage/RAM cards, exact model and pack accounting, protected cleanup preview/execution, outputs, and backend/compiler/training/trajectory logs.
+1. **Workspace** — one persistent conversation and composer for writing, questions, supporting-language code, repository work, image generation, audio/music generation, tools, files, streaming, Stop, and per-reply review. EngCoder infers the action automatically; the compact Action selector beside Send is an override.
+2. **Settings** — secondary pages for **AI & Tools**, **Memory & Learning**, and **Capabilities**. Automatic readiness stays primary; manual addresses, repair controls, training inspection, permanent memory, and optional add-ons remain available without becoming separate top-level applications.
+3. **Activity** — eight live storage/RAM cards, exact model and pack accounting, protected cleanup preview/execution, outputs, and backend/compiler/training/trajectory logs.
 
-Backup-only AI connection entries can declare what an AI can do, such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Chat task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
+Backup-only AI connection entries can declare what an AI can do, such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Workspace Action selector filters models by those capabilities when used; Automatic infers the required capability from the message. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
 
 ## Storage limits
 
-**Files & Activity** keeps eight dark live cards in view: **Current Model**, **All Model Versions**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), **Free Disk**, and **Live RAM**. It also reports exact active-model contents, EngCoder-owned helper memory, largest files/directories, projected pack download/install sizes, category quotas, and dry-run cleanup without cluttering Chat.
+**Activity** keeps eight dark live cards in view: **Current Model**, **All Model Versions**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), **Free Disk**, and **Live RAM**. It also reports exact active-model contents, EngCoder-owned helper memory, largest files/directories, projected pack download/install sizes, category quotas, and dry-run cleanup without cluttering Chat.
 
 Cleanup is restricted to no-follow EngCoder-owned logs, unpromoted candidates, checkpoints, outputs, and caches. Active model lineage and paths outside the application root are protected. The base installed tree excludes models and optional packs and must remain at or below 100 MiB; large PyTorch dependencies belong in an explicit pack and are reported separately.
 

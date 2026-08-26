@@ -1278,14 +1278,18 @@ void test_windows_ui_source_contract() {
                 ui.find("Start the model server on the Models page first") == std::string::npos &&
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
-    require(ui.find("L\"Chat\", Page::chat") != std::string::npos &&
+    require(ui.find("L\"Workspace\", Page::chat") != std::string::npos &&
+                ui.find("L\"Settings\", Page::models") != std::string::npos &&
+                ui.find("L\"Activity\", Page::logs") != std::string::npos &&
+                ui.find("id::settings_tabs") != std::string::npos &&
                 ui.find("L\"AI & Tools\", Page::models") != std::string::npos &&
                 ui.find("L\"Memory & Learning\", Page::learning") != std::string::npos &&
                 ui.find("L\"Capabilities\", Page::skills") != std::string::npos &&
+                ui.find("L\"Chat\", Page::chat") == std::string::npos &&
+                ui.find("L\"Files & Activity\", Page::logs") == std::string::npos &&
                 ui.find("L\"Run Details\", Page::long_horizon") == std::string::npos &&
-                ui.find("L\"Files & Activity\", Page::logs") != std::string::npos &&
                 ui.find("L\"Coding Agent\", Page::coding") == std::string::npos,
-            "primary navigation must keep chat and creation clear while repository automation remains an execution profile instead of a duplicate console");
+            "primary navigation must expose one workspace plus secondary settings and activity instead of separate capability applications");
     require(ui.find("EngCoder — local evolving intelligence") != std::string::npos,
             "the user-facing application source must use the EngCoder product name");
     const auto completion_client = read_text_file(
@@ -1468,7 +1472,7 @@ void test_windows_ui_source_contract() {
                 ui.find("id::skills_overview_card") != std::string::npos &&
                 ui.find("compact_actions = conversation_width < scaled(550, dpi_)") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos &&
-                ui.find("tab_client.right - tab_client.left) - scaled(12, dpi_)") != std::string::npos &&
+                ui.find("tab_client.right - tab_client.left) - scaled(36, dpi_)") != std::string::npos &&
                 ui.find("storage_available * 68 / 100") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&

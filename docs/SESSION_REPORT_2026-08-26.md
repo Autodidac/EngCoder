@@ -180,3 +180,13 @@ Final post-v2 gate: a clean Visual Studio 2022 Release rebuild and Release CTest
 - Reworked the responsive composer geometry so the Action selector remains visible at minimum size without crowding the AI controls. Corrected combo item sizing and shortened the empty reply selector after autonomous minimum/wide visual QA.
 
 Verification for this checkpoint: clean Visual Studio 2022 Release build passed; Release CTest passed 5/5; Debug build and Debug CTest passed 5/5; the base-footprint test passed; minimum and wide dark-interface screenshots were captured and inspected; and `git diff --check` passed.
+### Three-destination workbench navigation
+
+- Reduced the top-level application shell to `Workspace`, `Settings`, and `Activity`. Existing AI connection, learning, capability, storage, and log functions remain available; none became a separate application or was removed.
+- Added a secondary Settings strip for `AI & Tools`, `Memory & Learning`, and `Capabilities`. Programmatic repair/setup navigation selects the correct primary and secondary destinations instead of opening a hidden legacy page.
+- Kept the unified conversation/composer permanently under Workspace and consolidated live storage, RAM, cleanup, and logs under Activity.
+- Eliminated the Win32 tab control's bright overflow tail with DPI-aware dark owner-drawn fill surfaces, prevented minimum-width scroll arrows, and forced selection redraws so labels do not disappear during resize or page changes.
+- Shortened and resized the densest learning controls (`Improve`, `Custom topic`, `Examples to review`, `Find examples`, `Improve now`, `Stop learning`, and `Example template`) so the page no longer overlaps or truncates at the tested sizes.
+- Updated the README and strict UI regression contract for the new information architecture. The next queue item is plain-language conversational teach/remember/forget with exact storage previews.
+
+Verification for this checkpoint: a clean Visual Studio 2022 Release build passed; Release CTest passed 5/5; a clean Debug build and Debug CTest passed 5/5; native inference contract, curriculum guard, and base-footprint smoke tests all passed; EngCoder.exe measured 5,129,216 bytes (4.89 MiB), within the 100 MiB budget; automated minimum/wide screenshots of Workspace, all three Settings pages, and Activity were captured and inspected; and `git diff --check` passed.

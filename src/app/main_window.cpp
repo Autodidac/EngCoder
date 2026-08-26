@@ -129,6 +129,9 @@ struct OwnedMemorySample final {
 namespace id {
 constexpr int tabs = 100;
 constexpr int status = 101;
+constexpr int settings_tabs = 102;
+constexpr int primary_tab_tail = 103;
+constexpr int settings_tab_tail = 104;
 
 constexpr int page_chat = 200;
 constexpr int page_coding = 201;
@@ -826,6 +829,12 @@ void draw_workspace_card(
     const auto focused = (item.itemState & ODS_FOCUS) != 0U;
     const auto foreground = disabled ? disabled_text_color : text_color;
 
+    if (item.CtlType == ODT_STATIC &&
+        (item.CtlID == id::primary_tab_tail ||
+         item.CtlID == id::settings_tab_tail)) {
+        fill_solid_rect(item.hDC, item.rcItem, window_color);
+        return true;
+    }
     if (item.CtlType == ODT_STATIC &&
         (item.CtlID == id::chat_setup_card ||
          item.CtlID == id::chat_conversation_card ||
@@ -2231,15 +2240,33 @@ LRESULT MainWindow::handle_message(
     }
     case WM_NOTIFY: {
         const auto* header = reinterpret_cast<const NMHDR*>(lparam);
-        if (header->idFrom == static_cast<UINT_PTR>(id::tabs) && header->code == TCN_SELCHANGE) {
-            const auto selected = TabCtrl_GetCurSel(control(id::tabs));
+        if (header != nullptr && header->code == TCN_SELCHANGE &&
+            (header->idFrom == static_cast<UINT_PTR>(id::tabs) ||
+             header->idFrom == static_cast<UINT_PTR>(id::settings_tabs))) {
+            const auto tab_id = header->idFrom == static_cast<UINT_PTR>(id::settings_tabs)
+                ? id::settings_tabs
+                : id::tabs;
+            const auto selected = TabCtrl_GetCurSel(control(tab_id));
             TCITEMW item{};
             item.mask = TCIF_PARAM;
-            if (selected >= 0 && TabCtrl_GetItem(control(id::tabs), selected, &item) != FALSE) {
-                show_page(static_cast<Page>(std::clamp<LONG_PTR>(
-                    item.lParam,
-                    static_cast<LONG_PTR>(Page::chat),
-                    static_cast<LONG_PTR>(Page::logs))));
+            if (selected >= 0 && TabCtrl_GetItem(control(tab_id), selected, &item) != FALSE) {
+                const auto minimum = tab_id == id::settings_tabs
+                    ? static_cast<LONG_PTR>(Page::models)
+                    : static_cast<LONG_PTR>(Page::chat);
+                const auto maximum = tab_id == id::settings_tabs
+                    ? static_cast<LONG_PTR>(Page::skills)
+                    : static_cast<LONG_PTR>(Page::logs);
+                const auto selected_page = static_cast<Page>(
+                    std::clamp<LONG_PTR>(item.lParam, minimum, maximum));
+                show_page(selected_page);
+                select_page_tab(selected_page);
+                layout_controls();
+                static_cast<void>(::RedrawWindow(
+                    window_,
+                    nullptr,
+                    nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+                        RDW_ALLCHILDREN | RDW_UPDATENOW));
             }
         }
         return 0;
@@ -2404,12 +2431,16 @@ void MainWindow::create_controls() {
         0,
         MAKELPARAM(scaled(150, dpi_), scaled(40, dpi_))));
     const std::array tabs_and_pages{
-        std::pair{L"Chat", Page::chat},
-        std::pair{L"AI & Tools", Page::models},
-        std::pair{L"Memory & Learning", Page::learning},
-        std::pair{L"Capabilities", Page::skills},
-        std::pair{L"Files & Activity", Page::logs},
+        std::pair{L"Workspace", Page::chat},
+        std::pair{L"Settings", Page::models},
+        std::pair{L"Activity", Page::logs},
     };
+    const auto selected_primary_page =
+        page_ == Page::models || page_ == Page::learning || page_ == Page::skills
+            ? Page::models
+            : page_ == Page::logs
+                ? Page::logs
+                : Page::chat;
     auto selected_tab = 0;
     auto tab_index = 0;
     for (const auto& [label, page] : tabs_and_pages) {
@@ -2418,11 +2449,45 @@ void MainWindow::create_controls() {
         item.pszText = const_cast<wchar_t*>(label);
         item.lParam = static_cast<LPARAM>(page);
         static_cast<void>(TabCtrl_InsertItem(tabs, TabCtrl_GetItemCount(tabs), &item));
-        selected_tab = page == page_ ? tab_index : selected_tab;
+        selected_tab = page == selected_primary_page ? tab_index : selected_tab;
         ++tab_index;
     }
-
     static_cast<void>(TabCtrl_SetCurSel(tabs, selected_tab));
+
+    const auto settings_tabs = create_control(
+        WC_TABCONTROLW,
+        L"",
+        WS_CHILD | WS_TABSTOP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS |
+            TCS_FIXEDWIDTH | TCS_OWNERDRAWFIXED,
+        0,
+        id::settings_tabs,
+        window_);
+    const std::array settings_tabs_and_pages{
+        std::pair{L"AI & Tools", Page::models},
+        std::pair{L"Memory & Learning", Page::learning},
+        std::pair{L"Capabilities", Page::skills},
+    };
+    auto selected_settings_tab = 0;
+    tab_index = 0;
+    for (const auto& [label, page] : settings_tabs_and_pages) {
+        TCITEMW item{};
+        item.mask = TCIF_TEXT | TCIF_PARAM;
+        item.pszText = const_cast<wchar_t*>(label);
+        item.lParam = static_cast<LPARAM>(page);
+        static_cast<void>(TabCtrl_InsertItem(
+            settings_tabs,
+            TabCtrl_GetItemCount(settings_tabs),
+            &item));
+        selected_settings_tab = page == page_ ? tab_index : selected_settings_tab;
+        ++tab_index;
+    }
+    static_cast<void>(TabCtrl_SetCurSel(settings_tabs, selected_settings_tab));
+    create_control(
+        L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::primary_tab_tail, window_);
+    create_control(
+        L"STATIC", L"", WS_CHILD | SS_OWNERDRAW,
+        0, id::settings_tab_tail, window_);
     create_control(
         L"STATIC", L"Discovering local AI…",
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
@@ -2935,12 +3000,12 @@ void MainWindow::create_learning_page() {
         0, id::learning_auto, parent);
     set_checked(id::learning_auto, automatic_training_enabled_);
     create_control(
-        L"BUTTON", L"Stop current learning pass",
+        L"BUTTON", L"Stop learning",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_stop, parent);
 
     create_control(
-        L"STATIC", L"Training target",
+        L"STATIC", L"Improve",
         WS_CHILD | WS_VISIBLE, 0, id::learning_skill_label, parent);
     const auto target = create_control(
         L"COMBOBOX", L"",
@@ -2955,7 +3020,7 @@ void MainWindow::create_learning_page() {
     }
 
     create_control(
-        L"STATIC", L"Custom topic name",
+        L"STATIC", L"Custom topic",
         WS_CHILD | WS_VISIBLE, 0, id::learning_custom_skill_label, parent);
     create_control(
         L"EDIT", widen(custom_training_skill_).c_str(),
@@ -2963,18 +3028,18 @@ void MainWindow::create_learning_page() {
         0, id::learning_custom_skill, parent);
 
     create_control(
-        L"STATIC", L"New examples to check",
+        L"STATIC", L"Examples to review",
         WS_CHILD | WS_VISIBLE, 0, id::learning_count_label, parent);
     create_control(
         L"EDIT", L"8",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
         0, id::learning_piggyback_count, parent);
     create_control(
-        L"BUTTON", L"Find more examples now",
+        L"BUTTON", L"Find examples",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_piggyback, parent);
     create_control(
-        L"BUTTON", L"Improve selected topic now",
+        L"BUTTON", L"Improve now",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_build_custom, parent);
 
@@ -2994,7 +3059,7 @@ void MainWindow::create_learning_page() {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_dataset_import, parent);
     create_control(
-        L"BUTTON", L"Open example template",
+        L"BUTTON", L"Example template",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_dataset_template, parent);
 
@@ -3311,13 +3376,22 @@ void MainWindow::layout_controls() {
         static_cast<void>(::GetClientRect(tabs, &tab_client));
         const auto tab_space = std::max(
             1,
-            static_cast<int>(tab_client.right - tab_client.left) - scaled(12, dpi_));
+            static_cast<int>(tab_client.right - tab_client.left) - scaled(36, dpi_));
         const auto tab_width = std::max(1, tab_space / tab_count);
         static_cast<void>(::SendMessageW(
             tabs,
             TCM_SETITEMSIZE,
             0,
             MAKELPARAM(tab_width, scaled(40, dpi_))));
+        RECT last_tab{};
+        if (TabCtrl_GetItemRect(tabs, tab_count - 1, &last_tab) != FALSE) {
+            move_control(
+                control(id::primary_tab_tail),
+                margin + static_cast<int>(last_tab.right),
+                margin,
+                std::max(1, client_width - margin * 2 - static_cast<int>(last_tab.right)),
+                scaled(40, dpi_));
+        }
     }
 
     RECT page_rect{};
@@ -3338,17 +3412,89 @@ void MainWindow::layout_controls() {
     const auto page_right = static_cast<int>(page_points[1].x);
     const auto page_bottom = static_cast<int>(page_points[1].y);
     const auto width = std::max(1, page_right - page_left);
-    const auto height = std::max(1, page_bottom - page_top);
-    for (const auto page : page_windows_) {
+    const auto shell_height = std::max(1, page_bottom - page_top);
+    const auto settings_navigation_visible =
+        page_ == Page::models || page_ == Page::learning || page_ == Page::skills;
+    const auto settings_navigation_height = scaled(44, dpi_);
+    const auto settings_tabs = control(id::settings_tabs);
+    if (settings_navigation_visible) {
+        move_control(
+            settings_tabs,
+            page_left,
+            page_top,
+            width,
+            settings_navigation_height);
+        const auto settings_tab_count = TabCtrl_GetItemCount(settings_tabs);
+        if (settings_tab_count > 0) {
+            const auto settings_tab_width = std::max(
+                1,
+                (width - scaled(36, dpi_)) / settings_tab_count);
+            static_cast<void>(::SendMessageW(
+                settings_tabs,
+                TCM_SETITEMSIZE,
+                0,
+                MAKELPARAM(settings_tab_width, scaled(36, dpi_))));
+            RECT last_settings_tab{};
+            if (TabCtrl_GetItemRect(
+                    settings_tabs,
+                    settings_tab_count - 1,
+                    &last_settings_tab) != FALSE) {
+                move_control(
+                    control(id::settings_tab_tail),
+                    page_left + static_cast<int>(last_settings_tab.right),
+                    page_top,
+                    std::max(1, width - static_cast<int>(last_settings_tab.right)),
+                    settings_navigation_height);
+            }
+        }
+        ::ShowWindow(settings_tabs, SW_SHOW);
+        ::ShowWindow(control(id::settings_tab_tail), SW_SHOW);
+    } else {
+        ::ShowWindow(settings_tabs, SW_HIDE);
+        ::ShowWindow(control(id::settings_tab_tail), SW_HIDE);
+    }
+
+    for (std::size_t index = 0; index < page_windows_.size(); ++index) {
+        const auto page = page_windows_[index];
+        const auto page_kind = static_cast<Page>(index);
+        const auto settings_page =
+            page_kind == Page::models || page_kind == Page::learning || page_kind == Page::skills;
+        const auto host_top = page_top + (settings_page ? settings_navigation_height : 0);
+        const auto host_height = std::max(
+            1,
+            shell_height - (settings_page ? settings_navigation_height : 0));
         static_cast<void>(::SetWindowPos(
             page,
             HWND_TOP,
             page_left,
-            page_top,
+            host_top,
             width,
-            height,
+            host_height,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOCOPYBITS));
     }
+    if (settings_navigation_visible) {
+        static_cast<void>(::SetWindowPos(
+            settings_tabs,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                SWP_NOOWNERZORDER | SWP_SHOWWINDOW));
+        static_cast<void>(::SetWindowPos(
+            control(id::settings_tab_tail),
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                SWP_NOOWNERZORDER | SWP_SHOWWINDOW));
+    }
+    const auto height = std::max(
+        1,
+        shell_height - (settings_navigation_visible ? settings_navigation_height : 0));
 
     const auto gap = scaled(10, dpi_);
     const auto row = scaled(40, dpi_);
@@ -4007,7 +4153,7 @@ void MainWindow::layout_controls() {
     learning_y += row + gap;
 
     const auto target_label_width = scaled(112, dpi_);
-    const auto custom_label_width = scaled(106, dpi_);
+    const auto custom_label_width = scaled(130, dpi_);
     const auto target_combo_width = std::clamp(
         width * 42 / 100,
         scaled(300, dpi_),
@@ -4039,10 +4185,10 @@ void MainWindow::layout_controls() {
         row);
     learning_y += row + gap;
 
-    const auto count_label_width = scaled(122, dpi_);
+    const auto count_label_width = scaled(160, dpi_);
     const auto count_edit_width = scaled(58, dpi_);
-    const auto generate_width = scaled(220, dpi_);
-    const auto queue_width = scaled(230, dpi_);
+    const auto generate_width = scaled(200, dpi_);
+    const auto queue_width = scaled(180, dpi_);
     move_control(
         control(id::learning_count_label),
         0,
@@ -4419,16 +4565,36 @@ void MainWindow::show_page(const Page page) {
 }
 
 void MainWindow::select_page_tab(const Page page) {
-    const auto tabs = control(id::tabs);
-    const auto count = TabCtrl_GetItemCount(tabs);
-    for (auto index = 0; index < count; ++index) {
-        TCITEMW item{};
-        item.mask = TCIF_PARAM;
-        if (TabCtrl_GetItem(tabs, index, &item) != FALSE &&
-            item.lParam == static_cast<LPARAM>(page)) {
-            static_cast<void>(TabCtrl_SetCurSel(tabs, index));
-            return;
+    const auto settings_page =
+        page == Page::models || page == Page::learning || page == Page::skills;
+    const auto primary_page = settings_page
+        ? Page::models
+        : page == Page::logs
+            ? Page::logs
+            : Page::chat;
+
+    const auto select_matching_item = [this](const int tab_id, const Page target) {
+        const auto tabs = control(tab_id);
+        const auto count = TabCtrl_GetItemCount(tabs);
+        for (auto index = 0; index < count; ++index) {
+            TCITEMW item{};
+            item.mask = TCIF_PARAM;
+            if (TabCtrl_GetItem(tabs, index, &item) != FALSE &&
+                item.lParam == static_cast<LPARAM>(target)) {
+                static_cast<void>(TabCtrl_SetCurSel(tabs, index));
+                static_cast<void>(::RedrawWindow(
+                    tabs,
+                    nullptr,
+                    nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW));
+                return;
+            }
         }
+    };
+
+    select_matching_item(id::tabs, primary_page);
+    if (settings_page) {
+        select_matching_item(id::settings_tabs, page);
     }
 }
 
@@ -5476,7 +5642,8 @@ void MainWindow::clear_workspace() {
 void MainWindow::open_local_ai_page() {
     show_page(Page::models);
     select_page_tab(Page::models);
-    set_status(L"Local AI connections and MCP settings");
+    layout_controls();
+    set_status(L"Settings opened to AI connections and tools");
 }
 
 MainWindow::WorkspaceTask MainWindow::workspace_task() const noexcept {
@@ -5947,7 +6114,7 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
     if (selected == nullptr) {
         const auto capability = kind == backend::MediaKind::image ? L"image" : L"audio or music";
         const auto error = L"No ready " + std::wstring(capability) +
-            L" model is configured. Add an OpenAI-compatible endpoint in AI & Tools and mark that ability.";
+            L" model is configured. Add an OpenAI-compatible endpoint under Settings > AI & Tools and mark that ability.";
         set_control_text(id::chat_response, error);
         set_control_text(id::chat_plan, L"No compatible endpoint was selected; no request was sent.");
         set_status(error);
@@ -7045,7 +7212,7 @@ void MainWindow::select_training_skill(const std::string_view skill) {
         static_cast<WPARAM>(selection),
         0));
     const auto custom = selection == custom_training_target_index;
-    static_cast<void>(::EnableWindow(control(id::learning_custom_skill_label), custom));
+    static_cast<void>(::EnableWindow(control(id::learning_custom_skill_label), TRUE));
     static_cast<void>(::EnableWindow(control(id::learning_custom_skill), custom));
 }
 
@@ -7122,7 +7289,7 @@ void MainWindow::handle_training_target_change() {
     }
     training_target_ = selected_training_skill();
     const auto custom_selected = selection == custom_training_target_index;
-    static_cast<void>(::EnableWindow(control(id::learning_custom_skill_label), custom_selected));
+    static_cast<void>(::EnableWindow(control(id::learning_custom_skill_label), TRUE));
     static_cast<void>(::EnableWindow(control(id::learning_custom_skill), custom_selected));
     persist_training_configuration();
 
@@ -7636,8 +7803,10 @@ void MainWindow::start_backend(const bool automatic) {
     if (!internal_model_ready(paths_) &&
         !runtime::native_inference_source_available(paths_)) {
         if (!automatic) {
-            set_status(L"The built-in foundation files are missing. Open AI & Tools for repair options.");
+            set_status(L"The built-in foundation files are missing. Open Settings > AI & Tools for repair options.");
             show_page(Page::models);
+            select_page_tab(Page::models);
+            layout_controls();
         }
         return;
     }
@@ -7709,6 +7878,8 @@ void MainWindow::save_models_editor() {
 void MainWindow::bootstrap_core_skills() {
     if (!internal_model_ready(paths_)) {
         show_page(Page::models);
+        select_page_tab(Page::models);
+        layout_controls();
         create_internal_model(true);
         return;
     }
@@ -7816,6 +7987,7 @@ void MainWindow::start_long_horizon() {
         set_status(L"No responding coding model is available. Discover a local coding model first.");
         show_page(Page::models);
         select_page_tab(Page::models);
+        layout_controls();
         return;
     }
 
@@ -8355,7 +8527,7 @@ void MainWindow::update_periodic_state() {
     } else {
         set_control_text(
             id::chat_mcp_status,
-            L"Optional tools are not connected. Set them up under AI & Tools only if needed.");
+            L"Optional tools are not connected. Set them up under Settings > AI & Tools only if needed.");
     }
 
     if (chat_operation_.running()) {
