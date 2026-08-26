@@ -1,5 +1,7 @@
 #pragma once
 
+#define IDI_ENGCODER 101
+
 #define IDR_DEFAULT_MODELS 202
 #define IDR_SEED_DATA 203
 #define IDR_ANCHOR_DATA 204

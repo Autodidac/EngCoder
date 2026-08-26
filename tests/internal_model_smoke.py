@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU smoke test for ThreadSpire's random-initialized internal model.
+"""CPU smoke test for EngCoder's random-initialized internal model.
 
 This intentionally uses a tiny configuration so it can validate the model ABI,
 checkpoint/preemption path, exact resume state, candidate evaluation, and
@@ -75,6 +75,25 @@ def main() -> int:
         if "instruction-following" in record.get("tags", [])
     }
     assert len(instruction_systems) >= 4
+    training_identity = [
+        record for record in training_records
+        if "identity" in record.get("tags", [])
+    ]
+    held_out_identity = [
+        record for record in anchor_records
+        if "identity" in record.get("tags", [])
+    ]
+    assert len(training_identity) >= 8
+    assert len(held_out_identity) >= 8
+    assert {
+        normalize(record["messages"][-1]["content"])
+        for record in training_identity + held_out_identity
+    }
+    assert all(
+        "engcoder" in normalize(record["messages"][-1]["content"])
+        and "threadspire" not in normalize(record["messages"][-1]["content"])
+        for record in training_identity + held_out_identity
+    )
     assert sum(
         "exact-copy" in record.get("tags", [])
         for record in training_records
@@ -98,6 +117,51 @@ def main() -> int:
 
     temporary = Path(tempfile.mkdtemp(prefix="threadspire-internal-smoke-"))
     try:
+        assert model.strip_training_emoji("Yo! What's good? ⚽ 😁") == "Yo! What's good?"
+        assert model.strip_training_emoji("hello😀world") == "hello world"
+        assert model.strip_training_emoji("1️⃣") == ""
+        assert model.english_vocabulary_ratio(
+            "Three logs were added; it now contains them."
+        ) == 1.0
+        assert model.sanitize_training_response(
+            "I'm ornith, your local model. ⚽",
+            "lmstudio-ornith-1.0-9b",
+        ) == "I am EngCoder."
+        assert model.sanitize_training_response(
+            "I am ThreadSpire's internal model.",
+            "threadspire://fast",
+        ) == "I am EngCoder's internal model."
+
+        sanitized_episodes = temporary / "sanitized-episodes.jsonl"
+        sanitized_episodes.write_text(
+            json.dumps({
+                "skill": "english-core",
+                "eligible_for_training": True,
+                "human_accepted": False,
+                "deterministic_verified": False,
+                "reference_verified": True,
+                "model_id": "lmstudio-ornith-1.0-9b",
+                "prompt": "What is up? ⚽",
+                "response": "I'm ornith, your local model. 😁",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        cleaned_records = worker._load_episodes(  # pylint: disable=protected-access
+            sanitized_episodes,
+            "english-core",
+        )
+        assert len(cleaned_records) == 1
+        assert cleaned_records[0]["prompt"] == "What is up?"
+        assert cleaned_records[0]["response"] == "I am EngCoder."
+        assert "ornith" not in cleaned_records[0]["response"].lower()
+        cleaned_messages = model._record_messages(  # pylint: disable=protected-access
+            json.loads(sanitized_episodes.read_text(encoding="utf-8"))
+        )
+        assert cleaned_messages == [
+            {"role": "user", "content": "What is up?"},
+            {"role": "assistant", "content": "I am EngCoder."},
+        ]
+
         assert model.assess_generation_quality(
             "A clear, ordinary English answer should pass the structural gate."
         ).accepted
@@ -248,7 +312,7 @@ def main() -> int:
         human_episodes = temporary / "human-episodes.jsonl"
         human_records = [
             {
-                "skill": "english-conversation",
+                "skill": "english-core",
                 "eligible_for_training": True,
                 "human_accepted": True,
                 "human_rejected": False,
@@ -264,12 +328,12 @@ def main() -> int:
         )
         assert worker._load_episodes(  # pylint: disable=protected-access
             human_episodes,
-            "english-conversation",
+            "english-core",
         ) == []
         assert model.load_training_sequences(
             [human_episodes],
             128,
-            "english-conversation",
+            "english-core",
         ) == []
 
         human_records.extend([
@@ -286,16 +350,34 @@ def main() -> int:
         )
         assert len(worker._load_episodes(  # pylint: disable=protected-access
             human_episodes,
-            "english-conversation",
+            "english-core",
         )) == 4
         assert len(model.load_training_sequences(
             [human_episodes],
             128,
-            "english-conversation",
+            "english-core",
         )) == 4
 
+        memory_only_episodes = temporary / "memory-only-episodes.jsonl"
+        memory_only_episodes.write_text(
+            "\n".join(
+                json.dumps({**record, "skill": "english-conversation"})
+                for record in human_records
+            ) + "\n",
+            encoding="utf-8",
+        )
+        assert worker._load_episodes(  # pylint: disable=protected-access
+            memory_only_episodes,
+            "english-conversation",
+        ) == []
+        assert model.load_training_sequences(
+            [memory_only_episodes],
+            128,
+            "english-conversation",
+        ) == []
+
         config = model.ModelConfig(
-            name="ThreadSpire Internal Smoke",
+            name="EngCoder Internal Smoke",
             context_length=128,
             d_model=64,
             n_layers=2,
@@ -567,7 +649,7 @@ def main() -> int:
             bootstrap_target_steps=2,
             honor_inference_priority=False,
         )
-        assert preflight_only["status"] == "promoted"
+        assert preflight_only["status"] == "promoted", preflight_only
         assert preflight_only["steps"] == 0
         assert preflight_only["total_steps"] == 2
         assert preflight_only["bootstrap_complete"] is True
@@ -695,7 +777,7 @@ def main() -> int:
         )
         assert planning
         assert all("planning" in route for _, _, route in planning[:16])
-        print("ThreadSpire internal-model smoke test passed")
+        print("EngCoder internal-model smoke test passed")
         return 0
     finally:
         shutil.rmtree(temporary, ignore_errors=True)

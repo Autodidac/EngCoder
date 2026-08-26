@@ -39,8 +39,8 @@ int WINAPI wWinMain(
     try {
         threadspire::ai::app::MainWindow window(instance);
         if (!window.create(show_command)) {
-            ::MessageBoxW(nullptr, L"Unable to create the ThreadSpire window.",
-                          L"ThreadSpire", MB_OK | MB_ICONERROR);
+            ::MessageBoxW(nullptr, L"Unable to create the EngCoder window.",
+                          L"EngCoder", MB_OK | MB_ICONERROR);
             if (SUCCEEDED(ole_result)) {
                 ::OleUninitialize();
             }
@@ -60,7 +60,7 @@ int WINAPI wWinMain(
         return static_cast<int>(message.wParam);
     } catch (const std::exception& exception) {
         const auto text = widen_error(exception.what());
-        ::MessageBoxW(nullptr, text.c_str(), L"ThreadSpire", MB_OK | MB_ICONERROR);
+        ::MessageBoxW(nullptr, text.c_str(), L"EngCoder", MB_OK | MB_ICONERROR);
         if (SUCCEEDED(ole_result)) {
             ::OleUninitialize();
         }

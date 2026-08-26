@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ThreadSpire's locally initialized language model.
+"""EngCoder's locally initialized language model.
 
 This module contains no downloaded model weights.  It defines a compact
 byte-token decoder transformer, its modular skill experts, checkpoint format,
@@ -248,7 +248,7 @@ class ByteTokenizer:
 
 @dataclass(slots=True)
 class ModelConfig:
-    name: str = "ThreadSpire Core"
+    name: str = "EngCoder"
     vocab_size: int = VOCAB_SIZE
     context_length: int = 1024
     d_model: int = 384
@@ -500,7 +500,7 @@ class TransformerBlock(nn.Module):
         return value, present
 
 
-class ThreadSpireModel(nn.Module):
+class EngCoderModel(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         config.validate()
@@ -573,7 +573,7 @@ class ThreadSpireModel(nn.Module):
 
 @dataclass(slots=True)
 class LoadedInternalModel:
-    model: ThreadSpireModel
+    model: EngCoderModel
     config: ModelConfig
     generation: str
     manifest: dict[str, Any]
@@ -635,7 +635,7 @@ def load_generation_model(
         dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else (
             torch.float16 if device.type == "cuda" else torch.float32
         )
-    model = ThreadSpireModel(config)
+    model = EngCoderModel(config)
     model.load_state_dict(load_file(str(path / str(manifest["weights_file"])), device="cpu"), strict=True)
     model.to(device=device, dtype=dtype)
     model.eval()
@@ -796,7 +796,7 @@ def bounded_bootstrap_learning_rate(
 
 def save_generation(
     state_root: Path,
-    model: ThreadSpireModel,
+    model: EngCoderModel,
     config: ModelConfig,
     generation: str,
     *,
@@ -882,7 +882,7 @@ def initialize_model(
         shutil.rmtree(root, ignore_errors=True)
     torch.manual_seed(seed)
     random.seed(seed)
-    model = ThreadSpireModel(config)
+    model = EngCoderModel(config)
     generation = "g000000"
     path = save_generation(
         state_root,
@@ -979,7 +979,7 @@ def _trusted_english_vocabulary(trusted_dataset: str = "") -> frozenset[str]:
         "a", "an", "and", "are", "as", "at", "be", "because", "but",
         "by", "can", "do", "for", "from", "has", "have", "help", "how",
         "i", "if", "in", "is", "it", "me", "not", "of", "on", "or",
-        "please", "ready", "that", "the", "this", "to", "was", "what",
+        "please", "ready", "that", "the", "them", "this", "to", "was", "what",
         "when", "where", "which", "will", "with", "you", "your", "yes",
         "active", "after", "change", "check", "clarify", "differently",
         "error", "every", "exit", "explain", "failed", "first", "identifies",
@@ -1520,7 +1520,7 @@ class GenerationReadiness:
 
 
 def evaluate_generation_readiness(
-    model: ThreadSpireModel,
+    model: EngCoderModel,
     config: ModelConfig,
     generation: str,
     manifest: dict[str, Any],
@@ -1753,18 +1753,93 @@ def evaluate_generation_readiness(
     )
 
 
+_TRAINING_EMOJI_RE = re.compile(
+    "[\u2600-\u27BF\U0001F000-\U0001FFFF\U000E0020-\U000E007F]"
+)
+_TRAINING_KEYCAP_RE = re.compile(r"[#*0-9]\ufe0f?\u20e3")
+_TRAINING_EMOJI_FORMAT_RE = re.compile("[\u200d\ufe0e\ufe0f\u20e3]")
+_IDENTITY_PREFIX_RE = re.compile(
+    r"(?P<prefix>\bi am\s+|\bi['’]m\s+|\bmy name is\s+|"
+    r"\byou can call me\s+|\bthis is\s+|\bas an?\s+)"
+    r"(?P<body>[^.!?\n]{0,192})",
+    re.IGNORECASE,
+)
+_IDENTITY_MARKERS = (
+    "chatgpt", "openai", "claude", "anthropic", "gemini", "google ai",
+    "qwen", "llama", "meta ai", "nemotron", "nvidia", "ornith",
+    "deepseek", "mistral", "language model", "ai model",
+    "artificial intelligence model",
+)
+_IDENTITY_ALIAS_IGNORES = frozenset({
+    "local", "model", "studio", "lmstudio", "connected", "internal",
+    "assistant", "chat", "coder", "fast", "lane", "server",
+})
+
+
+def strip_training_emoji(value: str) -> str:
+    """Remove emoji only from material crossing into memory/weight training."""
+
+    marker = "\x1f"
+    cleaned = _TRAINING_KEYCAP_RE.sub(marker, str(value))
+    cleaned = _TRAINING_EMOJI_RE.sub(marker, cleaned)
+    cleaned = _TRAINING_EMOJI_FORMAT_RE.sub("", cleaned)
+    cleaned = re.sub(rf"[ \t]*{re.escape(marker)}+[ \t]*", " ", cleaned)
+    return cleaned.strip()
+
+
+def _source_identity_aliases(source_model_id: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", source_model_id.lower())
+        if len(token) >= 4
+        and any(character.isalpha() for character in token)
+        and token not in _IDENTITY_ALIAS_IGNORES
+    }
+
+
+def sanitize_training_response(value: str, source_model_id: str = "") -> str:
+    """Keep provider provenance in metadata, never in EngCoder persona text."""
+
+    cleaned = strip_training_emoji(value)
+    cleaned = re.sub(r"\bThreadSpire\b", "EngCoder", cleaned, flags=re.IGNORECASE)
+    aliases = _source_identity_aliases(source_model_id)
+
+    def normalize_clause(match: re.Match[str]) -> str:
+        clause = match.group(0).lower()
+        if not (
+            any(marker in clause for marker in _IDENTITY_MARKERS)
+            or any(alias in clause for alias in aliases)
+        ):
+            return match.group(0)
+        return "As EngCoder" if match.group("prefix").lower().lstrip().startswith("as ") else "I am EngCoder"
+
+    return _IDENTITY_PREFIX_RE.sub(normalize_clause, cleaned).strip()
+
+
 def _record_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
+    source_model_id = str(record.get("model_id", ""))
     messages = record.get("messages")
     if isinstance(messages, list):
-        clean = [
-            {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
-            for item in messages
-            if isinstance(item, dict) and str(item.get("content", "")).strip()
-        ]
+        clean: list[dict[str, str]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "user"))
+            content = str(item.get("content", ""))
+            content = (
+                sanitize_training_response(content, source_model_id)
+                if role.lower() == "assistant"
+                else strip_training_emoji(content)
+            )
+            if content:
+                clean.append({"role": role, "content": content})
         if clean and any(message["role"].lower() == "assistant" for message in clean):
             return clean
-    prompt = str(record.get("prompt", "")).strip()
-    response = str(record.get("response", "")).strip()
+    prompt = strip_training_emoji(str(record.get("prompt", "")))
+    response = sanitize_training_response(
+        str(record.get("response", "")),
+        source_model_id,
+    )
     if prompt and response:
         return [
             {"role": "user", "content": prompt},
@@ -1774,6 +1849,17 @@ def _record_messages(record: dict[str, Any]) -> list[dict[str, str]] | None:
 
 
 _MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
+_WEIGHT_TRAINING_SKILLS = frozenset({
+    "english-core",
+    "english-foundation",
+    "cpp23-core",
+    "cpp23-debugging",
+    "planning",
+})
+
+
+def _weight_training_skill(value: str) -> bool:
+    return normalize_skill(value) in _WEIGHT_TRAINING_SKILLS
 
 
 def _human_only_training_record(record: dict[str, Any]) -> bool:
@@ -1798,7 +1884,9 @@ def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
                     continue
                 if not bool(record.get("eligible_for_training", False)) or not _human_only_training_record(record):
                     continue
-                prompt = str(record.get("prompt", "")).strip()
+                if not _weight_training_skill(str(record.get("skill", record.get("domain", "general")))):
+                    continue
+                prompt = strip_training_emoji(str(record.get("prompt", "")))
                 if not prompt:
                     messages = _record_messages(record) or []
                     prompt = next(
@@ -1923,6 +2011,8 @@ def load_training_sequences(
                 if "eligible_for_training" in record:
                     if not bool(record.get("eligible_for_training", False)):
                         continue
+                    if not _weight_training_skill(record_skill):
+                        continue
                     if not (
                         bool(record.get("human_accepted", False))
                         or bool(record.get("deterministic_verified", False))
@@ -1991,7 +2081,7 @@ def collate_batch(
 
 
 def evaluate_loss(
-    model: ThreadSpireModel,
+    model: EngCoderModel,
     sequences: Sequence[TrainingSequence],
     device: torch.device,
     limit: int = 32,
@@ -2010,7 +2100,7 @@ def evaluate_loss(
     return sum(losses) / len(losses) if losses else float("inf")
 
 
-def configure_training_scope(model: ThreadSpireModel, scope: str) -> list[nn.Parameter]:
+def configure_training_scope(model: EngCoderModel, scope: str) -> list[nn.Parameter]:
     scope = canonical_training_scope(scope)
     for parameter in model.parameters():
         parameter.requires_grad = False
@@ -2051,7 +2141,7 @@ def _next_generation(state_root: Path, parent: str) -> str:
 
 def save_training_checkpoint(
     path: Path,
-    model: ThreadSpireModel,
+    model: EngCoderModel,
     optimizer: torch.optim.Optimizer,
     *,
     parent: str,

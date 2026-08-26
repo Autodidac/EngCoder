@@ -1,8 +1,8 @@
-# ThreadSpire
+# EngCoder
 
-ThreadSpire is a local task workbench: describe one outcome and run it through a compatible local AI or tool. Text, code help, optional repository work, optional tools, image generation, and speech generation share one **Chat** surface. Chat always shows which AI is handling requests and whether the built-in AI is ready, starting, or learning automatically.
+EngCoder is a local task workbench: describe one outcome and run it through a compatible local AI or tool. Text, code help, optional repository work, optional tools, image generation, and speech generation share one **Chat** surface. Chat always shows which AI is handling requests and whether the built-in AI is ready, starting, or learning automatically.
 
-ThreadSpire can also run and continuously improve a **locally initialized built-in AI**. The native base application does not require Python or PyTorch. When the optional built-in AI files are available, ThreadSpire installs them transactionally, checks them, creates or resumes the model, completes the bounded learning target, and starts it automatically while yielding to active tasks.
+EngCoder can also run and continuously improve a **locally initialized built-in AI**. The native base application does not require Python or PyTorch. When the optional built-in AI files are available, EngCoder installs them transactionally, checks them, creates or resumes the model, completes the bounded learning target, and starts it automatically while yielding to active tasks.
 
 The internal model does not load Qwen, Llama, OpenAI, LM Studio, Ollama, or Hugging Face model weights. Its transformer weights are created from random initialization on the user's machine, trained by the private PyTorch worker, evaluated as shadow generations, and promoted only when the candidate passes the configured gates.
 
@@ -10,21 +10,22 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 
 ## What is included
 
-- One C++23 Win32 GUI: `ThreadSpire.exe`
+- One C++23 Win32 GUI: `EngCoder.exe`
 - Dark native Windows interface, including a dark title bar and dark controls
 - Eleven named C++23 modules built through CMake `FILE_SET CXX_MODULES`
 - Native base executable with no Python/PyTorch runtime dependency and a 100 MiB installed-size ceiling
 - Transactional optional AI packages with automatic setup and backup-only repair controls
 - Live phase, overall progress, verified-token count, elapsed time, measured ETA, heartbeat, and exact failure reporting
 - Optional custom decoder-only transformer supplied by the internal-training pack
-- Deterministic UTF-8 byte tokenizer owned by ThreadSpire
+- Deterministic UTF-8 byte tokenizer owned by EngCoder
+- Training-only emoji removal and provider-persona normalization, with exact cleaned text visible before approval
 - Per-layer modular skill experts for:
   - English core
   - C++23 core
   - C++23 debugging
   - planning
 - Random local initialization with no external base checkpoint
-- 3,632 unique bootstrap training records
+- 4,247 unique bootstrap training records
 - 320 disjoint held-out anchors
 - Full-weight shadow-candidate training
 - Exact-resume checkpoints containing model, optimizer, pending gradients, accumulation phase, data order/cursor, and CPU/CUDA random state
@@ -44,9 +45,9 @@ Connected local LLM servers remain available as optional bridges, teachers, veri
 
 | Profile | Parameters | Context | Intended use |
 |---|---:|---:|---|
-| Micro | 22,527,360 | 1,024 byte tokens | Fast architecture and continual-learning experiments |
-| Standard | 49,962,496 | 1,536 byte tokens | Better local capacity at moderate training cost |
-| Large local | 93,586,560 | 2,048 byte tokens | Highest included capacity for the RTX 5080 class |
+| Small | 22,527,360 | 1,024 byte tokens | Fastest setup and narrow continual learning |
+| Medium | 49,962,496 | 1,536 byte tokens | Balanced local capacity and training cost |
+| Large | 93,586,560 | 2,048 byte tokens | Highest included capacity for the RTX 5080 class |
 
 The stored float32 weights are larger than the executable. Approximate raw weight sizes are 90 MB, 200 MB, and 374 MB respectively, before optimizer checkpoints. The application executable contains the architecture and bootstrap data, not a hidden imported model.
 
@@ -67,7 +68,7 @@ From PowerShell in the extracted project directory, build, validate, and launch 
 .\BUILD_AND_RUN.cmd clean
 ```
 
-`BUILD_AND_RUN.cmd` detects Visual Studio 2022 or 2026 and launches the generated Release executable. It closes an older running ThreadSpire instance before replacing it. Later incremental rebuilds can use `.\BUILD_AND_RUN.cmd` without `clean`. The lower-level `build.cmd` remains available when building without launching.
+`BUILD_AND_RUN.cmd` detects Visual Studio 2022 or 2026 and launches the generated Release executable. It closes an older running EngCoder instance before replacing it. Later incremental rebuilds can use `.\BUILD_AND_RUN.cmd` without `clean`. The lower-level `build.cmd` remains available when building without launching.
 
 Application state is stored under:
 
@@ -75,11 +76,13 @@ Application state is stored under:
 %LOCALAPPDATA%\ThreadSpire
 ```
 
+The legacy directory name is intentionally retained so EngCoder can reuse existing approved models, chats, memory, queues, and learning history. It is a compatibility path, not the product name.
+
 ## Automatic built-in AI setup
 
-Launch immediately starts Chat, discovers compatible AI apps, and coordinates the built-in AI in the background. A complete optional setup payload supplied beside the application or in ThreadSpire's setup inbox is discovered automatically. Its files are staged, checked, committed atomically, and rolled back on cancellation or failure. The file transaction never changes the chosen AI or interrupts a task; the idle-safe coordinator performs later setup steps separately.
+Launch immediately starts Chat, discovers compatible AI apps, and coordinates the built-in AI in the background. A complete optional setup payload supplied beside the application or in EngCoder's setup inbox is discovered automatically. Its files are staged, checked, committed atomically, and rolled back on cancellation or failure. The file transaction never changes the chosen AI or interrupts a task; the idle-safe coordinator performs later setup steps separately.
 
-After the optional files are ready, ThreadSpire automatically checks them, creates or resumes the built-in AI, and starts it after all quality checks pass. Training is a durable serialized queue with `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, and `recoverable-failed` states. Duplicate jobs coalesce, interrupted work resumes from an atomic checkpoint, and anything the user is doing has priority.
+After the optional files are ready, EngCoder automatically checks them, creates or resumes the built-in AI, and starts it after all quality checks pass. Training is a durable serialized queue with `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, and `recoverable-failed` states. Duplicate jobs coalesce, interrupted work resumes from an atomic checkpoint, and anything the user is doing has priority.
 
 New automatic setups choose the smallest profile and its 24,000-step target. Existing Medium and Large models retain their 36,000- and 50,000-step targets. Each target stops boundedly at its cap with diagnostics. Curated seeds retain provenance, normalized records are deduplicated, validation is deterministic and disjoint, and an independent verifier—not the teacher model—controls admission and promotion.
 
@@ -116,35 +119,36 @@ Each generation records:
 
 ## Internal model versus connected local LLM
 
-The AI source selector is authoritative:
+The two AI selectors are authoritative:
 
-- **Built-in AI first (safe backup)** — tries a fully approved ThreadSpire model first and automatically uses a connected AI if the live answer is rejected.
-- **Another AI app only** — uses a selected compatible AI app running on the computer.
-- **Automatic** — uses the fastest ready AI that fits the task.
+- **Use AIs from** chooses the allowed group: **Anywhere — automatic backup (default)**, **Other AI apps only**, or **Built-in EngCoder only**.
+- **Choose AI** can leave EngCoder free to choose inside that group or lock one exact AI.
 
-At launch, an unavailable built-in preference falls back to Automatic instead of hiding another working AI app. Chat shows both connected-AI availability and built-in-AI progress without switching tabs. Automatic setup, recovery, learning, and startup yield to active work; training never changes the selected model, and a rejected built-in draft never reaches the conversation.
+Automatic backup occurs only with the default Anywhere group and no exact AI selected. Choosing a specific AI contacts that AI once; a failure is shown cleanly and no other model is contacted. Choosing **Built-in EngCoder only** lets EngCoder choose among its built-in lanes without ever contacting an outside model. Chat always shows connected-AI availability and built-in training/readiness without changing tabs. Setup, recovery, learning, and startup yield to active work and never change these selectors.
 
 A connected model can be marked as a teacher or verifier. Teacher output becomes candidate data only; it never becomes the internal inference model directly. Unverified generated examples remain quarantined. Compiler/test-confirmed results, explicit user corrections, and accepted answers can become verified internal training evidence.
 
 ## Continuous learning
 
-ThreadSpire learns at three speeds:
+EngCoder learns at three speeds:
 
-1. **Immediate context and memory** — the most recent conversation turns are passed directly to inference, while accepted durable context is retrievable without changing weights.
-2. **Internal skill updates** — verified examples train only the selected internal skill expert or, for bootstrap, the whole model.
+1. **Immediate context and memory** — recent turns are passed directly to inference. Explicit personal facts and preferences live in an editable permanent user-memory store that is never weight training.
+2. **Internal skill updates** — verified examples may train only `english-core`, `english-foundation`, `cpp23-core`, `cpp23-debugging`, or `planning`; all other subjects remain retrieval memory.
 3. **Optional external-model LoRA** — retained as an advanced workflow for imported models, not used by the internal source.
+
+Connected teachers can generate diverse examples in parallel with up to four workers per teacher. A different model verifies each attempt; accepted, rejected, and failed attempts are all retained in `teacher-attempts.jsonl` and visible in the training library. The internal model never teaches or verifies itself.
 
 The active generation is never trained in place. Training starts from the active parent, writes resumable shadow state, evaluates held-out anchors, and atomically advances `active.json` only when the candidate passes. A stale or failed candidate cannot overwrite the active model.
 
 Foreground inference has priority. Training checkpoints and yields when an inference lease appears, then resumes from the exact saved optimizer/data/RNG state.
 
-For the ThreadSpire internal model, each newly admitted independently verified episode can queue a scoped shadow-weight update when learning is enabled. Multiple examples for the same skill coalesce behind the active job instead of launching duplicate trainers. Package selection remains isolated from this queue.
+For the EngCoder internal model, each newly admitted independently verified episode can queue a scoped shadow-weight update when learning is enabled. Multiple examples for the same skill coalesce behind the active job instead of launching duplicate trainers. Package selection remains isolated from this queue.
 
 The **Learning** page exposes the actual pipeline rather than only the evidence collector: pending evidence per skill, queued weight updates, the active candidate, trainer phase and step, loss, verified-token count, elapsed time, measured ETA, progress-file path, and the live trainer-log tail.
 
 ## Internal-output quality boundary
 
-The Micro model is intentionally small and begins undertrained. ThreadSpire therefore applies exact byte n-gram blocking during generation and a conservative structural gate before an internal draft reaches the UI. A repetitive or structurally corrupt draft is retried once with greedy decoding. If it still fails, the draft is discarded as `low_confidence`; Automatic source mode can move the request to another eligible connected local model.
+The Small model is intentionally compact and begins undertrained. EngCoder therefore applies exact byte n-gram blocking during generation and a conservative structural gate before an internal draft reaches the UI. A repetitive or structurally corrupt draft is retried once with greedy decoding. If it still fails, the draft is discarded as `low_confidence`; Automatic source mode can move the request to another eligible connected local model.
 
 Before neural drafting, the local host performs only independently recomputable operations such as case conversion, bounded arithmetic, exact-format copying, and grounded extraction. It may also return an accepted curated answer when the local prompt match is exact or high-confidence. These results still pass the same live gate; unmatched malformed neural text remains `low_confidence`.
 
@@ -152,7 +156,7 @@ This gate blocks obvious loops and corruption. It does not prove factual correct
 
 ## Bootstrap corpus
 
-`resources/bootstrap.jsonl` contains 4,239 unique training records spanning:
+`resources/bootstrap.jsonl` contains 4,247 unique training records spanning:
 
 - English conversation and instruction following
 - ordinary profanity without irrelevant refusal
@@ -171,19 +175,19 @@ This corpus is enough to validate the architecture and begin narrow learning. It
 
 ## Interface
 
-1. **Chat** — choose Ask/write, Code help, optional Repository task, Generate image, Generate speech, or Use tools; then select a compatible source/model and run it from the same prompt/output surface. Ordinary use does not require a repository.
-2. **AI Setup** — a plain automatic readiness view; manual addresses, optional tools, file replacement, checks, rebuilding, and saved-list editing stay hidden under **Backup and repair options**.
-3. **Learning** — automatic by default, with target choice, trusted-file import, and recovery controls available as backup.
-4. **Skills** — internal skill generations, optional LoRA candidates, promotion, and rollback.
-5. **Storage & Logs** — the six live storage cards, detailed disk accounting, and backend/compiler/training/trajectory logs.
+1. **Chat** — persistent named chats, New/Delete chat, file attachments, streaming/Stop, and Copy/Edit/Retry/Accept/Reject/Learn actions per reply. Choose Ask/write, Code help, optional Repository task, Generate image, Generate speech, or Use tools from the same surface. Repository controls appear only when that task needs them.
+2. **AI & Tools** — automatic readiness plus connected local AIs and optional tools; manual addresses and repair controls stay under **Backup and repair options**.
+3. **Memory & Learning** — the complete searchable training library, accepted/rejected teacher attempts, exact learning previews, permanent user-memory editing, live candidate progress, and backup recovery controls.
+4. **Capabilities** — internal skill generations, optional LoRA candidates, promotion, and rollback.
+5. **Files & Activity** — the six live storage cards, disk accounting, outputs, and backend/compiler/training/trajectory logs.
 
 Backup-only AI connection entries can declare what an AI can do, such as `chat`, `code`, `repository`, `tools`, `image`, `speech`, or `audio`. The Chat task selector filters models by those capabilities. Image requests use `/v1/images/generations`; speech requests use `/v1/audio/speech`. Generated files are saved under `%LOCALAPPDATA%\ThreadSpire\outputs` and can be opened directly from Chat.
 
 ## Storage limits
 
-**Storage & Logs** keeps six dark live cards in view: **Current Model**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), and **Free Disk**. It also reports largest files/directories, projected pack download/install sizes, and category quotas without cluttering Chat.
+**Files & Activity** keeps six dark live cards in view: **Current Model**, **Accepted Training Data**, **Installed Packs**, **Outputs / Cache**, **Total Usage** (including growth since the previous sample), and **Free Disk**. It also reports largest files/directories, projected pack download/install sizes, and category quotas without cluttering Chat.
 
-Cleanup is restricted to no-follow ThreadSpire-owned logs, unpromoted candidates, checkpoints, outputs, and caches. Active model lineage and paths outside the application root are protected. The base installed tree excludes models and optional packs and must remain at or below 100 MiB; large PyTorch dependencies belong in an explicit pack and are reported separately.
+Cleanup is restricted to no-follow EngCoder-owned logs, unpromoted candidates, checkpoints, outputs, and caches. Active model lineage and paths outside the application root are protected. The base installed tree excludes models and optional packs and must remain at or below 100 MiB; large PyTorch dependencies belong in an explicit pack and are reported separately.
 
 ## Validation
 

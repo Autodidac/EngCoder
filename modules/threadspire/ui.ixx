@@ -85,6 +85,13 @@ private:
         blocked,
     };
 
+    struct ChatSummary final {
+        std::string id;
+        std::string title;
+        std::filesystem::path path;
+        std::filesystem::file_time_type modified{};
+    };
+
     struct ResponseTurn final {
         std::string prompt;
         std::string response;
@@ -93,6 +100,7 @@ private:
         std::string model_id;
         std::vector<std::string> models_used;
         std::vector<std::string> tool_events;
+        std::vector<std::filesystem::path> input_files;
         RequestSurface surface{RequestSurface::assistant};
         bool learning_weight_eligible{false};
         std::string learning_destination;
@@ -128,6 +136,10 @@ private:
     void update_piggyback_result();
     void update_learning_report();
     void update_training_library();
+    void update_user_memory_controls(std::string_view selected_id = {});
+    void select_user_memory();
+    void save_user_memory();
+    void forget_user_memory();
     void update_skill_report();
     void update_media_result();
     void update_storage_report(bool force = false);
@@ -141,6 +153,16 @@ private:
     void stop_active_request();
     void yield_automatic_bootstrap_to_foreground();
     void clear_workspace();
+    void load_chat_sessions();
+    void refresh_chat_session_selector();
+    void persist_current_chat();
+    void load_chat_session(std::string_view id);
+    void switch_chat_session();
+    void delete_current_chat();
+    void edit_selected_prompt();
+    void retry_selected_response();
+    void attach_files();
+    void update_attachment_controls();
     void open_local_ai_page();
     void recreate_ui_font();
 
@@ -233,6 +255,7 @@ private:
     void open_path(const std::filesystem::path& path) const;
     [[nodiscard]] std::optional<std::filesystem::path> choose_python() const;
     [[nodiscard]] std::optional<std::filesystem::path> choose_training_dataset() const;
+    [[nodiscard]] std::vector<std::filesystem::path> choose_files() const;
     [[nodiscard]] std::optional<std::filesystem::path> choose_directory(
         std::wstring_view title) const;
 
@@ -244,6 +267,7 @@ private:
     unsigned int dpi_{96};
     Page page_{Page::chat};
     AppPaths paths_;
+    memory::UserMemoryStore user_memory_store_;
     std::filesystem::path selected_python_;
     std::filesystem::path selected_pack_source_;
     models::ModelRegistry model_registry_;
@@ -284,12 +308,17 @@ private:
     std::string pending_stream_text_;
     int stream_target_control_{0};
     std::vector<std::string> model_selector_ids_;
+    std::vector<std::string> user_memory_ids_;
     std::string preferred_model_id_;
     InferenceSource inference_source_{InferenceSource::automatic};
     std::string workspace_transcript_;
     std::vector<std::pair<std::string, std::string>> conversation_history_;
     std::size_t pending_transcript_heading_offset_{std::string::npos};
     std::vector<ResponseTurn> response_turns_;
+    std::vector<ChatSummary> chat_sessions_;
+    std::string current_chat_id_;
+    std::vector<std::filesystem::path> attached_files_;
+    std::vector<std::filesystem::path> last_input_files_;
     std::size_t selected_response_turn_index_{std::string::npos};
     std::size_t pending_transcript_heading_length_{0};
     bool interactive_model_verified_{false};

@@ -34,7 +34,7 @@ ctest --preset %PRESET%-release
 if errorlevel 1 goto :failed
 
 echo.
-echo Built: %CD%\out\build\%PRESET%\bin\Release\ThreadSpire.exe
+echo Built: %CD%\out\build\%PRESET%\bin\Release\EngCoder.exe
 popd
 exit /b 0
 

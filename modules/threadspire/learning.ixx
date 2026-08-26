@@ -196,6 +196,10 @@ public:
 };
 
 [[nodiscard]] std::string_view to_string(KnowledgeDestination destination) noexcept;
+[[nodiscard]] std::string sanitize_training_text(std::string_view value);
+[[nodiscard]] std::string sanitize_training_response(
+    std::string_view value,
+    std::string_view source_model_id);
 
 } // namespace threadspire::ai::learning
 
@@ -264,6 +268,9 @@ struct LearningSubmissionPreview final {
     std::size_t accepted_skill_examples{0};
     std::string content_hash;
     std::string reason;
+    std::string stored_prompt;
+    std::string stored_response;
+    bool training_text_adjusted{false};
 };
 
 
@@ -372,6 +379,10 @@ struct PiggybackRequest final {
     std::string internal_base_url;
     models::ModelProfile teacher;
     std::optional<models::ModelProfile> verifier;
+    std::vector<models::ModelProfile> teachers;
+    std::vector<models::ModelProfile> verifiers;
+    std::filesystem::path audit_log;
+    std::size_t maximum_parallel_per_teacher{4};
     std::size_t seed_offset{0};
     std::size_t maximum_examples{16};
     std::size_t maximum_output_tokens{768};
@@ -386,6 +397,9 @@ struct PiggybackProgress final {
     std::size_t verified{0};
     std::size_t stored{0};
     std::size_t rejected{0};
+    std::size_t attempted{0};
+    std::size_t teacher_models{0};
+    std::size_t maximum_parallel{0};
     std::size_t next_seed_offset{0};
     std::string current_prompt;
     std::string message;

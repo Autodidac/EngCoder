@@ -226,8 +226,46 @@ void test_manual_model_choice_disables_fallback() {
                 result.plan.stages.front().role != "automatic-fallback",
             "a locked model request must never add an automatic fallback stage");
     require(result.error.find("No other AI was used") != std::string::npos,
-            "the locked-model failure must clearly say that ThreadSpire did not switch AIs");
+            "the locked-model failure must clearly say that EngCoder did not switch AIs");
 
+    std::filesystem::remove_all(root);
+}
+
+void test_permanent_user_memory_is_atomic_editable_and_never_weights() {
+    const auto root = temporary_root();
+    const auto path = root / "user-profile.jsonl";
+    std::string saved_id;
+    {
+        threadspire::ai::memory::UserMemoryStore store(path);
+        const auto remembered = store.remember_from_prompt(
+            "Remember that I prefer dark interfaces");
+        require(remembered.has_value(),
+                "an explicit harmless preference should enter permanent user memory");
+        saved_id = remembered->id;
+        require(!store.remember_from_prompt(
+                    "Remember that my API key is secret-123").has_value(),
+                "likely credentials must never be captured as permanent memory");
+        const auto context = store.context_for("How should this interface look?");
+        require(context.find("dark interfaces") != std::string::npos &&
+                    context.find("never model-weight training") != std::string::npos,
+                "user memory must be available as context and label its hard weight boundary");
+    }
+    {
+        threadspire::ai::memory::UserMemoryStore recovered(path);
+        const auto items = recovered.items();
+        require(items.size() == 1U && items.front().id == saved_id,
+                "permanent user memory must survive process restart without duplication");
+        const auto updated = recovered.upsert({
+            .id = saved_id,
+            .text = "I prefer low-contrast dark interfaces",
+            .source = "test-editor",
+            .pinned = true,
+        });
+        require(updated.id == saved_id && recovered.items().front().pinned,
+                "a user must be able to edit and pin one memory in place");
+        require(recovered.forget(saved_id) && recovered.items().empty(),
+                "a user must be able to forget one memory completely");
+    }
     std::filesystem::remove_all(root);
 }
 
@@ -432,7 +470,7 @@ void test_learning_preview_blocks_errors_and_repetition() {
 
     const auto accepted_episode = [](const int index) {
         threadspire::ai::memory::Episode episode{};
-        episode.skill = "conversation";
+        episode.skill = "english-core";
         episode.prompt = "Unique approved message " + std::to_string(index);
         episode.response = "Safe useful reply " + std::to_string(index);
         episode.model_id = "internal-fast";
@@ -451,8 +489,36 @@ void test_learning_preview_blocks_errors_and_repetition() {
                 unsafe_preview.destination ==
                     threadspire::ai::learning::KnowledgeDestination::reject,
             "visible model errors must never be accepted as learning material");
-    require(!service.submit(unsafe) && service.memory_store().count_for_skill("conversation") == 0U,
+    require(!service.submit(unsafe) && service.memory_store().count_for_skill("english-core") == 0U,
             "blocked model errors must not touch persistent memory");
+
+    auto decorated = accepted_episode(100);
+    decorated.skill = "english-conversation";
+    decorated.prompt = "What is up? ⚽";
+    decorated.response = "I'm ornith, your local model. 😁";
+    decorated.model_id = "lmstudio-ornith-1.0-9b";
+    const auto decorated_preview = service.preview(decorated);
+    require(decorated_preview.would_store && decorated_preview.training_text_adjusted,
+            "emoji and provider persona must be cleaned before a learning record is stored");
+    require(decorated_preview.stored_prompt == "What is up?" &&
+                decorated_preview.stored_response == "I am EngCoder.",
+            "the preview must show the exact emoji-free EngCoder text that training receives");
+    require(service.submit(decorated) &&
+                service.memory_store().count_for_skill("english-conversation") == 1U,
+            "the cleaned record should be stored once while provider provenance remains metadata");
+
+    auto emoji_only = accepted_episode(101);
+    emoji_only.response = "⚽😁";
+    const auto emoji_only_preview = service.preview(emoji_only);
+    require(!emoji_only_preview.would_store &&
+                emoji_only_preview.destination ==
+                    threadspire::ai::learning::KnowledgeDestination::reject,
+            "emoji-only assistant output must become empty and be rejected, never trained");
+
+    require(threadspire::ai::learning::sanitize_training_response(
+                "I am ThreadSpire's model.", "legacy-model") ==
+                "I am EngCoder's model.",
+            "legacy product identity must normalize to EngCoder in training text");
 
     for (int index = 1; index <= 4; ++index) {
         auto episode = accepted_episode(index);
@@ -470,8 +536,8 @@ void test_learning_preview_blocks_errors_and_repetition() {
     require(duplicate_preview.duplicate && !duplicate_preview.would_store &&
                 !service.submit(std::move(competing)),
             "another answer for one approved prompt must be coalesced before storage");
-    require(service.memory_store().count_for_skill("conversation") == 4U &&
-                service.memory_store().training_count_for_skill("conversation") == 1U,
+    require(service.memory_store().count_for_skill("english-core") == 4U &&
+                service.memory_store().training_count_for_skill("english-core") == 1U,
             "four unique approvals should yield four memory records but only the gated weight record");
     service.request_stop();
     std::filesystem::remove_all(root);
@@ -581,6 +647,23 @@ void test_knowledge_classifier_routes_volatile_state_to_retrieval() {
             "volatile project state must remain outside weights");
     require(!decision.eligible_for_weight_training,
             "volatile state must never be weight-training input");
+}
+
+void test_knowledge_classifier_rejects_noncore_weight_topics() {
+    threadspire::ai::learning::KnowledgeClassifier classifier;
+    const auto decision = classifier.classify(threadspire::ai::memory::Episode{
+        .id = "conversation",
+        .skill = "english-conversation",
+        .prompt = "What's up?",
+        .response = "Not much. What's on your mind?",
+        .model_id = "teacher",
+        .score = 0.99,
+        .reference_verified = true,
+        .self_generated = true,
+    }, 100U);
+    require(decision.destination == threadspire::ai::learning::KnowledgeDestination::retrieval_memory &&
+                !decision.eligible_for_weight_training,
+            "conversation phrases must remain memory even when reference-verified");
 }
 
 void test_resource_governor_prioritizes_inference() {
@@ -913,8 +996,9 @@ void test_targeted_and_custom_training_import() {
             service);
         require(custom.succeeded && custom.progress.examined == 2U,
                 "Trusted custom import must accept both messages and prompt/response JSONL records");
-        require(service.memory_store().training_count_for_skill("custom-domain") == 2U,
-                "A selected custom target must own every imported custom record");
+        require(service.memory_store().count_for_skill("custom-domain") == 2U &&
+                    service.memory_store().training_count_for_skill("custom-domain") == 0U,
+                "A selected custom target must retain every trusted record as memory without entering core weights");
         service.request_stop();
     }
     std::filesystem::remove_all(root);
@@ -934,7 +1018,7 @@ void test_internal_model_lifecycle_state_and_progress() {
     {
         std::ofstream manifest(generation_root / "manifest.json");
         manifest << R"({
-            "name":"ThreadSpire Core Micro",
+            "name":"EngCoder",
             "status":"trained",
             "parameter_count":22527360,
             "tokens_seen":4961,
@@ -1052,22 +1136,42 @@ void test_windows_ui_source_contract() {
                 ui.find("Start the model server before running an autonomous coding task") == std::string::npos,
             "local bridge inference must not be blocked by the custom PyTorch host");
     require(ui.find("L\"Chat\", Page::chat") != std::string::npos &&
-                ui.find("L\"AI Setup\", Page::models") != std::string::npos &&
+                ui.find("L\"AI & Tools\", Page::models") != std::string::npos &&
+                ui.find("L\"Memory & Learning\", Page::learning") != std::string::npos &&
+                ui.find("L\"Capabilities\", Page::skills") != std::string::npos &&
                 ui.find("L\"Run Details\", Page::long_horizon") == std::string::npos &&
-                ui.find("L\"Storage & Logs\", Page::logs") != std::string::npos &&
+                ui.find("L\"Files & Activity\", Page::logs") != std::string::npos &&
                 ui.find("L\"Coding Agent\", Page::coding") == std::string::npos,
             "primary navigation must keep chat and creation clear while repository automation remains an execution profile instead of a duplicate console");
-    require(ui.find("ThreadSpire — local evolving AI") != std::string::npos,
-            "the user-facing application source must use the ThreadSpire product name");
+    require(ui.find("EngCoder — local evolving intelligence") != std::string::npos,
+            "the user-facing application source must use the EngCoder product name");
+    const auto completion_client = read_text_file(
+        source / "src/backend/completion_client.cpp");
+    require(completion_client.find("Your public identity is EngCoder") != std::string::npos &&
+                completion_client.find("Never identify yourself as the underlying") != std::string::npos,
+            "every connected provider request must enforce the EngCoder public identity");
+    require(ui.find("widen(preview.stored_prompt)") != std::string::npos &&
+                ui.find("widen(preview.stored_response)") != std::string::npos &&
+                ui.find("emoji or underlying AI identity removed") != std::string::npos,
+            "the Learn preview must show exact sanitized training text without altering chat display");
     require(ui.find("L\"Use AIs from\"") != std::string::npos &&
                 ui.find("L\"Anywhere — automatic backup (default)\"") != std::string::npos &&
                 ui.find("L\"Other AI apps only\"") != std::string::npos &&
-                ui.find("L\"ThreadSpire built-in only\"") != std::string::npos &&
+                ui.find("L\"Built-in EngCoder only\"") != std::string::npos &&
                 ui.find("L\"Choose AI\"") != std::string::npos &&
                 ui.find("update_inference_source") != std::string::npos &&
                 ui.find("preferred-source.txt") != std::string::npos &&
                 ui.find("id::chat_stop") != std::string::npos &&
-                ui.find("id::chat_clear") != std::string::npos,
+                ui.find("id::chat_clear") != std::string::npos &&
+                ui.find("id::chat_session") != std::string::npos &&
+                ui.find("L\"Delete chat\"") != std::string::npos &&
+                ui.find("L\"New chat\"") != std::string::npos &&
+                ui.find("id::chat_edit") != std::string::npos &&
+                ui.find("id::chat_retry") != std::string::npos &&
+                ui.find("L\"Attach files…\"") != std::string::npos &&
+                ui.find("persist_current_chat()") != std::string::npos &&
+                ui.find("MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH") != std::string::npos &&
+                ui.find(".input_files = std::move(input_files)") != std::string::npos,
             "the primary workspace must expose an explicit synchronized runtime source and complete conversation controls");
     require(ui.find("L\"Generate image\"") != std::string::npos &&
                 ui.find("L\"Generate speech\"") != std::string::npos &&
@@ -1090,8 +1194,8 @@ void test_windows_ui_source_contract() {
                 ui.find(".context = std::move(execution_context)") != std::string::npos &&
                 ui.find("Current user message:") == std::string::npos,
             "the workspace must keep the exact current user message separate from bounded background context and route analysis");
-    require(ui.find("L\"What will it learn?\"") != std::string::npos &&
-                ui.find("L\"Include earlier chat\"") != std::string::npos &&
+    require(ui.find("L\"Learn?\"") != std::string::npos &&
+                ui.find("L\"Use earlier chat\"") != std::string::npos &&
                 ui.find("response_turns_.push_back") != std::string::npos &&
                 ui.find("copy_selected_response") != std::string::npos &&
                 ui.find("EARLIER CONVERSATION INCLUDED BY USER") != std::string::npos &&
@@ -1107,6 +1211,16 @@ void test_windows_ui_source_contract() {
                 learning_service.find("contains_positive_prompt") != std::string::npos &&
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
             "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
+
+    const auto foundry = read_text_file(source / "src/learning/piggyback_foundry.cpp");
+    require(foundry.find("std::launch::async") != std::string::npos &&
+                foundry.find("parallel-local-teacher-audit") != std::string::npos &&
+                foundry.find("append_teacher_audit") != std::string::npos &&
+                foundry.find("maximum_parallel_per_teacher") != std::string::npos &&
+                ui.find("teacher-attempts.jsonl") != std::string::npos &&
+                ui.find("up to 4 workers each") != std::string::npos &&
+                ui.find("every attempt logged") != std::string::npos,
+            "automatic teaching must run bounded local teachers in parallel and retain every accepted or rejected attempt for inspection");
 
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
@@ -1182,14 +1296,14 @@ void test_windows_ui_source_contract() {
             "workspace and Learning-tab layout coordinates must use distinct local names");
 
     const auto registry_source = read_text_file(source / "src/models/model_registry.cpp");
-    require(registry_source.find("ThreadSpire Internal — C++23 coding") != std::string::npos &&
+    require(registry_source.find("EngCoder Code") != std::string::npos &&
                 ui.find("model.display_name.starts_with(\"Custom AI\")") != std::string::npos,
-            "internal runtime labels must identify ThreadSpire internal models consistently, including existing user state");
+            "internal runtime labels must identify EngCoder roles consistently and migrate existing user state");
 
     const auto internal_model = read_text_file(source / "resources/internal_model.py");
     const auto worker = read_text_file(source / "resources/model_worker.py");
     const auto default_models = read_text_file(source / "resources/models.ini");
-    require(internal_model.find("class ThreadSpireModel") != std::string::npos &&
+    require(internal_model.find("class EngCoderModel") != std::string::npos &&
                 internal_model.find("random-initialized-local-model") != std::string::npos &&
                 internal_model.find("external_base_weights\": False") != std::string::npos &&
                 internal_model.find("class ByteTokenizer") != std::string::npos &&
@@ -1246,7 +1360,7 @@ void test_windows_ui_source_contract() {
             "setup, checking, learning, recovery, and startup must default to one idle-safe automatic coordinator without forcing tab navigation");
     require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
                 ui.find("AI: best available") != std::string::npos &&
-                ui.find("ThreadSpire built-in: ") != std::string::npos &&
+                ui.find("EngCoder built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
                 ui.find("built_in_status = L\"READY\"") != std::string::npos &&
                 ui.find("const auto progress_active = progress.available") != std::string::npos &&
@@ -1256,10 +1370,10 @@ void test_windows_ui_source_contract() {
                 ui.find("Built-in AI failed quality checks at ") != std::string::npos &&
                 ui.find("Improving the built-in AI automatically from approved examples") != std::string::npos &&
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
-            "Chat and AI Setup must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
+            "Chat and AI & Tools must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
     require(ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") == std::string::npos &&
-                ui.find("AI group: ThreadSpire built-in only") != std::string::npos &&
+                ui.find("AI group: Built-in EngCoder only") != std::string::npos &&
                 ui.find("set_status(runtime_summary(snapshot, backend_server_.running()))") != std::string::npos &&
                 ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
                 ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
@@ -1269,11 +1383,11 @@ void test_windows_ui_source_contract() {
                 ui.find("no unapproved model was activated") != std::string::npos,
             "an unavailable manually selected built-in AI must remain selected while automatic setup continues honestly");
     require(ui.find("internal_pool_selection_id") != std::string::npos &&
-                ui.find("ThreadSpire built-in AIs only") != std::string::npos &&
+                ui.find("Built-in EngCoders only") != std::string::npos &&
                 ui.find("apply_model_choice_filter(snapshot)") != std::string::npos &&
                 ui.find("model.enabled = model.enabled && models::is_internal_model(model)") != std::string::npos &&
                 ui.find("model.enabled = model.enabled && model.id == *selected") != std::string::npos &&
-                ui.find("const auto allow_automatic_fallback = !selected_model_id().has_value()") != std::string::npos &&
+                ui.find("inference_source_ == InferenceSource::automatic") != std::string::npos &&
                 ui.find(".allow_automatic_fallback = allow_automatic_fallback") != std::string::npos &&
                 ui.find("The selected AI is not responding. No other AI was used.") != std::string::npos &&
                 ui.find("safe backup") == std::string::npos,
@@ -1299,6 +1413,11 @@ void test_windows_ui_source_contract() {
                 ui.find("id::learning_library_filter") != std::string::npos &&
                 ui.find("width >= scaled(980, dpi_)") != std::string::npos,
             "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");
+    require(ui.find("Permanent user memory — separate from weights") != std::string::npos &&
+                ui.find("user_memory_store_.remember_from_prompt(raw_prompt)") != std::string::npos &&
+                ui.find("user_memory_store_.context_for(raw_prompt)") != std::string::npos &&
+                ui.find("Forget this permanent memory?") != std::string::npos,
+            "permanent user memory must be visible, self-managing, editable, forgettable, and separate from weights");
     require(ui.find("TCS_OWNERDRAWFIXED") != std::string::npos &&
                 ui.find("TCS_FIXEDWIDTH") != std::string::npos &&
                 ui.find("CBS_OWNERDRAWFIXED") != std::string::npos &&
@@ -1316,7 +1435,8 @@ void test_windows_ui_source_contract() {
     const auto launcher = read_text_file(source / "BUILD_AND_RUN.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&
                 launcher.find("ctest") == std::string::npos &&
-                launcher.find(R"(start "ThreadSpire")") != std::string::npos,
+                launcher.find(R"(start "EngCoder")") != std::string::npos &&
+                launcher.find("EngCoder.exe ThreadSpire.exe") != std::string::npos,
             "the one-command launcher must reuse the validated build pipeline and start only its successful output");
 
     const auto orchestrator = read_text_file(source / "src/backend/agent_orchestrator.cpp");
@@ -1337,9 +1457,9 @@ void test_windows_ui_source_contract() {
                 orchestrator.find("0.48") != std::string::npos &&
                 orchestrator.find("do not repeat the wording mechanically") != std::string::npos &&
                 orchestrator.find("verified-memory") != std::string::npos &&
-                orchestrator.find("completion.hidden_reasoning_only") != std::string::npos &&
-                orchestrator.find("stage.max_output_tokens * 4U") != std::string::npos,
-            "compact inference must use exact verified memory first and retry reasoning-only backups with a bounded budget");
+                orchestrator.find("std::max<std::size_t>(256U, stage.max_output_tokens)") != std::string::npos &&
+                orchestrator.find("One selected AI answers once. No other AI is contacted.") != std::string::npos,
+            "compact inference must use exact verified memory first while a locked source makes one sufficiently sized request without hidden retries");
     require(orchestrator.find("const auto task_needs_tools") != std::string::npos &&
                 orchestrator.find("const auto use_tools = task_needs_tools") != std::string::npos,
             "connected MCP tools must not disable streaming or break ordinary conversation prompts");
@@ -1359,7 +1479,7 @@ void test_windows_ui_source_contract() {
                 piggyback.find("document->find(\"prompt\")") != std::string::npos &&
                 piggyback.find("document->find(\"answer\")") != std::string::npos &&
                 piggyback.find("generate_verified_variations") != std::string::npos &&
-                piggyback.find("no unverified rewrites were created") != std::string::npos,
+                piggyback.find("Diverse generation waits for a distinct verifier") != std::string::npos,
             "automatic and custom learning must target one selected skill, rotate independently, and accept practical JSONL record shapes");
 
     const auto custom_template = read_text_file(
@@ -1582,6 +1702,7 @@ int main() {
         test_model_registry_round_trip();
         test_immediate_memory_retrieval();
         test_manual_model_choice_disables_fallback();
+        test_permanent_user_memory_is_atomic_editable_and_never_weights();
         test_expert_lifecycle_thresholds();
         test_learning_service_stores_before_training();
         test_interactive_priority_uses_nested_leases();
@@ -1589,6 +1710,7 @@ int main() {
         test_learning_preview_blocks_errors_and_repetition();
         test_episode_index_recovers_after_restart();
         test_knowledge_classifier_routes_volatile_state_to_retrieval();
+        test_knowledge_classifier_rejects_noncore_weight_topics();
         test_resource_governor_prioritizes_inference();
         test_candidate_registry_marks_inflight_work_resumable();
         test_expert_registry_persists_generation_and_rollback();
@@ -1605,7 +1727,7 @@ int main() {
         test_windows_ui_source_contract();
         test_worker_and_resource_contract();
         test_seed_material_counts();
-        std::cout << "All ThreadSpire core tests passed.\n";
+        std::cout << "All EngCoder core tests passed.\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "Test failure: " << exception.what() << '\n';

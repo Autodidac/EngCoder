@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Private PyTorch backend for ThreadSpire.
+"""Private PyTorch backend for EngCoder.
 
 The C++23 application owns routing, scheduling, accepted-memory storage, the
 skill lifecycle, user interaction, and process lifetime. This worker owns the
-random-initialized ThreadSpire transformer, generation, full-weight internal
+random-initialized EngCoder transformer, generation, full-weight internal
 candidate training, and optional external-model LoRA/FFN workflows.
 """
 
@@ -44,7 +44,7 @@ PREEMPTED_EXIT_CODE = 75
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="ThreadSpire private backend")
+    parser = argparse.ArgumentParser(description="EngCoder private backend")
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("doctor")
@@ -323,7 +323,7 @@ class LoadedModel:
 class ModelCache:
     """Optional external-model cache used only by Model Lab/LoRA workflows.
 
-    ThreadSpire internal inference never enters this cache and never calls
+    EngCoder internal inference never enters this cache and never calls
     ``from_pretrained``.
     """
 
@@ -455,7 +455,7 @@ class ServerState:
             pointer = internal.active_manifest_path(self.state_root)
             if not pointer.is_file():
                 raise FileNotFoundError(
-                    "ThreadSpire internal model is not initialized. Use Create internal model first."
+                    "EngCoder internal model is not initialized. Use Create internal model first."
                 )
             payload = json.loads(pointer.read_text(encoding="utf-8"))
             generation = str(payload.get("generation", ""))
@@ -481,7 +481,7 @@ class ServerState:
                 and internal.manifest_uses_current_bootstrap_policy(loaded.manifest)
             ):
                 raise RuntimeError(
-                    "ThreadSpire internal weights have not passed full-backbone bootstrap and generation readiness"
+                    "EngCoder internal weights have not passed full-backbone bootstrap and generation readiness"
                 )
             self._internal_model = loaded
             self._internal_generation = loaded.generation
@@ -1068,7 +1068,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "ThreadSpire/0.6.0"
+    server_version = "EngCoder/0.6.0"
 
     @property
     def state(self) -> ServerState:
@@ -1209,7 +1209,7 @@ def serve(arguments: argparse.Namespace) -> int:
     server.threadspire_state = state  # type: ignore[attr-defined]
     port = int(server.server_address[1])
     atomic_write_text(arguments.ready_file, f"port={port}\npid={os.getpid()}\n")
-    print(f"ThreadSpire model server listening on 127.0.0.1:{port}", flush=True)
+    print(f"EngCoder model server listening on 127.0.0.1:{port}", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
@@ -1225,10 +1225,28 @@ def serve(arguments: argparse.Namespace) -> int:
 
 
 _MINIMUM_DIVERSE_HUMAN_APPROVALS = 4
+_WEIGHT_TRAINING_SKILLS = frozenset({
+    "english-core",
+    "english-foundation",
+    "cpp23-core",
+    "cpp23-debugging",
+    "planning",
+})
+
+
+def _strip_training_emoji(value: str) -> str:
+    """Independent worker boundary; chat rendering never calls this."""
+
+    return internal.strip_training_emoji(value)
+
+
+def _sanitize_training_response(value: str, source_model_id: str = "") -> str:
+    return internal.sanitize_training_response(value, source_model_id)
 
 
 def _normalized_learning_prompt(record: dict[str, Any]) -> str:
-    return re.sub(r"[^a-z0-9+_]+", " ", str(record.get("prompt", "")).lower()).strip()
+    prompt = _strip_training_emoji(str(record.get("prompt", "")))
+    return re.sub(r"[^a-z0-9+_]+", " ", prompt.lower()).strip()
 
 
 def _human_only_training_record(record: dict[str, Any]) -> bool:
@@ -1241,6 +1259,8 @@ def _human_only_training_record(record: dict[str, Any]) -> bool:
 
 
 def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
+    if skill not in _WEIGHT_TRAINING_SKILLS:
+        return []
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
@@ -1257,10 +1277,24 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
                 or record.get("reference_verified", False)
             ):
                 continue
-            prompt = str(record.get("prompt", "")).strip()
-            response = str(record.get("response", "")).strip()
+            prompt = _strip_training_emoji(str(record.get("prompt", "")))
+            response = _sanitize_training_response(
+                str(record.get("response", "")),
+                str(record.get("model_id", "")),
+            )
             if prompt and response:
-                records.append(record)
+                cleaned = dict(record)
+                cleaned["prompt"] = prompt
+                cleaned["response"] = response
+                if "correction" in cleaned:
+                    cleaned["correction"] = _sanitize_training_response(
+                        str(cleaned.get("correction", "")),
+                        str(cleaned.get("model_id", "")),
+                    )
+                cleaned["content_hash"] = hashlib.sha256(
+                    (prompt + "\0" + response).encode("utf-8")
+                ).hexdigest()
+                records.append(cleaned)
     unique: dict[str, dict[str, Any]] = {}
     for record in records:
         fingerprint = str(record.get("content_hash", "")).strip()
@@ -2329,7 +2363,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "ThreadSpire", "version": "0.6.0"},
+                    "clientInfo": {"name": "EngCoder", "version": "0.6.0"},
                 },
             },
         )
@@ -2432,7 +2466,7 @@ def inspect_module(arguments: argparse.Namespace) -> int:
 def _internal_profile(name: str) -> internal.ModelConfig:
     if name == "standard":
         return internal.ModelConfig(
-            name="ThreadSpire Core Standard",
+            name="EngCoder Standard",
             context_length=1536,
             d_model=512,
             n_layers=10,
@@ -2442,7 +2476,7 @@ def _internal_profile(name: str) -> internal.ModelConfig:
         )
     if name == "large-local":
         return internal.ModelConfig(
-            name="ThreadSpire Core Large Local",
+            name="EngCoder Large",
             context_length=2048,
             d_model=640,
             n_layers=12,
@@ -2450,7 +2484,7 @@ def _internal_profile(name: str) -> internal.ModelConfig:
             ffn_hidden=1920,
             expert_hidden=320,
         )
-    return internal.ModelConfig(name="ThreadSpire Core Micro")
+    return internal.ModelConfig(name="EngCoder")
 
 
 def init_internal(arguments: argparse.Namespace) -> int:

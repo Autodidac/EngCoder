@@ -25,7 +25,9 @@ The active generation is never the training target.
 
 A live episode may enter positive weight training only when it has:
 
-- nonempty prompt and response;
+- nonempty prompt and response after training-only Unicode cleanup;
+- no emoji, keycap sequences, joiners, or variation selectors in stored learning text;
+- EngCoder assistant identity rather than an underlying teacher/provider persona;
 - unique normalized content;
 - no human rejection;
 - deterministic verification, trusted bundled provenance, or at least four distinct human-approved examples for the same behavior;
@@ -34,12 +36,14 @@ A live episode may enter positive weight training only when it has:
 
 Compiler and tests can provide deterministic verification. A model judging its own answer correct cannot.
 
+Chat display is intentionally lossless, but the learning boundary is not: emoji are removed from prompts, replies, and corrections before hashing or storage. Assistant self-identification from an underlying provider is normalized to EngCoder while the original provider/model ID remains separate provenance metadata. The Learn preview shows the exact post-cleanup text. Both Python loaders repeat the cleanup so historical or directly imported JSONL cannot bypass it.
+
 ## Bootstrap data
 
 The bundled files are message-disjoint:
 
 ```text
-bootstrap.jsonl          3,632 unique training records
+bootstrap.jsonl          4,247 unique training records
 bootstrap_anchors.jsonl    320 held-out anchors
 ```
 
@@ -93,7 +97,7 @@ Weight learning is slower and more conservative. One human-approved phrase remai
 
 ## Conversation, coding, and self-iteration
 
-ThreadSpire keeps these concerns separate without exposing sampler jargon in the interface:
+EngCoder keeps these concerns separate without exposing sampler jargon in the interface:
 
 - ordinary conversation uses modest response variation while retaining the structural corruption gate;
 - coding and tool execution use low-variance generation, exact memory, and compiler/test evidence;
@@ -108,7 +112,7 @@ A connected external local LLM may propose examples. The internal model is never
 
 A trusted or independently verified episode increments the corresponding skill's pending-evidence counter. For the internal model, the promotion microbatch is one admitted episode, so the skill is queued immediately. Duplicate queued requests for the same skill coalesce. The teacher loop pauses while that queue or an active trainer exists, then resumes after the weight work drains.
 
-The connected model's weights are never copied into the internal model. Only verified input/output evidence is loaded by the Python worker and used to train ThreadSpire's own tensors.
+The connected model's weights are never copied into the internal model. Only verified input/output evidence is loaded by the Python worker and used to train EngCoder's own tensors.
 
 The Learning page reports both sides of this pipeline:
 

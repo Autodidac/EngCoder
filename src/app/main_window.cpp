@@ -1,5 +1,6 @@
 module;
 #include "module_prelude.hpp"
+#include "resource.h"
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <Richedit.h>
@@ -32,7 +33,7 @@ import threadspire.scheduler;
 namespace threadspire::ai::app {
 namespace {
 
-constexpr wchar_t window_class_name[] = L"ThreadSpire.MainWindow";
+constexpr wchar_t window_class_name[] = L"EngCoder.MainWindow";
 constexpr UINT_PTR update_timer = 1;
 constexpr UINT_PTR stream_timer = 2;
 constexpr COLORREF window_color = RGB(22, 24, 29);
@@ -105,6 +106,13 @@ constexpr int chat_turn = 335;
 constexpr int chat_copy = 336;
 constexpr int chat_learning_preview = 337;
 constexpr int chat_include_context = 338;
+constexpr int chat_session_label = 339;
+constexpr int chat_session = 340;
+constexpr int chat_delete_session = 341;
+constexpr int chat_edit = 342;
+constexpr int chat_retry = 343;
+constexpr int chat_attach = 344;
+constexpr int chat_attachment_status = 345;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -202,6 +210,11 @@ constexpr int learning_library_filter = 622;
 constexpr int learning_library_source = 623;
 constexpr int learning_library_refresh = 624;
 constexpr int learning_library = 625;
+constexpr int learning_memory_header = 626;
+constexpr int learning_memory_selector = 627;
+constexpr int learning_memory_editor = 628;
+constexpr int learning_memory_save = 629;
+constexpr int learning_memory_forget = 630;
 
 constexpr int horizon_repository_label = 700;
 constexpr int horizon_repository = 701;
@@ -937,7 +950,7 @@ void draw_dark_text(
         return L"Built-in AI is not installed.";
     }
     if (!state.manifest_valid) {
-        return L"Built-in AI setup was interrupted. ThreadSpire will continue from the last safe point.";
+        return L"Built-in AI setup was interrupted. EngCoder will continue from the last safe point.";
     }
     if (state.bootstrap_complete) {
         return L"Built-in AI is ready and uses only local model files.";
@@ -1285,7 +1298,7 @@ LRESULT CALLBACK page_host_subclass(
         std::wstring model_name = widen(stage.model_id);
         std::wstring runtime_kind;
         if (stage.model_id == "verified-memory") {
-            model_name = L"ThreadSpire verified knowledge";
+            model_name = L"EngCoder verified knowledge";
             runtime_kind = L"built-in local memory";
         }
         if (registry != nullptr) {
@@ -1419,9 +1432,12 @@ void append_training_library_file(
         }
 
         const auto held_out = category == "Held-out check";
-        const auto review_record = category == "Review record";
-        const auto review_rejected =
-            review_record && core::json::bool_or(document->find("human_rejected"), false);
+        const auto teacher_attempt = category == "Teacher attempt";
+        const auto review_record = category == "Review record" || teacher_attempt;
+        const auto review_rejected = review_record && (
+            core::json::bool_or(document->find("human_rejected"), false) ||
+            (teacher_attempt &&
+             !core::json::bool_or(document->find("reference_verified"), false)));
         const auto independently_checked = review_record && (
             core::json::bool_or(document->find("human_accepted"), false) ||
             core::json::bool_or(document->find("deterministic_verified"), false) ||
@@ -1453,7 +1469,14 @@ void append_training_library_file(
             record.answer = core::json::string_or(document->find("response"));
             record.verification = core::json::string_or(document->find("verification_notes"));
             if (review_rejected) {
-                record.verification = "Rejected by the user; never positive training";
+                if (teacher_attempt) {
+                    if (record.verification.empty()) {
+                        record.verification = "Rejected by the independent checker";
+                    }
+                    record.verification += " • Weight training: no";
+                } else {
+                    record.verification = "Rejected by the user; never positive training";
+                }
             } else if (record.verification.empty()) {
                 if (core::json::bool_or(document->find("human_accepted"), false)) {
                     record.verification = "Approved by the user";
@@ -1468,6 +1491,10 @@ void append_training_library_file(
                     document->find("eligible_for_training"), false)
                     ? " • Weight training: eligible"
                     : " • Weight training: no";
+            }
+            if (teacher_attempt && record.answer.empty()) {
+                record.answer = "[No usable generated answer] " +
+                    core::json::string_or(document->find("generation_error"));
             }
             record.verification += " • Destination: " + core::json::string_or(
                 document->find("knowledge_destination"),
@@ -1527,6 +1554,11 @@ void append_training_library_file(
     append_training_library_file(
         paths.memory / "episodes.jsonl",
         "Review record",
+        records,
+        unreadable_records);
+    append_training_library_file(
+        paths.logs / "teacher-attempts.jsonl",
+        "Teacher attempt",
         records,
         unreadable_records);
     append_training_library_file(
@@ -1626,6 +1658,7 @@ void append_training_library_file(
 MainWindow::MainWindow(const HINSTANCE instance)
     : instance_(instance),
       paths_(make_app_paths()),
+      user_memory_store_(paths_.memory / "user-profile.jsonl"),
       model_registry_(models::ModelRegistry::defaults()),
       mcp_client_(std::make_shared<mcp::Client>()),
       backend_server_(paths_) {
@@ -1633,11 +1666,25 @@ MainWindow::MainWindow(const HINSTANCE instance)
     model_registry_ = models::ModelRegistry::load(paths_.model_registry);
     auto migrated_runtime_labels = false;
     for (auto& model : model_registry_.models()) {
-        if (models::is_internal_model(model) &&
-            model.display_name.starts_with("Custom AI")) {
-            model.display_name.replace(0, std::string_view{"Custom AI"}.size(), "ThreadSpire");
-            migrated_runtime_labels = true;
+        if (!models::is_internal_model(model)) {
+            continue;
         }
+        const auto legacy_name = model.display_name.starts_with("Custom AI") ||
+            model.display_name.starts_with("ThreadSpire Internal") ||
+            model.display_name.starts_with("EngCoder Internal");
+        if (!legacy_name) {
+            continue;
+        }
+        if (model.id == "fast") {
+            model.display_name = "EngCoder";
+        } else if (model.id == "coder") {
+            model.display_name = "EngCoder Code";
+        } else if (model.id == "thinker") {
+            model.display_name = "EngCoder Plan";
+        } else if (model.id == "reviewer") {
+            model.display_name = "EngCoder Review";
+        }
+        migrated_runtime_labels = true;
     }
     if (migrated_runtime_labels) {
         try {
@@ -1761,6 +1808,7 @@ MainWindow::MainWindow(const HINSTANCE instance)
 }
 
 MainWindow::~MainWindow() {
+    persist_current_chat();
     backend_operation_.cancel();
     discovery_operation_.cancel();
     mcp_operation_.cancel();
@@ -1802,8 +1850,8 @@ bool MainWindow::register_window_class() {
     window_class.lpfnWndProc = &MainWindow::window_procedure;
     window_class.hInstance = instance_;
     window_class.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hIconSm = ::LoadIconW(nullptr, IDI_APPLICATION);
+    window_class.hIcon = ::LoadIconW(instance_, MAKEINTRESOURCEW(IDI_ENGCODER));
+    window_class.hIconSm = ::LoadIconW(instance_, MAKEINTRESOURCEW(IDI_ENGCODER));
     window_class.hbrBackground = window_brush_;
     window_class.lpszClassName = window_class_name;
     return ::RegisterClassExW(&window_class) != 0 ||
@@ -1820,7 +1868,7 @@ bool MainWindow::create(const int show_command) {
     window_ = ::CreateWindowExW(
         0,
         window_class_name,
-        L"ThreadSpire — local evolving AI",
+        L"EngCoder — local evolving intelligence",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -1925,12 +1973,18 @@ LRESULT MainWindow::handle_message(
         } else if ((identifier == id::chat_model || identifier == id::coding_model) &&
                    notification == CBN_SELCHANGE) {
             update_model_selection(identifier);
+        } else if (identifier == id::chat_session &&
+                   notification == CBN_SELCHANGE) {
+            switch_chat_session();
         } else if (identifier == id::learning_piggyback_skill &&
                    notification == CBN_SELCHANGE) {
             handle_training_target_change();
         } else if (identifier == id::learning_custom_skill &&
                    notification == EN_KILLFOCUS) {
             handle_training_target_change();
+        } else if (identifier == id::learning_memory_selector &&
+                   notification == CBN_SELCHANGE) {
+            select_user_memory();
         } else {
             handle_command(identifier);
         }
@@ -2105,10 +2159,10 @@ void MainWindow::create_controls() {
         MAKELPARAM(scaled(150, dpi_), scaled(30, dpi_))));
     const std::array tabs_and_pages{
         std::pair{L"Chat", Page::chat},
-        std::pair{L"AI Setup", Page::models},
-        std::pair{L"Learning", Page::learning},
-        std::pair{L"Skills", Page::skills},
-        std::pair{L"Storage & Logs", Page::logs},
+        std::pair{L"AI & Tools", Page::models},
+        std::pair{L"Memory & Learning", Page::learning},
+        std::pair{L"Capabilities", Page::skills},
+        std::pair{L"Files & Activity", Page::logs},
     };
     auto selected_tab = 0;
     auto tab_index = 0;
@@ -2161,6 +2215,7 @@ void MainWindow::create_controls() {
     create_skills_page();
     create_long_horizon_page();
     create_logs_page();
+    load_chat_sessions();
 
     const auto saved_mcp = read_text(paths_.root / "config" / "mcp-endpoint.txt");
     if (!saved_mcp.empty()) {
@@ -2184,6 +2239,15 @@ void MainWindow::create_controls() {
 
 void MainWindow::create_chat_page() {
     const auto parent = control(id::page_chat);
+
+    create_control(L"STATIC", L"Chat", WS_CHILD | WS_VISIBLE, 0, id::chat_session_label, parent);
+    create_control(
+        L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+        CBS_DROPDOWNLIST | WS_VSCROLL,
+        WS_EX_CLIENTEDGE, id::chat_session, parent);
+    create_control(
+        L"BUTTON", L"Delete chat", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::chat_delete_session, parent);
 
     create_control(L"STATIC", L"Task", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
     const auto mode = create_control(
@@ -2212,7 +2276,7 @@ void MainWindow::create_chat_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Other AI apps only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire built-in only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in EngCoder only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2228,7 +2292,7 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_discover, parent);
     create_control(
-        L"BUTTON", L"AI setup…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"AI & tools…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_open_models, parent);
     create_control(
         L"STATIC", L"Using: checking available AI • Built-in AI: checking automatic setup",
@@ -2249,9 +2313,9 @@ void MainWindow::create_chat_page() {
         0, id::chat_response_label, parent);
     create_control(
         transcript_control_class(),
-        L"Type a message below. ThreadSpire automatically uses the best AI that is ready.\r\n\r\n"
+        L"Type a message below. EngCoder automatically uses the best AI that is ready.\r\n\r\n"
         L"OTHER AI APPS\r\n"
-        L"ThreadSpire finds and uses compatible AI apps already running on this computer.\r\n\r\n"
+        L"EngCoder finds and uses compatible AI apps already running on this computer.\r\n\r\n"
         L"BUILT-IN AI\r\n"
         L"Setup, learning, recovery, and startup happen automatically in the background.",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
@@ -2265,21 +2329,30 @@ void MainWindow::create_chat_page() {
         reply,
         CB_ADDSTRING,
         0,
-        reinterpret_cast<LPARAM>(L"No completed replies yet")));
+        reinterpret_cast<LPARAM>(L"No replies yet")));
     create_control(
         L"BUTTON", L"Copy", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_copy, parent);
     create_control(
-        L"BUTTON", L"What will it learn?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Edit", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::chat_edit, parent);
+    create_control(
+        L"BUTTON", L"Retry", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::chat_retry, parent);
+    create_control(
+        L"BUTTON", L"Learn?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_learning_preview, parent);
     create_control(
-        L"BUTTON", L"Include earlier chat",
+        L"BUTTON", L"Use earlier chat",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::chat_include_context, parent);
 
     create_control(
         L"STATIC", L"Message", WS_CHILD | WS_VISIBLE,
         0, id::chat_prompt_label, parent);
+    create_control(
+        L"STATIC", L"No files attached", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+        0, id::chat_attachment_status, parent);
     const auto prompt = create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER |
         ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
@@ -2303,8 +2376,11 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Reject", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_reject, parent);
     create_control(
-        L"BUTTON", L"Clear", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"New chat", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_clear, parent);
+    create_control(
+        L"BUTTON", L"Attach files…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::chat_attach, parent);
     create_control(
         L"STATIC", L"",
         WS_CHILD, 0, id::chat_hint, parent);
@@ -2352,7 +2428,7 @@ void MainWindow::create_coding_page() {
     static_cast<void>(::SendMessageW(
         source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Other AI apps only")));
     static_cast<void>(::SendMessageW(
-        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"ThreadSpire built-in only")));
+        source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Built-in EngCoder only")));
     static_cast<void>(::SendMessageW(
         source,
         CB_SETCURSEL,
@@ -2370,7 +2446,7 @@ void MainWindow::create_coding_page() {
         L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::coding_discover, parent);
     create_control(
-        L"BUTTON", L"AI setup…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"AI & tools…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::coding_open_models, parent);
     create_control(
         L"STATIC", L"AI source: connected local LLM • no coding model discovered yet", WS_CHILD | WS_VISIBLE,
@@ -2458,7 +2534,7 @@ void MainWindow::create_models_page() {
         0,
         static_cast<LPARAM>(accent_color)));
     create_control(
-        L"STATIC", L"ThreadSpire is checking what is ready.",
+        L"STATIC", L"EngCoder is checking what is ready.",
         WS_CHILD | WS_VISIBLE, 0, id::models_progress_detail, parent);
 
     create_control(
@@ -2670,11 +2746,35 @@ void MainWindow::create_learning_page() {
         L"1. Select exactly what this pass should teach. English foundation is the upgrade default.\r\n"
         L"2. Generate examples with an external local teacher plus an independent verifier, or browse to your own JSONL and import it as trusted data.\r\n"
         L"3. Verified evidence automatically queues a shadow update. Queue/retry can manually coalesce another update for the selected target.\r\n"
-        L"4. ThreadSpire evaluates the shadow candidate before promotion. Changing the target cancels only the active example pass and applies immediately to the next pass. Existing weights and accepted records are preserved.",
+        L"4. EngCoder evaluates the shadow candidate before promotion. Changing the target cancels only the active example pass and applies immediately to the next pass. Existing weights and accepted records are preserved.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL,
         0,
         id::learning_policy,
         parent);
+    create_control(
+        L"STATIC", L"Permanent user memory — separate from weights",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_memory_header, parent);
+    create_control(
+        L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, id::learning_memory_selector, parent);
+    const auto memory_editor = create_control(
+        L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        0, id::learning_memory_editor, parent);
+    static_cast<void>(::SendMessageW(
+        memory_editor,
+        EM_SETCUEBANNER,
+        TRUE,
+        reinterpret_cast<LPARAM>(L"Add a fact or preference EngCoder should remember")));
+    create_control(
+        L"BUTTON", L"Save memory",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_memory_save, parent);
+    create_control(
+        L"BUTTON", L"Forget",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_memory_forget, parent);
     create_control(
         L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
@@ -2733,6 +2833,7 @@ void MainWindow::create_learning_page() {
         widen("Selected target: " + selected_training_skill() +
               " • automatic mode will remain on this target"));
     update_training_library();
+    update_user_memory_controls();
 
 }
 
@@ -2923,16 +3024,32 @@ void MainWindow::layout_controls() {
 
     // Primary workspace: connection, model, conversation, coding mode, and learning state
     // are intentionally visible without requiring another tab.
+    move_control(control(id::chat_session_label), 0, 0, scaled(40, dpi_), row);
+    const auto chat_delete_width = scaled(108, dpi_);
+    move_control(
+        control(id::chat_session),
+        scaled(44, dpi_),
+        0,
+        std::max(scaled(220, dpi_), width - scaled(44, dpi_) - chat_delete_width - gap),
+        row + scaled(220, dpi_));
+    move_control(
+        control(id::chat_delete_session),
+        width - chat_delete_width,
+        0,
+        chat_delete_width,
+        row);
+
+    const auto workspace_top = row + gap;
     auto workspace_x = 0;
-    move_control(control(id::chat_mode_label), workspace_x, 0, scaled(40, dpi_), row);
+    move_control(control(id::chat_mode_label), workspace_x, workspace_top, scaled(40, dpi_), row);
     workspace_x += scaled(44, dpi_);
-    move_control(control(id::chat_mode), workspace_x, 0, scaled(190, dpi_), row + scaled(160, dpi_));
+    move_control(control(id::chat_mode), workspace_x, workspace_top, scaled(190, dpi_), row + scaled(160, dpi_));
     workspace_x += scaled(190, dpi_) + gap;
-    move_control(control(id::chat_source_label), workspace_x, 0, scaled(82, dpi_), row);
+    move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(82, dpi_), row);
     workspace_x += scaled(86, dpi_);
-    move_control(control(id::chat_source), workspace_x, 0, scaled(255, dpi_), row + scaled(120, dpi_));
+    move_control(control(id::chat_source), workspace_x, workspace_top, scaled(255, dpi_), row + scaled(120, dpi_));
     workspace_x += scaled(255, dpi_) + gap;
-    move_control(control(id::chat_model_label), workspace_x, 0, scaled(70, dpi_), row);
+    move_control(control(id::chat_model_label), workspace_x, workspace_top, scaled(70, dpi_), row);
     workspace_x += scaled(74, dpi_);
 
     const auto workspace_button_width = scaled(108, dpi_);
@@ -2940,9 +3057,9 @@ void MainWindow::layout_controls() {
     const auto model_width = std::max(
         scaled(220, dpi_),
         width - workspace_x);
-    move_control(control(id::chat_model), workspace_x, 0, model_width, row + scaled(220, dpi_));
+    move_control(control(id::chat_model), workspace_x, workspace_top, model_width, row + scaled(220, dpi_));
 
-    const auto workspace_status_y = row + gap;
+    const auto workspace_status_y = workspace_top + row + gap;
     const auto workspace_buttons_width =
         workspace_button_width + workspace_settings_width + gap;
     move_control(
@@ -3026,7 +3143,7 @@ void MainWindow::layout_controls() {
         conversation_width,
         conversation_height);
     const auto review_fixed_width =
-        scaled(60 + 108 + 68 + 110 + 120, dpi_) + gap * 5;
+        scaled(52 + 55 + 55 + 90 + 55 + 95, dpi_) + gap * 6;
     const auto reply_selector_width = std::clamp(
         conversation_width - review_fixed_width, scaled(80, dpi_), scaled(140, dpi_));
     auto review_x = 0;
@@ -3035,17 +3152,30 @@ void MainWindow::layout_controls() {
         review_x += control_width + gap;
     };
     move_review_action(id::chat_turn, reply_selector_width);
-    move_review_action(id::chat_copy, scaled(60, dpi_));
-    move_review_action(id::chat_accept, scaled(108, dpi_));
-    move_review_action(id::chat_reject, scaled(68, dpi_));
-    move_review_action(id::chat_learning_preview, scaled(110, dpi_));
-    move_review_action(id::chat_include_context, scaled(120, dpi_));
+    move_review_action(id::chat_copy, scaled(52, dpi_));
+    move_review_action(id::chat_edit, scaled(55, dpi_));
+    move_review_action(id::chat_retry, scaled(55, dpi_));
+    move_review_action(id::chat_accept, scaled(90, dpi_));
+    move_review_action(id::chat_reject, scaled(55, dpi_));
+    move_review_action(id::chat_learning_preview, scaled(95, dpi_));
 
     move_control(
         control(id::chat_prompt_label),
         0,
         prompt_label_y,
-        scaled(160, dpi_),
+        scaled(70, dpi_),
+        row);
+    move_control(
+        control(id::chat_include_context),
+        scaled(74, dpi_),
+        prompt_label_y,
+        scaled(130, dpi_),
+        row);
+    move_control(
+        control(id::chat_attachment_status),
+        scaled(208, dpi_),
+        prompt_label_y,
+        std::max(1, conversation_width - scaled(208, dpi_)),
         row);
     move_control(
         control(id::chat_prompt),
@@ -3061,7 +3191,8 @@ void MainWindow::layout_controls() {
     };
     move_workspace_action(id::chat_send, scaled(88, dpi_));
     move_workspace_action(id::chat_stop, scaled(72, dpi_));
-    move_workspace_action(id::chat_clear, scaled(72, dpi_));
+    move_workspace_action(id::chat_clear, scaled(88, dpi_));
+    move_workspace_action(id::chat_attach, scaled(104, dpi_));
     move_workspace_action(id::chat_open_output, scaled(112, dpi_));
     move_control(
         control(id::chat_hint),
@@ -3605,6 +3736,44 @@ void MainWindow::layout_controls() {
         policy_height);
     learning_y += policy_height + gap;
 
+    move_control(control(id::learning_memory_header), 0, learning_y, width, row);
+    learning_y += row + gap;
+    const auto memory_selector_width = std::clamp(
+        width * 26 / 100,
+        scaled(210, dpi_),
+        scaled(360, dpi_));
+    const auto memory_save_width = scaled(120, dpi_);
+    const auto memory_forget_width = scaled(90, dpi_);
+    const auto memory_editor_x = memory_selector_width + gap;
+    const auto memory_editor_width = std::max(
+        1,
+        width - memory_selector_width - memory_save_width - memory_forget_width - gap * 3);
+    move_control(
+        control(id::learning_memory_selector),
+        0,
+        learning_y,
+        memory_selector_width,
+        row + scaled(160, dpi_));
+    move_control(
+        control(id::learning_memory_editor),
+        memory_editor_x,
+        learning_y,
+        memory_editor_width,
+        row);
+    move_control(
+        control(id::learning_memory_save),
+        memory_editor_x + memory_editor_width + gap,
+        learning_y,
+        memory_save_width,
+        row);
+    move_control(
+        control(id::learning_memory_forget),
+        width - memory_forget_width,
+        learning_y,
+        memory_forget_width,
+        row);
+    learning_y += row + gap;
+
     const auto library_source_width = scaled(170, dpi_);
     const auto library_refresh_width = scaled(175, dpi_);
     if (width >= scaled(980, dpi_)) {
@@ -3872,6 +4041,18 @@ void MainWindow::handle_command(const int identifier) {
     case id::chat_copy:
         copy_selected_response();
         break;
+    case id::chat_edit:
+        edit_selected_prompt();
+        break;
+    case id::chat_retry:
+        retry_selected_response();
+        break;
+    case id::chat_attach:
+        attach_files();
+        break;
+    case id::chat_delete_session:
+        delete_current_chat();
+        break;
     case id::chat_learning_preview:
         show_selected_learning_preview();
         break;
@@ -3941,7 +4122,7 @@ void MainWindow::handle_command(const int identifier) {
         } catch (...) {
         }
         set_status(automatic_lifecycle_enabled_
-            ? L"ThreadSpire will set up and keep the built-in AI ready automatically"
+            ? L"EngCoder will set up and keep the built-in AI ready automatically"
             : L"Automatic built-in AI setup is paused; the current task is unchanged");
         break;
     case id::models_advanced_header:
@@ -4044,6 +4225,12 @@ void MainWindow::handle_command(const int identifier) {
         update_training_library();
         set_status(L"Training Library refreshed");
         break;
+    case id::learning_memory_save:
+        save_user_memory();
+        break;
+    case id::learning_memory_forget:
+        forget_user_memory();
+        break;
     case id::learning_stop:
         stop_training_pass();
         break;
@@ -4109,7 +4296,7 @@ void MainWindow::update_workspace_mode() {
     set_control_text(
         id::chat_response_label,
         task == WorkspaceTask::repository ? L"Task and verified run result" : L"Task output");
-    set_status(L"Task changed. ThreadSpire updated the available AI choices.");
+    set_status(L"Task changed. EngCoder updated the available AI choices.");
     refresh_model_selectors();
     layout_controls();
 }
@@ -4163,11 +4350,11 @@ void MainWindow::refresh_model_selectors() {
                 : L"Best connected AI for the task";
         case InferenceSource::custom_model:
             if (custom_host_running) {
-                return L"Best ThreadSpire AI for the task";
+                return L"Best built-in EngCoder for the task";
             }
             return bootstrap_training
-                ? L"ThreadSpire AIs are still learning"
-                : L"ThreadSpire built-in AI is unavailable";
+                ? L"Built-in EngCoders are still learning"
+                : L"Built-in EngCoder is unavailable";
         case InferenceSource::automatic:
             if (internal_ready > 0U && connected_ready > 0U) {
                 return L"Best available AI (automatic backup)";
@@ -4201,8 +4388,8 @@ void MainWindow::refresh_model_selectors() {
     if (inference_source_ == InferenceSource::automatic) {
         model_selector_ids_.emplace_back(internal_pool_selection_id);
         const auto* pool_label = internal_ready > 0U
-            ? L"ThreadSpire built-in AIs only"
-            : L"ThreadSpire built-in AIs only — not ready";
+            ? L"Built-in EngCoders only"
+            : L"Built-in EngCoders only — not ready";
         for (const auto identifier : {id::chat_model, id::coding_model}) {
             static_cast<void>(::SendMessageW(
                 control(identifier),
@@ -4216,7 +4403,7 @@ void MainWindow::refresh_model_selectors() {
         std::wstring label = widen(model.display_name);
         if (inference_source_ == InferenceSource::automatic) {
             label += models::is_internal_model(model)
-                ? L" • ThreadSpire built-in"
+                ? L" • EngCoder built-in"
                 : L" • other AI app";
         }
         if (models::is_internal_model(model) && !custom_host_running) {
@@ -4262,9 +4449,9 @@ void MainWindow::refresh_model_selectors() {
             if (custom_host_running) {
                 ready << L"Ready. Type a message below.";
             } else if (bootstrap_training) {
-                ready << L"Learning is running automatically. ThreadSpire will start it when ready.";
+                ready << L"Learning is running automatically. EngCoder will start it when ready.";
             } else {
-                ready << L"ThreadSpire built-in AI is unavailable. No other AI will be used in this group.";
+                ready << L"Built-in EngCoder is unavailable. No other AI will be used in this group.";
             }
         } else if (inference_source_ == InferenceSource::local_bridge) {
             ready << L"OTHER AI APP\r\n"
@@ -4275,7 +4462,7 @@ void MainWindow::refresh_model_selectors() {
             ready << L"AUTOMATIC\r\n"
                   << available.size() << L" ready AI choice"
                   << (available.size() == 1U ? L"" : L"s")
-                  << L" found. ThreadSpire will use the fastest one that fits the task.";
+                  << L" found. EngCoder will use the fastest one that fits the task.";
         }
         set_control_text(id::chat_response, ready.str());
     }
@@ -4354,16 +4541,16 @@ void MainWindow::update_model_selection(const int source_identifier) {
 
     if (preferred_model_id_.empty()) {
         set_status(inference_source_ == InferenceSource::custom_model
-            ? L"Best ThreadSpire built-in AI; another AI app will not be used"
+            ? L"Best Built-in EngCoder; another AI app will not be used"
             : inference_source_ == InferenceSource::local_bridge
-                ? L"Best connected AI; ThreadSpire built-in AI will not be used"
+                ? L"Best connected AI; Built-in EngCoder will not be used"
                 : L"Best available AI; automatic backup is allowed");
         return;
     }
     if (preferred_model_id_ == internal_pool_selection_id) {
         set_status(backend_server_.running()
-            ? L"ThreadSpire built-in AIs only. ThreadSpire may choose between its built-in lanes; another AI app will never be used."
-            : L"ThreadSpire built-in AIs only is selected, but the built-in AI is not ready. No other AI will be used.");
+            ? L"Built-in EngCoders only. EngCoder may choose between its built-in lanes; another AI app will never be used."
+            : L"Built-in EngCoders only is selected, but the built-in AI is not ready. No other AI will be used.");
         return;
     }
     const auto snapshot = runtime_model_snapshot();
@@ -4413,16 +4600,367 @@ void MainWindow::yield_automatic_bootstrap_to_foreground() {
         L"Saving built-in AI learning progress and yielding to your request…");
 }
 
-void MainWindow::clear_workspace() {
-    if (chat_operation_.running()) {
-        set_status(L"Stop the current response before clearing the workspace");
+void MainWindow::refresh_chat_session_selector() {
+    const auto selector = control(id::chat_session);
+    static_cast<void>(::SendMessageW(selector, CB_RESETCONTENT, 0, 0));
+    auto selected = 0;
+    for (std::size_t index = 0; index < chat_sessions_.size(); ++index) {
+        const auto title = widen(chat_sessions_[index].title);
+        static_cast<void>(::SendMessageW(
+            selector,
+            CB_ADDSTRING,
+            0,
+            reinterpret_cast<LPARAM>(title.c_str())));
+        if (chat_sessions_[index].id == current_chat_id_) {
+            selected = static_cast<int>(index);
+        }
+    }
+    if (!chat_sessions_.empty()) {
+        static_cast<void>(::SendMessageW(
+            selector, CB_SETCURSEL, static_cast<WPARAM>(selected), 0));
+    }
+    ::EnableWindow(
+        control(id::chat_delete_session),
+        chat_sessions_.empty() ? FALSE : TRUE);
+}
+
+void MainWindow::persist_current_chat() {
+    if (current_chat_id_.empty()) {
         return;
     }
+    try {
+        const auto chats_root = paths_.root / "chats";
+        std::filesystem::create_directories(chats_root);
+        auto summary = std::ranges::find_if(chat_sessions_, [&](const auto& item) {
+            return item.id == current_chat_id_;
+        });
+        if (summary == chat_sessions_.end()) {
+            chat_sessions_.push_back(ChatSummary{
+                .id = current_chat_id_,
+                .title = "New chat",
+                .path = chats_root / (current_chat_id_ + ".json"),
+            });
+            summary = std::prev(chat_sessions_.end());
+        }
+
+        auto title = !response_turns_.empty()
+            ? response_turns_.front().prompt
+            : last_prompt_;
+        if (const auto newline = title.find_first_of("\r\n");
+            newline != std::string::npos) {
+            title.erase(newline);
+        }
+        if (title.empty()) {
+            title = "New chat";
+        } else if (title.size() > 60U) {
+            title.resize(57U);
+            title += "...";
+        }
+        summary->title = title;
+
+        core::json::Value::Array history;
+        for (const auto& [prompt, response] : conversation_history_) {
+            history.emplace_back(core::json::Value::Object{
+                {"prompt", prompt},
+                {"response", response},
+            });
+        }
+
+        core::json::Value::Array turns;
+        for (const auto& turn : response_turns_) {
+            core::json::Value::Array models_used;
+            for (const auto& model : turn.models_used) {
+                models_used.emplace_back(model);
+            }
+            core::json::Value::Array tool_events;
+            for (const auto& event : turn.tool_events) {
+                tool_events.emplace_back(event);
+            }
+            core::json::Value::Array input_files;
+            for (const auto& file : turn.input_files) {
+                input_files.emplace_back(file.string());
+            }
+            turns.emplace_back(core::json::Value::Object{
+                {"prompt", turn.prompt},
+                {"response", turn.response},
+                {"earlier_context", turn.earlier_context},
+                {"model_id", turn.model_id},
+                {"models_used", std::move(models_used)},
+                {"tool_events", std::move(tool_events)},
+                {"input_files", std::move(input_files)},
+                {"surface", static_cast<double>(static_cast<int>(turn.surface))},
+                {"review", static_cast<double>(static_cast<int>(turn.review))},
+                {"learning_weight_eligible", turn.learning_weight_eligible},
+                {"learning_destination", turn.learning_destination},
+            });
+        }
+
+        core::json::Value::Object document{
+            {"version", 1.0},
+            {"id", current_chat_id_},
+            {"title", summary->title},
+            {"workspace_transcript", workspace_transcript_},
+            {"history", std::move(history)},
+            {"response_turns", std::move(turns)},
+            {"updated_unix_ms", static_cast<double>(memory::now_unix_ms())},
+        };
+
+        auto temporary = summary->path;
+        temporary += ".tmp";
+        {
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            stream << core::json::stringify(core::json::Value(std::move(document))) << '\n';
+            stream.flush();
+            if (!stream) {
+                throw std::runtime_error("could not write chat snapshot");
+            }
+        }
+        if (::MoveFileExW(
+                temporary.c_str(),
+                summary->path.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+            std::error_code cleanup_error;
+            std::filesystem::remove(temporary, cleanup_error);
+            throw std::system_error(
+                static_cast<int>(::GetLastError()),
+                std::system_category(),
+                "could not publish chat snapshot");
+        }
+        std::error_code modified_error;
+        summary->modified = std::filesystem::last_write_time(summary->path, modified_error);
+        write_text(paths_.root / "config" / "current-chat.txt", current_chat_id_ + "\n");
+        refresh_chat_session_selector();
+    } catch (...) {
+        set_status(L"Chat remains open, but its latest snapshot could not be saved");
+    }
+}
+
+void MainWindow::load_chat_session(const std::string_view id_value) {
+    const auto summary = std::ranges::find_if(chat_sessions_, [&](const auto& item) {
+        return item.id == id_value;
+    });
+    if (summary == chat_sessions_.end()) {
+        return;
+    }
+    std::string error;
+    const auto document = core::json::try_parse(read_text(summary->path), error);
+    if (!document.has_value() || !document->is_object()) {
+        set_status(L"That saved chat could not be read");
+        return;
+    }
+
+    current_chat_id_ = summary->id;
+    workspace_transcript_ = core::json::string_or(document->find("workspace_transcript"));
+    conversation_history_.clear();
+    response_turns_.clear();
+    attached_files_.clear();
+    last_input_files_.clear();
+
+    const auto* history_value = document->find("history");
+    const auto* history = history_value == nullptr ? nullptr : history_value->as_array();
+    if (history != nullptr) {
+        for (const auto& entry : *history) {
+            conversation_history_.emplace_back(
+                core::json::string_or(entry.find("prompt")),
+                core::json::string_or(entry.find("response")));
+        }
+    }
+
+    const auto strings_from = [](const core::json::Value* value) {
+        std::vector<std::string> strings;
+        const auto* array = value == nullptr ? nullptr : value->as_array();
+        if (array != nullptr) {
+            for (const auto& item : *array) {
+                const auto text = core::json::string_or(&item);
+                if (!text.empty()) {
+                    strings.push_back(text);
+                }
+            }
+        }
+        return strings;
+    };
+    routing::TaskAnalyzer analyzer;
+    const auto* turns_value = document->find("response_turns");
+    const auto* turns = turns_value == nullptr ? nullptr : turns_value->as_array();
+    if (turns != nullptr) {
+        for (const auto& entry : *turns) {
+            ResponseTurn turn;
+            turn.prompt = core::json::string_or(entry.find("prompt"));
+            turn.response = core::json::string_or(entry.find("response"));
+            turn.earlier_context = core::json::string_or(entry.find("earlier_context"));
+            turn.model_id = core::json::string_or(entry.find("model_id"), "unknown");
+            turn.models_used = strings_from(entry.find("models_used"));
+            turn.tool_events = strings_from(entry.find("tool_events"));
+            for (const auto& file : strings_from(entry.find("input_files"))) {
+                turn.input_files.emplace_back(file);
+            }
+            turn.surface = static_cast<RequestSurface>(std::clamp(
+                static_cast<int>(core::json::number_or(entry.find("surface"))),
+                0,
+                2));
+            turn.review = static_cast<ResponseReview>(std::clamp(
+                static_cast<int>(core::json::number_or(entry.find("review"))),
+                0,
+                3));
+            turn.learning_weight_eligible =
+                core::json::bool_or(entry.find("learning_weight_eligible"), false);
+            turn.learning_destination =
+                core::json::string_or(entry.find("learning_destination"));
+            turn.analysis = analyzer.analyze(turn.prompt);
+            response_turns_.push_back(std::move(turn));
+        }
+    }
+
+    if (!response_turns_.empty()) {
+        const auto& last = response_turns_.back();
+        last_prompt_ = last.prompt;
+        last_response_ = last.response;
+        last_model_id_ = last.model_id;
+        last_models_used_ = last.models_used;
+        last_tool_events_ = last.tool_events;
+        last_input_files_ = last.input_files;
+        last_analysis_ = last.analysis;
+        last_response_surface_ = last.surface;
+        selected_response_turn_index_ = response_turns_.size() - 1U;
+    } else {
+        last_prompt_.clear();
+        last_response_.clear();
+        last_model_id_.clear();
+        last_models_used_.clear();
+        last_tool_events_.clear();
+        selected_response_turn_index_ = std::string::npos;
+    }
+
+    set_control_text(id::chat_prompt, L"");
+    set_control_text(id::chat_response, workspace_transcript_.empty()
+        ? L"New chat. Type a message below."
+        : widen(workspace_transcript_));
+    set_control_text(id::chat_plan, L"Select a reply to inspect how it ran.");
+    update_response_turn_controls();
+    update_attachment_controls();
+    write_text(paths_.root / "config" / "current-chat.txt", current_chat_id_ + "\n");
+    refresh_chat_session_selector();
+    set_status(L"Saved chat loaded");
+}
+
+void MainWindow::load_chat_sessions() {
+    chat_sessions_.clear();
+    const auto chats_root = paths_.root / "chats";
+    try {
+        std::filesystem::create_directories(chats_root);
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 chats_root,
+                 std::filesystem::directory_options::skip_permission_denied)) {
+            std::error_code status_error;
+            const auto status = entry.symlink_status(status_error);
+            if (status_error || std::filesystem::is_symlink(status) ||
+                !std::filesystem::is_regular_file(status) ||
+                entry.path().extension() != ".json") {
+                continue;
+            }
+            std::string parse_error;
+            const auto document = core::json::try_parse(read_text(entry.path()), parse_error);
+            if (!document.has_value() || !document->is_object()) {
+                continue;
+            }
+            const auto id = core::json::string_or(document->find("id"));
+            if (id.empty()) {
+                continue;
+            }
+            std::error_code modified_error;
+            chat_sessions_.push_back(ChatSummary{
+                .id = id,
+                .title = core::json::string_or(document->find("title"), "Saved chat"),
+                .path = entry.path(),
+                .modified = std::filesystem::last_write_time(entry.path(), modified_error),
+            });
+        }
+    } catch (...) {
+    }
+    std::ranges::sort(chat_sessions_, [](const auto& left, const auto& right) {
+        return left.modified > right.modified;
+    });
+
+    const auto requested = trim_line_endings(
+        read_text(paths_.root / "config" / "current-chat.txt"));
+    const auto selected = std::ranges::find_if(chat_sessions_, [&](const auto& item) {
+        return item.id == requested;
+    });
+    if (selected != chat_sessions_.end()) {
+        load_chat_session(selected->id);
+    } else if (!chat_sessions_.empty()) {
+        load_chat_session(chat_sessions_.front().id);
+    } else {
+        current_chat_id_.clear();
+        clear_workspace();
+    }
+}
+
+void MainWindow::switch_chat_session() {
+    if (chat_operation_.running()) {
+        set_status(L"Stop the current reply before switching chats");
+        refresh_chat_session_selector();
+        return;
+    }
+    const auto selection = static_cast<int>(::SendMessageW(
+        control(id::chat_session), CB_GETCURSEL, 0, 0));
+    if (selection < 0 || static_cast<std::size_t>(selection) >= chat_sessions_.size()) {
+        return;
+    }
+    const auto id = chat_sessions_[static_cast<std::size_t>(selection)].id;
+    if (id == current_chat_id_) {
+        return;
+    }
+    persist_current_chat();
+    load_chat_session(id);
+}
+
+void MainWindow::delete_current_chat() {
+    if (chat_operation_.running()) {
+        set_status(L"Stop the current reply before deleting this chat");
+        return;
+    }
+    const auto summary = std::ranges::find_if(chat_sessions_, [&](const auto& item) {
+        return item.id == current_chat_id_;
+    });
+    if (summary == chat_sessions_.end()) {
+        return;
+    }
+    if (::MessageBoxW(
+            window_,
+            L"Delete this saved chat? Model memory and approved learning records are not deleted.",
+            L"Delete chat",
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    const auto path = summary->path;
+    std::error_code error;
+    if (!std::filesystem::remove(path, error) || error) {
+        set_status(L"The saved chat could not be deleted");
+        return;
+    }
+    chat_sessions_.erase(summary);
+    current_chat_id_.clear();
+    if (chat_sessions_.empty()) {
+        clear_workspace();
+    } else {
+        load_chat_session(chat_sessions_.front().id);
+    }
+    set_status(L"Saved chat deleted");
+}
+
+void MainWindow::clear_workspace() {
+    if (chat_operation_.running()) {
+        set_status(L"Stop the current response before starting a new chat");
+        return;
+    }
+    persist_current_chat();
     workspace_transcript_.clear();
     conversation_history_.clear();
     response_turns_.clear();
+    attached_files_.clear();
+    last_input_files_.clear();
     selected_response_turn_index_ = std::string::npos;
-    update_response_turn_controls();
     last_prompt_.clear();
     last_response_.clear();
     last_model_id_.clear();
@@ -4430,14 +4968,31 @@ void MainWindow::clear_workspace() {
     last_tool_events_.clear();
     pending_transcript_heading_offset_ = std::string::npos;
     pending_transcript_heading_length_ = 0;
+
+    const auto chats_root = paths_.root / "chats";
+    std::filesystem::create_directories(chats_root);
+    const auto base = "chat-" + std::to_string(memory::now_unix_ms());
+    current_chat_id_ = base;
+    for (std::size_t suffix = 1U;
+         std::filesystem::exists(chats_root / (current_chat_id_ + ".json"));
+         ++suffix) {
+        current_chat_id_ = base + "-" + std::to_string(suffix);
+    }
+    chat_sessions_.insert(chat_sessions_.begin(), ChatSummary{
+        .id = current_chat_id_,
+        .title = "New chat",
+        .path = chats_root / (current_chat_id_ + ".json"),
+    });
+
+    update_response_turn_controls();
+    update_attachment_controls();
     set_control_text(id::chat_prompt, L"");
     set_control_text(id::chat_plan, L"Waiting for a message.");
-    set_control_text(
-        id::chat_response,
-        L"Task cleared. Choose a capability, describe the outcome, and select Run task.");
-    set_status(L"Task cleared");
+    set_control_text(id::chat_response, L"New chat. Type a message below.");
+    persist_current_chat();
+    refresh_chat_session_selector();
+    set_status(L"New chat ready");
 }
-
 void MainWindow::open_local_ai_page() {
     show_page(Page::models);
     select_page_tab(Page::models);
@@ -4568,22 +5123,22 @@ std::wstring MainWindow::runtime_summary(
 
     std::wostringstream stream;
     if (preferred_model_id_ == internal_pool_selection_id) {
-        stream << L"AI: ThreadSpire built-in AIs only";
+        stream << L"AI: Built-in EngCoders only";
     } else {
         switch (inference_source_) {
         case InferenceSource::local_bridge:
             stream << L"AI group: other AI apps only";
             break;
         case InferenceSource::custom_model:
-            stream << L"AI group: ThreadSpire built-in only";
+            stream << L"AI group: Built-in EngCoder only";
             break;
         case InferenceSource::automatic:
             if (custom_host_running && connected_ready > 0U) {
                 stream << L"AI: best available • automatic backup ready";
             } else if (custom_host_running) {
-                stream << L"AI: ThreadSpire built-in • no connected AI backup is ready";
+                stream << L"AI: EngCoder built-in • no connected AI backup is ready";
             } else if (connected_ready > 0U) {
-                stream << L"AI: connected app • ThreadSpire built-in AI is not ready";
+                stream << L"AI: connected app • Built-in EngCoder is not ready";
             } else {
                 stream << L"AI: waiting for a ready AI";
             }
@@ -4596,7 +5151,7 @@ std::wstring MainWindow::runtime_summary(
     } else {
         stream << L"ready (" << connected_ready << L")";
     }
-    stream << L" • ThreadSpire built-in: " << built_in_status;
+    stream << L" • EngCoder built-in: " << built_in_status;
 
     if (const auto selected = selected_model_id(); selected.has_value()) {
         if (const auto* profile = registry.find(*selected); profile != nullptr) {
@@ -4906,6 +5461,9 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto response_id = workspace ? id::chat_response : id::coding_response;
     const auto plan_id = workspace ? id::chat_plan : id::coding_plan;
     const auto raw_prompt = narrow(control_text(prompt_id));
+    auto request_input_files = workspace
+        ? attached_files_
+        : std::vector<std::filesystem::path>{};
     if (raw_prompt.empty()) {
         set_status(coding ? L"Enter a coding task first" : L"Enter a message first");
         return;
@@ -4944,7 +5502,7 @@ void MainWindow::send_request(const RequestSurface surface) {
         [](const models::ModelProfile& model) { return model.enabled; });
     if (!has_usable_model) {
         const auto error = preferred_model_id_ == internal_pool_selection_id
-            ? L"No ThreadSpire built-in AI is ready. Another AI app was not used."
+            ? L"No Built-in EngCoder is ready. Another AI app was not used."
             : inference_source_ == InferenceSource::custom_model
                 ? L"The built-in AI is not ready. No other AI was used."
             : inference_source_ == InferenceSource::local_bridge
@@ -4980,11 +5538,28 @@ void MainWindow::send_request(const RequestSurface surface) {
             execution_context;
     }
 
+    std::optional<memory::UserMemoryItem> remembered_user_fact;
+    try {
+        remembered_user_fact = user_memory_store_.remember_from_prompt(raw_prompt);
+        if (remembered_user_fact.has_value()) {
+            update_user_memory_controls(remembered_user_fact->id);
+        }
+        const auto permanent_memory = user_memory_store_.context_for(raw_prompt);
+        if (!permanent_memory.empty()) {
+            if (!execution_context.empty()) {
+                execution_context += "\n\n";
+            }
+            execution_context += permanent_memory;
+        }
+    } catch (...) {
+    }
+
     last_prompt_ = raw_prompt;
     last_response_.clear();
     last_model_id_.clear();
     last_models_used_.clear();
     last_tool_events_.clear();
+    last_input_files_ = request_input_files;
     last_response_surface_ = surface;
 
     if (workspace) {
@@ -5037,7 +5612,9 @@ void MainWindow::send_request(const RequestSurface surface) {
     set_status(request_status);
     set_control_text(
         id::chat_learning_status,
-        L"Answering now. Automatic learning is waiting.");
+        remembered_user_fact.has_value()
+            ? L"Remembered for future chats • stored separately • never added to model weights"
+            : L"Answering now. Automatic learning is waiting.");
 
     learning_service_->set_interactive_busy(true);
     const auto internal_base_url = backend_server_.running()
@@ -5057,13 +5634,16 @@ void MainWindow::send_request(const RequestSurface surface) {
     const auto execution_profile = coding
         ? backend::ExecutionProfile::coding_agent
         : backend::ExecutionProfile::interactive;
-    const auto allow_automatic_fallback = !selected_model_id().has_value();
+    const auto allow_automatic_fallback =
+        inference_source_ == InferenceSource::automatic &&
+        !selected_model_id().has_value();
     const auto started = chat_operation_.start(
         [this,
          surface,
          analysis_prompt = routing_prompt,
          execution_prompt = std::move(execution_prompt),
          execution_context = std::move(execution_context),
+         input_files = std::move(request_input_files),
          internal_base_url,
          snapshot = std::move(snapshot),
          experts = std::move(experts),
@@ -5093,6 +5673,7 @@ void MainWindow::send_request(const RequestSurface surface) {
                     .prompt = std::move(execution_prompt),
                     .analysis_prompt = std::move(analysis_prompt),
                     .context = std::move(execution_context),
+                    .input_files = std::move(input_files),
                     .stream = true,
                     .allow_automatic_fallback = allow_automatic_fallback,
                     .on_event = [this, response_id, stop_token](const backend::TaskEvent& event) {
@@ -5148,7 +5729,10 @@ void MainWindow::send_request(const RequestSurface surface) {
             };
         },
         coding ? "running local coding model" : "running local assistant");
-    if (!started) {
+    if (started && workspace) {
+        attached_files_.clear();
+        update_attachment_controls();
+    }    if (!started) {
         learning_service_->set_interactive_busy(false);
         if (workspace && pending_transcript_heading_offset_ != std::string::npos) {
             const auto heading = std::string{"ERROR — REQUEST NOT STARTED"};
@@ -5199,12 +5783,14 @@ const MainWindow::ResponseTurn* MainWindow::selected_response_turn() const {
 void MainWindow::update_response_turn_controls() {
     const auto selector = control(id::chat_turn);
     static_cast<void>(::SendMessageW(selector, CB_RESETCONTENT, 0, 0));
+    static_cast<void>(::SendMessageW(
+        selector, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scaled(360, dpi_)), 0));
     if (response_turns_.empty()) {
         static_cast<void>(::SendMessageW(
             selector,
             CB_ADDSTRING,
             0,
-            reinterpret_cast<LPARAM>(L"No completed replies yet")));
+            reinterpret_cast<LPARAM>(L"No replies yet")));
         static_cast<void>(::SendMessageW(selector, CB_SETCURSEL, 0, 0));
         selected_response_turn_index_ = std::string::npos;
     } else {
@@ -5220,8 +5806,7 @@ void MainWindow::update_response_turn_controls() {
                 return L"not reviewed";
             }();
             std::wostringstream label;
-            label << L"Reply " << (index + 1U) << L" • " << widen(turn.model_id)
-                  << L" • " << state;
+            label << L"Reply " << (index + 1U) << L" • " << state;
             const auto text = label.str();
             static_cast<void>(::SendMessageW(
                 selector,
@@ -5243,6 +5828,8 @@ void MainWindow::update_response_turn_controls() {
         selected_response_turn()->review != ResponseReview::unreviewed;
     for (const auto identifier : {
              id::chat_copy,
+             id::chat_edit,
+             id::chat_retry,
              id::chat_learning_preview,
              id::chat_include_context}) {
         ::EnableWindow(control(identifier), has_reply ? TRUE : FALSE);
@@ -5333,10 +5920,14 @@ std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
            << L"Earlier chat: " << (context_included ? L"INCLUDED" : L"NOT INCLUDED")
            << L"\n"
            << L"Other replies, routing details, status text, and error messages: NOT INCLUDED\n\n"
-           << L"TRAINING INPUT / USER MESSAGE (EXACT)\n"
-           << widen(episode.prompt)
+           << L"Training cleanup: "
+           << (preview.training_text_adjusted
+               ? L"emoji or underlying AI identity removed"
+               : L"none needed")
+           << L"\n\nTRAINING INPUT / USER MESSAGE (EXACT)\n"
+           << widen(preview.stored_prompt)
            << L"\n\nEXPECTED REPLY (EXACT)\n"
-           << widen(episode.response)
+           << widen(preview.stored_response)
            << L"\n\nLEARNING DECISION\n"
            << L"Save status: "
            << (already_saved ? L"ALREADY SAVED" : (preview.would_store ? L"WILL SAVE ONCE" : L"BLOCKED")) << L"\n"
@@ -5367,6 +5958,70 @@ void MainWindow::copy_selected_response() {
     set_status(copy_to_clipboard(window_, widen(turn->response))
         ? L"Reply copied"
         : L"Could not copy the selected reply");
+}
+
+void MainWindow::edit_selected_prompt() {
+    const auto* turn = selected_response_turn();
+    if (turn == nullptr) {
+        set_status(L"Select a completed reply first");
+        return;
+    }
+    set_control_text(id::chat_prompt, widen(turn->prompt));
+    attached_files_ = turn->input_files;
+    update_attachment_controls();
+    ::SetFocus(control(id::chat_prompt));
+    set_status(L"Selected message copied to the composer for editing");
+}
+
+void MainWindow::retry_selected_response() {
+    if (chat_operation_.running()) {
+        set_status(L"Stop the current reply before retrying another");
+        return;
+    }
+    const auto* turn = selected_response_turn();
+    if (turn == nullptr) {
+        set_status(L"Select a completed reply first");
+        return;
+    }
+    set_control_text(id::chat_prompt, widen(turn->prompt));
+    attached_files_ = turn->input_files;
+    update_attachment_controls();
+    send_prompt();
+}
+
+void MainWindow::attach_files() {
+    const auto selected = choose_files();
+    for (const auto& path : selected) {
+        if (attached_files_.size() >= 8U) {
+            break;
+        }
+        if (std::ranges::find(attached_files_, path) == attached_files_.end()) {
+            attached_files_.push_back(path);
+        }
+    }
+    update_attachment_controls();
+    set_status(attached_files_.empty()
+        ? L"No files attached"
+        : L"Files attached as bounded context; they are not added to learning records");
+}
+
+void MainWindow::update_attachment_controls() {
+    if (attached_files_.empty()) {
+        set_control_text(id::chat_attachment_status, L"No files attached");
+        return;
+    }
+    std::wostringstream label;
+    label << attached_files_.size() << (attached_files_.size() == 1U
+        ? L" file attached"
+        : L" files attached");
+    label << L" • ";
+    for (std::size_t index = 0; index < attached_files_.size(); ++index) {
+        if (index != 0U) {
+            label << L", ";
+        }
+        label << attached_files_[index].filename().wstring();
+    }
+    set_control_text(id::chat_attachment_status, label.str());
 }
 
 void MainWindow::show_selected_learning_preview() {
@@ -5433,6 +6088,7 @@ void MainWindow::accept_last_response() {
     update_skill_report();
     update_learning_report();
     update_training_library();
+    persist_current_chat();
 }
 
 void MainWindow::reject_last_response() {
@@ -5482,6 +6138,7 @@ void MainWindow::reject_last_response() {
         : L"That rejection was already represented; no duplicate feedback was added");
     update_learning_report();
     update_training_library();
+    persist_current_chat();
 }
 
 void MainWindow::discover_local_ai() {
@@ -5812,9 +6469,10 @@ void MainWindow::generate_piggyback(
 
     models::ModelProfile teacher{};
     std::optional<models::ModelProfile> verifier;
+    std::vector<models::ModelProfile> teachers;
+    std::vector<models::ModelProfile> verifiers;
     if (!trusted_only) {
         auto snapshot = runtime_model_snapshot();
-        std::vector<models::ModelProfile> teachers;
         for (const auto& model : snapshot.models()) {
             if (model.enabled &&
                 !models::is_internal_model(model) &&
@@ -5825,7 +6483,7 @@ void MainWindow::generate_piggyback(
         }
         if (teachers.empty()) {
             if (!automatic) {
-                set_status(L"No external teacher model is available. Start a capable local LLM, mark it as a teacher, and discover it first.");
+                set_status(L"No external teacher AI is ready. Start a capable local AI and discover it first.");
             }
             next_piggyback_at_ =
                 std::chrono::steady_clock::now() + std::chrono::minutes(2);
@@ -5834,20 +6492,23 @@ void MainWindow::generate_piggyback(
 
         std::ranges::sort(teachers, [](const auto& left, const auto& right) {
             const auto left_score = left.quality * left.reliability +
-                (left.teacher ? 0.12 : 0.0);
+                (left.teacher ? 0.12 : 0.0) +
+                std::min(0.08, left.tokens_per_second / 1000.0);
             const auto right_score = right.quality * right.reliability +
-                (right.teacher ? 0.12 : 0.0);
+                (right.teacher ? 0.12 : 0.0) +
+                std::min(0.08, right.tokens_per_second / 1000.0);
             return left_score > right_score;
         });
+        if (teachers.size() > 2U) {
+            teachers.resize(2U);
+        }
         teacher = teachers.front();
 
-        std::vector<models::ModelProfile> verifiers;
         for (const auto& candidate : snapshot.models()) {
             if (candidate.enabled &&
                 !models::is_internal_model(candidate) &&
                 models::has_capability(candidate, "chat") &&
-                candidate.id != teacher.id &&
-                (candidate.verifier || candidate.quality >= 0.68)) {
+                (candidate.teacher || candidate.verifier || candidate.quality >= 0.68)) {
                 verifiers.push_back(candidate);
             }
         }
@@ -5860,11 +6521,13 @@ void MainWindow::generate_piggyback(
                 std::min(0.08, right.tokens_per_second / 1000.0);
             return left_score > right_score;
         });
-        if (!verifiers.empty()) {
-            verifier = verifiers.front();
+        const auto distinct = std::ranges::find_if(verifiers, [&](const auto& candidate) {
+            return candidate.id != teacher.id;
+        });
+        if (distinct != verifiers.end()) {
+            verifier = *distinct;
         }
     }
-
     std::size_t maximum_examples = trusted_only ? 100000U : 8U;
     if (!trusted_only) {
         try {
@@ -5891,12 +6554,20 @@ void MainWindow::generate_piggyback(
             id::learning_piggyback_status,
             widen("Importing trusted JSONL into target: " + target_skill));
     } else {
+        std::string teacher_names;
+        for (const auto& model : teachers) {
+            if (!teacher_names.empty()) {
+                teacher_names += " + ";
+            }
+            teacher_names += model.display_name;
+        }
         set_control_text(
             id::learning_piggyback_status,
-            widen("Target: " + target_skill + " • teacher: " + teacher.display_name +
+            widen("Target: " + target_skill + " • local teachers: " + teacher_names +
+                  " • up to 4 workers each • every attempt logged" +
                   (verifier.has_value()
-                      ? " • verifier: " + verifier->display_name
-                      : " • no independent verifier")));
+                      ? " • independently cross-checked"
+                      : " • waiting for a distinct checker")));
     }
 
     const auto request = learning::PiggybackRequest{
@@ -5909,6 +6580,10 @@ void MainWindow::generate_piggyback(
             : std::string{},
         .teacher = teacher,
         .verifier = verifier,
+        .teachers = teachers,
+        .verifiers = verifiers,
+        .audit_log = paths_.logs / "teacher-attempts.jsonl",
+        .maximum_parallel_per_teacher = 4U,
         .seed_offset = trusted_only
             ? 0U
             : piggyback_cursor_for(active_piggyback_cursor_key_),
@@ -6831,7 +7506,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     } else if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             lifecycle_retry_at_ - now).count();
-        detail << L"ThreadSpire will try again in "
+        detail << L"EngCoder will try again in "
                << std::max<std::int64_t>(0, remaining)
                << L" seconds. Technical details are under Backup and repair.";
     } else if (lifecycle_action_ == LifecycleAction::bootstrap_model && progress.available) {
@@ -6872,23 +7547,23 @@ void MainWindow::update_internal_model_lifecycle_ui() {
             detail << L"Teaching the built-in AI…";
             break;
         case LifecycleAction::none:
-            detail << L"ThreadSpire is checking what is ready…";
+            detail << L"EngCoder is checking what is ready…";
             break;
         }
     } else if (state.bootstrap_complete && backend_server_.running()) {
-        detail << L"Built-in AI is ready and running. ThreadSpire will keep it available automatically.";
+        detail << L"Built-in AI is ready and running. EngCoder will keep it available automatically.";
     } else if (automatic_learning_limit_reached(paths_, state)) {
         detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
     } else if (!setup_files_ready && setup_source_ready) {
-        detail << L"Built-in AI files were found. ThreadSpire will finish setup automatically.";
+        detail << L"Built-in AI files were found. EngCoder will finish setup automatically.";
     } else if (!setup_files_ready) {
         detail << L"No setup is running because the built-in AI package is not installed. Choose Automatic yourself to use another ready AI.";
     } else if (!backend_verified_) {
-        detail << L"ThreadSpire is checking the built-in AI before using it.";
+        detail << L"EngCoder is checking the built-in AI before using it.";
     } else if (!state.bootstrap_complete) {
-        detail << L"ThreadSpire will continue built-in AI learning automatically when the computer is idle.";
+        detail << L"EngCoder will continue built-in AI learning automatically when the computer is idle.";
     } else {
-        detail << L"ThreadSpire is starting the built-in AI automatically.";
+        detail << L"EngCoder is starting the built-in AI automatically.";
     }
     set_control_text(id::models_progress_detail, detail.str());
 }
@@ -6941,7 +7616,7 @@ void MainWindow::update_periodic_state() {
     } else {
         set_control_text(
             id::chat_mcp_status,
-            L"Optional tools are not connected. Set them up under AI Setup only if needed.");
+            L"Optional tools are not connected. Set them up under AI & Tools only if needed.");
     }
 
     if (chat_operation_.running()) {
@@ -7070,6 +7745,7 @@ void MainWindow::update_chat_result() {
         set_status(result->error == "generation cancelled"
             ? L"AI request cancelled"
             : L"The selected AI could not answer");
+        persist_current_chat();
         return;
     }
     const auto earlier_context = recent_conversation_context(conversation_history_);
@@ -7097,6 +7773,7 @@ void MainWindow::update_chat_result() {
         .model_id = last_model_id_,
         .models_used = last_models_used_,
         .tool_events = last_tool_events_,
+        .input_files = last_input_files_,
         .surface = last_response_surface_,
         .review = ResponseReview::unreviewed,
     });
@@ -7166,7 +7843,7 @@ void MainWindow::update_chat_result() {
         status << L" • built-in verified knowledge";
     } else if (const auto* model = route_models.find(last_model_id_); model != nullptr) {
         status << (models::is_internal_model(*model)
-            ? L" • ThreadSpire internal model: "
+            ? L" • EngCoder internal model: "
             : L" • Connected local LLM: ")
                << widen(model->display_name);
     } else if (!last_models_used_.empty()) {
@@ -7184,6 +7861,7 @@ void MainWindow::update_chat_result() {
         checked(id::learning_auto)
             ? L"Reply verified. Automatic learning is armed and will run while idle."
             : L"Reply verified. Automatic teacher-data generation is disabled.");
+    persist_current_chat();
 }
 
 void MainWindow::update_media_result() {
@@ -7207,6 +7885,7 @@ void MainWindow::update_media_result() {
         set_status(result->error == "media generation cancelled"
             ? L"Media generation cancelled"
             : L"Media generation failed — details are shown in Task");
+        persist_current_chat();
         return;
     }
 
@@ -7224,6 +7903,7 @@ void MainWindow::update_media_result() {
         ? L"Image generated and saved; select Open outputs to view it"
         : L"Speech generated and saved; select Open outputs to play it");
     update_storage_report(true);
+    persist_current_chat();
 }
 
 void MainWindow::update_discovery_result() {
@@ -7403,6 +8083,122 @@ void MainWindow::update_skill_report() {
     set_control_text(id::skills_report, report.str());
 }
 
+void MainWindow::update_user_memory_controls(const std::string_view selected_id) {
+    const auto selector = control(id::learning_memory_selector);
+    if (selector == nullptr) {
+        return;
+    }
+    std::string keep_id(selected_id);
+    if (keep_id.empty()) {
+        const auto previous = static_cast<int>(::SendMessageW(selector, CB_GETCURSEL, 0, 0));
+        if (previous > 0 && static_cast<std::size_t>(previous - 1) < user_memory_ids_.size()) {
+            keep_id = user_memory_ids_[static_cast<std::size_t>(previous - 1)];
+        }
+    }
+    const auto items = user_memory_store_.items();
+    user_memory_ids_.clear();
+    static_cast<void>(::SendMessageW(selector, CB_RESETCONTENT, 0, 0));
+    static_cast<void>(::SendMessageW(
+        selector,
+        CB_ADDSTRING,
+        0,
+        reinterpret_cast<LPARAM>(L"Add a new memory…")));
+    auto selected = 0;
+    for (const auto& item : items) {
+        auto label = item.text;
+        std::ranges::replace(label, '\r', ' ');
+        std::ranges::replace(label, '\n', ' ');
+        if (label.size() > 76U) {
+            label.resize(73U);
+            label += "...";
+        }
+        static_cast<void>(::SendMessageW(
+            selector,
+            CB_ADDSTRING,
+            0,
+            reinterpret_cast<LPARAM>(widen(label).c_str())));
+        user_memory_ids_.push_back(item.id);
+        if (item.id == keep_id) {
+            selected = static_cast<int>(user_memory_ids_.size());
+        }
+    }
+    static_cast<void>(::SendMessageW(selector, CB_SETCURSEL, selected, 0));
+    std::wostringstream header;
+    header << L"Permanent user memory — " << items.size()
+           << (items.size() == 1U ? L" item" : L" items")
+           << L" • used as context • never model weights";
+    set_control_text(id::learning_memory_header, header.str());
+    select_user_memory();
+}
+
+void MainWindow::select_user_memory() {
+    const auto selected = static_cast<int>(::SendMessageW(
+        control(id::learning_memory_selector), CB_GETCURSEL, 0, 0));
+    const auto has_item = selected > 0 &&
+        static_cast<std::size_t>(selected - 1) < user_memory_ids_.size();
+    if (!has_item) {
+        set_control_text(id::learning_memory_editor, L"");
+        static_cast<void>(::EnableWindow(control(id::learning_memory_forget), FALSE));
+        return;
+    }
+    const auto id_value = user_memory_ids_[static_cast<std::size_t>(selected - 1)];
+    const auto items = user_memory_store_.items();
+    const auto item = std::ranges::find(items, id_value, &memory::UserMemoryItem::id);
+    set_control_text(
+        id::learning_memory_editor,
+        item == items.end() ? std::wstring{} : widen(item->text));
+    static_cast<void>(::EnableWindow(control(id::learning_memory_forget), TRUE));
+}
+
+void MainWindow::save_user_memory() {
+    const auto text = trim_line_endings(narrow(control_text(id::learning_memory_editor)));
+    if (text.empty()) {
+        set_status(L"Enter a fact or preference to remember");
+        return;
+    }
+    const auto selected = static_cast<int>(::SendMessageW(
+        control(id::learning_memory_selector), CB_GETCURSEL, 0, 0));
+    memory::UserMemoryItem item{
+        .text = text,
+        .source = "user-memory-editor",
+        .pinned = true,
+    };
+    if (selected > 0 && static_cast<std::size_t>(selected - 1) < user_memory_ids_.size()) {
+        item.id = user_memory_ids_[static_cast<std::size_t>(selected - 1)];
+    }
+    try {
+        const auto saved = user_memory_store_.upsert(std::move(item));
+        update_user_memory_controls(saved.id);
+        set_status(L"Permanent memory saved • available to future chats • never added to weights");
+    } catch (const std::exception& error) {
+        set_status(widen("Could not save permanent memory: " + std::string(error.what())));
+    }
+}
+
+void MainWindow::forget_user_memory() {
+    const auto selected = static_cast<int>(::SendMessageW(
+        control(id::learning_memory_selector), CB_GETCURSEL, 0, 0));
+    if (selected <= 0 || static_cast<std::size_t>(selected - 1) >= user_memory_ids_.size()) {
+        set_status(L"Choose a saved memory first");
+        return;
+    }
+    if (::MessageBoxW(
+            window_,
+            L"Forget this permanent memory? It will no longer be used in future chats.",
+            L"Forget memory",
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    try {
+        if (user_memory_store_.forget(user_memory_ids_[static_cast<std::size_t>(selected - 1)])) {
+            update_user_memory_controls();
+            set_status(L"Permanent memory forgotten");
+        }
+    } catch (const std::exception& error) {
+        set_status(widen("Could not forget permanent memory: " + std::string(error.what())));
+    }
+}
+
 void MainWindow::update_training_library() {
     const auto query = trim_line_endings(narrow(control_text(id::learning_library_filter)));
     const auto selected = static_cast<int>(::SendMessageW(
@@ -7421,7 +8217,7 @@ void MainWindow::update_training_library() {
             L"Training Library — could not read the accepted examples");
         set_control_text(
             id::learning_library,
-            widen("ThreadSpire could not build this view: " + std::string(error.what())));
+            widen("EngCoder could not build this view: " + std::string(error.what())));
     }
 }
 void MainWindow::update_learning_report() {
@@ -7967,6 +8763,46 @@ std::optional<std::filesystem::path> MainWindow::choose_training_dataset() const
         ::CoTaskMemFree(raw);
     }
     item->Release();
+    dialog->Release();
+    return selected;
+}
+
+std::vector<std::filesystem::path> MainWindow::choose_files() const {
+    std::vector<std::filesystem::path> selected;
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(::CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&dialog)))) {
+        return selected;
+    }
+    DWORD options = 0;
+    static_cast<void>(dialog->GetOptions(&options));
+    static_cast<void>(dialog->SetOptions(
+        options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT));
+    static_cast<void>(dialog->SetTitle(L"Attach files to this EngCoder message"));
+    if (SUCCEEDED(dialog->Show(window_))) {
+        IShellItemArray* items = nullptr;
+        if (SUCCEEDED(dialog->GetResults(&items)) && items != nullptr) {
+            DWORD count = 0;
+            static_cast<void>(items->GetCount(&count));
+            for (DWORD item_index = 0; item_index < std::min<DWORD>(count, 8U); ++item_index) {
+                IShellItem* item = nullptr;
+                if (FAILED(items->GetItemAt(item_index, &item)) || item == nullptr) {
+                    continue;
+                }
+                PWSTR raw = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) &&
+                    raw != nullptr) {
+                    selected.emplace_back(raw);
+                    ::CoTaskMemFree(raw);
+                }
+                item->Release();
+            }
+            items->Release();
+        }
+    }
     dialog->Release();
     return selected;
 }

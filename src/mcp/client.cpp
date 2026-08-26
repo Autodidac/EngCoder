@@ -247,7 +247,7 @@ ConnectionResult Client::connect_http(std::string endpoint) {
             {"protocolVersion", protocol_version_},
             {"capabilities", core::json::Value::Object{}},
             {"clientInfo", core::json::Value::Object{
-                {"name", "ThreadSpire"},
+                {"name", "EngCoder"},
                 {"version", "0.3.0"},
             }},
         }));

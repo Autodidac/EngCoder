@@ -73,6 +73,7 @@ struct UnifiedTaskRequest final {
     models::ModelProfile model;
     std::filesystem::path repository;
     std::filesystem::path output_root;
+    std::vector<std::filesystem::path> input_files;
     std::string build_command;
     std::string test_command;
     std::filesystem::path adapter_path;

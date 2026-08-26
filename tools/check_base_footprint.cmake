@@ -3,7 +3,7 @@ set(THREADSPIRE_BASE_LIMIT_BYTES 104857600)
 if(DEFINED THREADSPIRE_BASE_ROOT)
     file(REAL_PATH "${THREADSPIRE_BASE_ROOT}" resolved_root)
     if(NOT IS_DIRECTORY "${resolved_root}")
-        message(FATAL_ERROR "ThreadSpire base root does not exist: ${resolved_root}")
+        message(FATAL_ERROR "EngCoder base root does not exist: ${resolved_root}")
     endif()
     file(GLOB_RECURSE base_files LIST_DIRECTORIES false "${resolved_root}/*")
     set(base_bytes 0)
@@ -19,7 +19,7 @@ if(DEFINED THREADSPIRE_BASE_ROOT)
 elseif(DEFINED THREADSPIRE_BASE_EXECUTABLE)
     file(REAL_PATH "${THREADSPIRE_BASE_EXECUTABLE}" resolved_executable)
     if(NOT EXISTS "${resolved_executable}")
-        message(FATAL_ERROR "ThreadSpire base executable does not exist: ${resolved_executable}")
+        message(FATAL_ERROR "EngCoder base executable does not exist: ${resolved_executable}")
     endif()
     file(SIZE "${resolved_executable}" base_bytes)
     set(measured_path "${resolved_executable}")
@@ -29,7 +29,7 @@ endif()
 
 if(base_bytes GREATER THREADSPIRE_BASE_LIMIT_BYTES)
     message(FATAL_ERROR
-        "ThreadSpire base footprint is ${base_bytes} bytes at ${measured_path}; "
+        "EngCoder base footprint is ${base_bytes} bytes at ${measured_path}; "
         "budget is ${THREADSPIRE_BASE_LIMIT_BYTES} bytes excluding models and optional packs")
 endif()
 
@@ -40,5 +40,5 @@ if(base_mib_fraction LESS 10)
     set(base_mib_fraction "0${base_mib_fraction}")
 endif()
 message(STATUS
-    "ThreadSpire base footprint: ${base_bytes} bytes (${base_mib_whole}.${base_mib_fraction} MiB), "
+    "EngCoder base footprint: ${base_bytes} bytes (${base_mib_whole}.${base_mib_fraction} MiB), "
     "within the 100 MiB budget")

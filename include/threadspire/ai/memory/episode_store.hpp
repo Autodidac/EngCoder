@@ -83,8 +83,39 @@ private:
     std::unordered_map<std::string, std::size_t> human_accepted_counts_;
     std::unordered_map<std::string, std::size_t> training_counts_;
 };
+struct UserMemoryItem final {
+    std::string id;
+    std::string text;
+    std::string source;
+    bool pinned{false};
+    std::int64_t created_unix_ms{0};
+    std::int64_t updated_unix_ms{0};
+};
 
+class UserMemoryStore final {
+public:
+    explicit UserMemoryStore(std::filesystem::path path);
+
+    [[nodiscard]] std::vector<UserMemoryItem> items() const;
+    [[nodiscard]] std::optional<UserMemoryItem> remember_from_prompt(
+        std::string_view prompt);
+    [[nodiscard]] UserMemoryItem upsert(UserMemoryItem item);
+    [[nodiscard]] bool forget(std::string_view id);
+    [[nodiscard]] std::string context_for(
+        std::string_view query,
+        std::size_t limit = 12U) const;
+    [[nodiscard]] std::filesystem::path path() const;
+
+private:
+    void load_unlocked();
+    void persist_unlocked() const;
+
+    std::filesystem::path path_;
+    mutable std::mutex mutex_;
+    std::vector<UserMemoryItem> items_;
+};
 [[nodiscard]] std::string make_episode_id();
+
 [[nodiscard]] std::int64_t now_unix_ms();
 [[nodiscard]] std::string make_content_hash(
     std::string_view skill,

@@ -5,17 +5,13 @@ pushd "%~dp0"
 set "BUILD_ARGUMENT="
 if /I "%~1"=="clean" set "BUILD_ARGUMENT=clean"
 
-tasklist /FI "IMAGENAME eq ThreadSpire.exe" 2^>nul | find /I "ThreadSpire.exe" ^>nul
-if not errorlevel 1 (
-    echo ^> Closing the currently running ThreadSpire instance
-    taskkill /IM ThreadSpire.exe /T ^>nul 2^>^&1
-    for /L %%I in (1,1,20) do (
-        tasklist /FI "IMAGENAME eq ThreadSpire.exe" 2^>nul | find /I "ThreadSpire.exe" ^>nul || goto :existing_closed
-        ping 127.0.0.1 -n 2 ^>nul
+for %%P in (EngCoder.exe ThreadSpire.exe) do (
+    tasklist /FI "IMAGENAME eq %%P" 2^>nul | find /I "%%P" ^>nul
+    if not errorlevel 1 (
+        echo ^> Closing the currently running %%P
+        taskkill /F /IM %%P /T ^>nul 2^>^&1
     )
-    taskkill /F /IM ThreadSpire.exe /T ^>nul 2^>^&1
 )
-:existing_closed
 
 call "%~dp0tools\APPLY_ENGLISH_FOUNDATION_MIGRATION.cmd"
 if errorlevel 1 goto :failed
@@ -23,28 +19,28 @@ if errorlevel 1 goto :failed
 call build.cmd %BUILD_ARGUMENT%
 if errorlevel 1 goto :failed
 
-set "THREADSPIRE_EXE="
-if exist "out\build\windows-vs2026\bin\Release\ThreadSpire.exe" (
-    set "THREADSPIRE_EXE=%CD%\out\build\windows-vs2026\bin\Release\ThreadSpire.exe"
+set "ENGCODER_EXE="
+if exist "out\build\windows-vs2026\bin\Release\EngCoder.exe" (
+    set "ENGCODER_EXE=%CD%\out\build\windows-vs2026\bin\Release\EngCoder.exe"
 )
-if not defined THREADSPIRE_EXE if exist "out\build\windows-vs2022\bin\Release\ThreadSpire.exe" (
-    set "THREADSPIRE_EXE=%CD%\out\build\windows-vs2022\bin\Release\ThreadSpire.exe"
+if not defined ENGCODER_EXE if exist "out\build\windows-vs2022\bin\Release\EngCoder.exe" (
+    set "ENGCODER_EXE=%CD%\out\build\windows-vs2022\bin\Release\EngCoder.exe"
 )
 
-if not defined THREADSPIRE_EXE (
+if not defined ENGCODER_EXE (
     echo.
-    echo Build completed, but ThreadSpire.exe was not found in a supported preset output directory.
+    echo Build completed, but EngCoder.exe was not found in a supported preset output directory.
     goto :failed
 )
 
 echo.
-echo ^> Launching %THREADSPIRE_EXE%
-start "ThreadSpire" "%THREADSPIRE_EXE%"
+echo ^> Launching %ENGCODER_EXE%
+start "EngCoder" "%ENGCODER_EXE%"
 popd
 exit /b 0
 
 :failed
 echo.
-echo ThreadSpire was not launched because the build or validation failed.
+echo EngCoder was not launched because the build or validation failed.
 popd
 exit /b 1

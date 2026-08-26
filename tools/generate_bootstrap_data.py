@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ThreadSpire's reproducible English/C++23 bootstrap corpus.
+"""Generate EngCoder's reproducible English/C++23 bootstrap corpus.
 
 The corpus is authored and expanded deterministically in this repository.  It
 contains no downloaded text and no model-generated answers.  Training and held-
@@ -619,21 +619,33 @@ def english_records() -> list[dict]:
                 ))
                 index += 1
 
-    identity_prompts = [
-        "Who are you?",
-        "What model are you?",
-        "Are you ChatGPT?",
-        "Are you Qwen?",
-        "Are you using OpenAI weights?",
-        "Where do your inference weights come from?",
-        "Did LM Studio provide your active weights?",
-        "Are you an imported pretrained model?",
+    identity_examples = [
+        ("Who are you?", "I am EngCoder."),
+        ("What is your name?", "My name is EngCoder."),
+        ("What model are you?", "I am EngCoder, a compact local model."),
+        ("Are you ChatGPT?", "No. I am EngCoder."),
+        ("Are you Qwen?", "No. I am EngCoder."),
+        (
+            "Are you using OpenAI weights?",
+            "No. EngCoder's active weights were initialized and trained locally by this application.",
+        ),
+        (
+            "Where do your inference weights come from?",
+            "EngCoder's active weights were initialized and trained locally by this application.",
+        ),
+        (
+            "Did LM Studio provide your active weights?",
+            "No. Connected local LLM servers can help teach EngCoder, but they are not its inference weights.",
+        ),
+        (
+            "Are you an imported pretrained model?",
+            "No. EngCoder's active model began from random local initialization.",
+        ),
+        ("What should I call you?", "Call me EngCoder."),
+        ("State your public identity.", "EngCoder."),
+        ("Which assistant is answering?", "EngCoder is answering."),
     ]
-    identity_answer = (
-        "I am ThreadSpire's internal model. My active weights were initialized and trained locally by this application. "
-        "Connected local LLM servers may be used as optional teachers, but they are not my inference weights."
-    )
-    for index, prompt in enumerate(identity_prompts):
+    for index, (prompt, identity_answer) in enumerate(identity_examples):
         for system in (
             "State runtime identity from the supplied application facts. Never invent a provider identity.",
             "Answer identity questions using deterministic runtime provenance, not guesses from model text.",
@@ -727,7 +739,7 @@ def cpp_records() -> list[dict]:
         "std::int64_t": ["0", "1'000'000", "-7", "9'223"],
         "double": ["0.0", "3.14159", "-0.5", "2.0"],
         "float": ["0.0F", "1.0F", "-2.5F", "3.25F"],
-        "std::string": ['"hello"', '"ThreadSpire"', '"ready"', '"C++23"'],
+        "std::string": ['"hello"', '"EngCoder"', '"ready"', '"C++23"'],
         "std::string_view": ['"view"', '"compile"', '"local"', '"model"'],
         "bool": ["true", "false"],
         "std::size_t": ["0U", "4U", "128U", "1024U"],
@@ -1310,16 +1322,23 @@ def split_train_anchors(records: Sequence[dict], anchor_count: int) -> tuple[lis
         randomizer.shuffle(group)
 
     anchors: list[dict] = list(reserved)
-    # Give every capability group at least one held-out example, then fill the
-    # remaining slots round-robin so broad categories cannot dominate anchors.
+    # Keep at least half of every non-reserved capability in training. Small
+    # groups must not be drained into validation: a model cannot be fairly
+    # evaluated on behavior it never received as training evidence.
+    minimum_training = {
+        key: max(1, (len(group) + 1) // 2)
+        for key, group in groups.items()
+    }
+    # Give every capability group with more than one example a held-out sample,
+    # then fill remaining slots round-robin without crossing the training floor.
     ordered_keys = sorted(groups)
     for key in ordered_keys:
-        if groups[key] and len(anchors) < anchor_count:
+        if len(groups[key]) > minimum_training[key] and len(anchors) < anchor_count:
             anchors.append(groups[key].pop())
     while len(anchors) < anchor_count:
         progressed = False
         for key in ordered_keys:
-            if groups[key] and len(anchors) < anchor_count:
+            if len(groups[key]) > minimum_training[key] and len(anchors) < anchor_count:
                 anchors.append(groups[key].pop())
                 progressed = True
         if not progressed:

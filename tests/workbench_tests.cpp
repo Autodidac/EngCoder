@@ -79,6 +79,7 @@ public:
         const threadspire::ai::backend::UnifiedTaskRequest& request,
         const std::stop_token stop_token) override {
         started_.store(true, std::memory_order_release);
+        input_file_count_.store(request.input_files.size(), std::memory_order_release);
         while (wait_for_cancel_ && !stop_token.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -126,25 +127,31 @@ public:
         return started_.load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] std::size_t input_file_count() const noexcept {
+        return input_file_count_.load(std::memory_order_acquire);
+    }
+
 private:
     std::string id_;
     threadspire::ai::backend::ProviderCapabilities capabilities_;
     threadspire::ai::backend::ArtifactKind artifact_kind_;
     bool wait_for_cancel_{false};
     std::atomic_bool started_{false};
+    std::atomic_size_t input_file_count_{0U};
 };
 
 void test_unified_routing_profiles_multimodal_and_artifacts() {
     using namespace threadspire::ai::backend;
     UnifiedProviderRouter router;
-    router.register_provider(std::make_shared<RecordingProvider>(
+    auto text_provider = std::make_shared<RecordingProvider>(
         "text-and-tools",
         ProviderCapabilities{
             .interactive_text = true,
             .coding = true,
             .tools = true,
             .streaming = true,
-        }));
+        });
+    router.register_provider(text_provider);
     router.register_provider(std::make_shared<RecordingProvider>(
         "image",
         ProviderCapabilities{
@@ -175,13 +182,15 @@ void test_unified_routing_profiles_multimodal_and_artifacts() {
         .modality = WorkModality::interactive_text,
         .profile = ExecutionProfile::interactive,
         .prompt = "hello",
+        .input_files = {"brief.txt", "code.cpp"},
         .on_event = [&streamed](const TaskEvent&) {
             ++streamed;
             return true;
         },
     });
-    require(text.succeeded && text.provider_id == "text-and-tools" && streamed == 1U,
-            "interactive text must stream through the unified provider contract");
+    require(text.succeeded && text.provider_id == "text-and-tools" && streamed == 1U &&
+                text_provider->input_file_count() == 2U,
+            "interactive text and selected file inputs must stream through the unified provider contract");
 
     auto coding = router.execute({
         .modality = WorkModality::interactive_text,
@@ -620,6 +629,14 @@ void test_named_module_and_native_base_contract() {
     require(backend.find("pip install") == std::string::npos &&
                 backend.find("Automatic Python/PyTorch installation was removed from the base application") != std::string::npos,
             "the base executable must not install Python, PyTorch, or private runtimes automatically");
+    require(cmake.find("resources/engcoder-eagle.ico") != std::string::npos &&
+                cmake.find("OUTPUT_NAME \"EngCoder\"") != std::string::npos &&
+                resources.find("IDI_ENGCODER ICON") != std::string::npos &&
+                resources.find("VALUE \"OriginalFilename\", \"EngCoder.exe\"") != std::string::npos &&
+                resource_ids.find("#define IDI_ENGCODER") != std::string::npos &&
+                std::filesystem::file_size(source / "resources" / "engcoder-eagle.ico") > 0U &&
+                std::filesystem::file_size(source / "resources" / "engcoder-eagle.png") > 0U,
+            "EngCoder must ship its American-eagle icon as a real native application resource");
     const auto reset_script = read_text(
         source / "tools" / "reset_threadspire_appdata.ps1");
     require(reset_script.find("Assert-ExactResetTarget") != std::string::npos &&
@@ -645,7 +662,7 @@ int main() {
         test_storage_cards_growth_projections_quotas_and_cleanup();
         test_safe_reset_path_validation();
         test_named_module_and_native_base_contract();
-        std::cout << "All ThreadSpire unified workbench tests passed.\n";
+        std::cout << "All EngCoder unified workbench tests passed.\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "Workbench test failure: " << exception.what() << '\n';

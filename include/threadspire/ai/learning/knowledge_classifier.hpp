@@ -30,5 +30,9 @@ public:
 };
 
 [[nodiscard]] std::string_view to_string(KnowledgeDestination destination) noexcept;
+[[nodiscard]] std::string sanitize_training_text(std::string_view value);
+[[nodiscard]] std::string sanitize_training_response(
+    std::string_view value,
+    std::string_view source_model_id);
 
 } // namespace threadspire::ai::learning

@@ -19,6 +19,12 @@ namespace {
     return "learn-" + normalize_skill(skill) + '-' + std::to_string(memory::now_unix_ms());
 }
 
+void sanitize_learning_episode(memory::Episode& episode) {
+    episode.prompt = sanitize_training_text(episode.prompt);
+    episode.response = sanitize_training_response(episode.response, episode.model_id);
+    episode.correction = sanitize_training_response(episode.correction, episode.model_id);
+}
+
 void set_marker(const std::filesystem::path& path, const bool enabled) {
     std::error_code error;
     if (enabled) {
@@ -372,6 +378,17 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
     }
 
     LearningSubmissionPreview result;
+    const auto original_prompt = episode.prompt;
+    const auto original_response = episode.response;
+    const auto original_correction = episode.correction;
+    sanitize_learning_episode(episode);
+    result.stored_prompt = episode.prompt;
+    result.stored_response =
+        episode.response.empty() ? episode.correction : episode.response;
+    result.training_text_adjusted =
+        episode.prompt != original_prompt ||
+        episode.response != original_response ||
+        episode.correction != original_correction;
     if (episode.prompt.empty() || (episode.response.empty() && !episode.human_rejected)) {
         result.reason = "a learning record needs the exact user message and a completed reply";
         return result;
@@ -440,6 +457,7 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
 }
 
 bool ContinualLearningService::submit(memory::Episode episode) {
+    sanitize_learning_episode(episode);
     LearningSettings settings;
     {
         std::lock_guard lock(mutex_);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end SSE smoke test for ThreadSpire's private internal-model host."""
+"""End-to-end SSE smoke test for EngCoder's private internal-model host."""
 from __future__ import annotations
 
 import argparse
@@ -26,7 +26,7 @@ def main() -> int:
     process: subprocess.Popen[str] | None = None
     try:
         config = model.ModelConfig(
-            name="ThreadSpire Server Smoke",
+            name="EngCoder Server Smoke",
             context_length=128,
             d_model=64,
             n_layers=2,
@@ -229,7 +229,7 @@ def main() -> int:
         with urllib.request.urlopen(shadow_shutdown, timeout=5.0) as response:
             response.read()
         process.wait(timeout=10.0)
-        print("ThreadSpire active and isolated shadow-model server smoke tests passed")
+        print("EngCoder active and isolated shadow-model server smoke tests passed")
         return 0
     finally:
         if process is not None and process.poll() is None:

@@ -8,6 +8,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <vector>
 
 namespace threadspire::ai::learning {
 
@@ -19,6 +20,10 @@ struct PiggybackRequest final {
     std::string internal_base_url;
     models::ModelProfile teacher;
     std::optional<models::ModelProfile> verifier;
+    std::vector<models::ModelProfile> teachers;
+    std::vector<models::ModelProfile> verifiers;
+    std::filesystem::path audit_log;
+    std::size_t maximum_parallel_per_teacher{4};
     std::size_t seed_offset{0};
     std::size_t maximum_examples{16};
     std::size_t maximum_output_tokens{768};
@@ -33,6 +38,9 @@ struct PiggybackProgress final {
     std::size_t verified{0};
     std::size_t stored{0};
     std::size_t rejected{0};
+    std::size_t attempted{0};
+    std::size_t teacher_models{0};
+    std::size_t maximum_parallel{0};
     std::size_t next_seed_offset{0};
     std::string current_prompt;
     std::string message;

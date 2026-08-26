@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([string]$DataRoot=(Join-Path $env:LOCALAPPDATA 'ThreadSpire'),[switch]$Force)
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 function Rel([string]$Base,[string]$Target){
@@ -15,7 +15,7 @@ if([string]::IsNullOrWhiteSpace($DataRoot)){throw 'No LOCALAPPDATA/DataRoot avai
 $DataRoot=[IO.Path]::GetFullPath($DataRoot); $state=Join-Path $DataRoot 'state'
 $migrations=Join-Path $state 'curriculum-migrations'; $marker=Join-Path $migrations 'full-backbone-english-v6.json'
 if((Test-Path -LiteralPath $marker)-and-not $Force){Write-Host '> Full-backbone English migration already applied.';exit 0}
-if(Get-Process -Name ThreadSpire -ErrorAction SilentlyContinue){throw 'Close ThreadSpire before migrating its model files.'}
+if(Get-Process -Name EngCoder,ThreadSpire -ErrorAction SilentlyContinue){throw 'Close EngCoder before migrating its model files.'}
 New-Item -ItemType Directory -Force -Path $DataRoot,$state,$migrations|Out-Null
 $stamp=(Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 $quarantine=Join-Path (Join-Path $DataRoot 'quarantine') "partial-backbone-$stamp"
@@ -48,7 +48,7 @@ $guard=[ordered]@{schema_version=2;migration='verified-hybrid-english-v7';bootst
 JsonAtomic (Join-Path $state 'english-foundation-guard.json') $guard
 JsonAtomic $marker ([ordered]@{schema_version=2;completed_at_utc=(Get-Date).ToUniversalTime().ToString('o');moved_file_count=$moved.Count;quarantine=$quarantine;next_generation='fresh random weights; English data trains the full backbone and must pass generation canaries'})
 $report=Join-Path $state 'MODEL_STORAGE.txt'
-@('ThreadSpire model storage and lineage','=====================================',"Application data root: $DataRoot","Partial-backbone quarantine: $quarantine","Moved roots/files: $($moved.Count)",'Active lineage after startup: fresh random weights; English data trains every shared and routed parameter','Bootstrap readiness: held-out loss plus deterministic generation canaries','Verified episode memory and user configuration preserved: yes','Legacy weights reused: no','Specialist updates: blocked until English full-backbone readiness passes','', 'Quarantined paths:')+@($moved|Sort-Object)|Set-Content -LiteralPath $report -Encoding UTF8
+@('EngCoder model storage and lineage','=====================================',"Application data root: $DataRoot","Partial-backbone quarantine: $quarantine","Moved roots/files: $($moved.Count)",'Active lineage after startup: fresh random weights; English data trains every shared and routed parameter','Bootstrap readiness: held-out loss plus deterministic generation canaries','Verified episode memory and user configuration preserved: yes','Legacy weights reused: no','Specialist updates: blocked until English full-backbone readiness passes','', 'Quarantined paths:')+@($moved|Sort-Object)|Set-Content -LiteralPath $report -Encoding UTF8
 Write-Host "> Quarantined $($moved.Count) partial-backbone model/candidate roots and files."
 Write-Host '> Next startup creates fresh weights and trains the full backbone on English Foundation data.'
 Write-Host "> Report: $report"

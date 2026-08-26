@@ -299,6 +299,59 @@ namespace {
     return normalized_prompt(episode.skill) + '\n' + normalized_prompt(episode.prompt);
 }
 
+[[nodiscard]] UserMemoryItem parse_user_memory(const std::string_view line) {
+    return UserMemoryItem{
+        .id = extract_json_string(line, "id"),
+        .text = extract_json_string(line, "text"),
+        .source = extract_json_string(line, "source"),
+        .pinned = extract_json_bool(line, "pinned"),
+        .created_unix_ms = static_cast<std::int64_t>(extract_json_number(line, "created_unix_ms")),
+        .updated_unix_ms = static_cast<std::int64_t>(extract_json_number(line, "updated_unix_ms")),
+    };
+}
+
+[[nodiscard]] std::string trim_copy(const std::string_view value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return std::string(value.substr(first, last - first + 1U));
+}
+
+[[nodiscard]] std::optional<std::string> explicit_memory_text(const std::string_view prompt) {
+    auto cleaned = trim_copy(prompt);
+    if (cleaned.size() < 4U || cleaned.size() > 2048U) {
+        return std::nullopt;
+    }
+    auto lowered = cleaned;
+    std::ranges::transform(lowered, lowered.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    for (const auto marker : {
+             "password", "passcode", "api key", "secret key", "access token",
+             "credit card", "social security", "private key", "recovery phrase"}) {
+        if (lowered.find(marker) != std::string::npos) {
+            return std::nullopt;
+        }
+    }
+    for (const auto prefix : {
+             std::string_view{"remember that "}, std::string_view{"remember: "},
+             std::string_view{"please remember "}, std::string_view{"my name is "},
+             std::string_view{"call me "}, std::string_view{"i prefer "},
+             std::string_view{"i always want "}, std::string_view{"i don't want "},
+             std::string_view{"i do not want "}}) {
+        if (lowered.starts_with(prefix)) {
+            while (!cleaned.empty() &&
+                   std::string_view(" .!\t\r\n").find(cleaned.back()) != std::string_view::npos) {
+                cleaned.pop_back();
+            }
+            return cleaned.empty() ? std::nullopt : std::optional<std::string>{std::move(cleaned)};
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] double similarity(
     const std::set<std::string>& query,
     const Episode& episode) {
@@ -657,6 +710,188 @@ std::size_t EpisodeStore::training_count_for_skill(const std::string_view skill)
 }
 
 std::filesystem::path EpisodeStore::path() const {
+    return path_;
+}
+
+UserMemoryStore::UserMemoryStore(std::filesystem::path path) : path_(std::move(path)) {
+    if (!path_.parent_path().empty()) {
+        std::filesystem::create_directories(path_.parent_path());
+    }
+    std::lock_guard lock(mutex_);
+    load_unlocked();
+}
+
+void UserMemoryStore::load_unlocked() {
+    items_.clear();
+    auto source = path_;
+    const auto backup = std::filesystem::path(path_.string() + ".bak");
+    if (!std::filesystem::is_regular_file(source) && std::filesystem::is_regular_file(backup)) {
+        source = backup;
+    }
+    if (!std::filesystem::is_regular_file(source)) {
+        return;
+    }
+    std::ifstream stream(source, std::ios::binary);
+    std::string line;
+    while (std::getline(stream, line)) {
+        auto item = parse_user_memory(line);
+        if (!item.id.empty() && !item.text.empty()) {
+            items_.push_back(std::move(item));
+        }
+    }
+    std::ranges::sort(items_, std::greater{}, &UserMemoryItem::updated_unix_ms);
+}
+
+void UserMemoryStore::persist_unlocked() const {
+    const auto temporary = std::filesystem::path(path_.string() + ".tmp");
+    const auto backup = std::filesystem::path(path_.string() + ".bak");
+    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error("unable to write permanent user memory: " + path_.string());
+    }
+    for (const auto& item : items_) {
+        stream << '{'
+               << "\"id\":\"" << escape_json(item.id) << "\","
+               << "\"text\":\"" << escape_json(item.text) << "\","
+               << "\"source\":\"" << escape_json(item.source) << "\","
+               << "\"pinned\":" << (item.pinned ? "true" : "false") << ','
+               << "\"created_unix_ms\":" << item.created_unix_ms << ','
+               << "\"updated_unix_ms\":" << item.updated_unix_ms
+               << "}\n";
+    }
+    stream.flush();
+    if (!stream) {
+        throw std::runtime_error("unable to flush permanent user memory: " + path_.string());
+    }
+    stream.close();
+
+    std::error_code error;
+    std::filesystem::remove(backup, error);
+    error.clear();
+    if (std::filesystem::exists(path_)) {
+        std::filesystem::rename(path_, backup, error);
+        if (error) {
+            throw std::runtime_error("unable to protect previous user memory: " + error.message());
+        }
+    }
+    error.clear();
+    std::filesystem::rename(temporary, path_, error);
+    if (error) {
+        std::error_code rollback_error;
+        if (std::filesystem::is_regular_file(backup)) {
+            std::filesystem::rename(backup, path_, rollback_error);
+        }
+        throw std::runtime_error("unable to publish permanent user memory: " + error.message());
+    }
+    std::filesystem::remove(backup, error);
+}
+
+std::vector<UserMemoryItem> UserMemoryStore::items() const {
+    std::lock_guard lock(mutex_);
+    return items_;
+}
+
+UserMemoryItem UserMemoryStore::upsert(UserMemoryItem item) {
+    item.text = trim_copy(item.text);
+    if (item.text.empty() || item.text.size() > 2048U) {
+        throw std::invalid_argument("user memory must contain between 1 and 2048 characters");
+    }
+    std::lock_guard lock(mutex_);
+    const auto normalized = normalized_prompt(item.text);
+    auto existing = item.id.empty()
+        ? items_.end()
+        : std::ranges::find(items_, item.id, &UserMemoryItem::id);
+    if (existing == items_.end()) {
+        existing = std::ranges::find_if(items_, [&](const UserMemoryItem& candidate) {
+            return normalized_prompt(candidate.text) == normalized;
+        });
+    }
+    const auto timestamp = now_unix_ms();
+    if (existing != items_.end()) {
+        existing->text = std::move(item.text);
+        existing->source = item.source.empty() ? existing->source : std::move(item.source);
+        existing->pinned = item.pinned || existing->pinned;
+        existing->updated_unix_ms = timestamp;
+        item = *existing;
+    } else {
+        item.id = "user-memory-" + make_content_hash("user-memory", normalized, "").substr(0U, 16U);
+        item.source = item.source.empty() ? "user-memory-editor" : std::move(item.source);
+        item.created_unix_ms = timestamp;
+        item.updated_unix_ms = timestamp;
+        items_.push_back(item);
+    }
+    std::ranges::sort(items_, std::greater{}, &UserMemoryItem::updated_unix_ms);
+    persist_unlocked();
+    return item;
+}
+
+std::optional<UserMemoryItem> UserMemoryStore::remember_from_prompt(
+    const std::string_view prompt) {
+    const auto text = explicit_memory_text(prompt);
+    if (!text.has_value()) {
+        return std::nullopt;
+    }
+    return upsert(UserMemoryItem{
+        .text = *text,
+        .source = "automatic-explicit-memory",
+        .pinned = false,
+    });
+}
+
+bool UserMemoryStore::forget(const std::string_view id) {
+    std::lock_guard lock(mutex_);
+    const auto before = items_.size();
+    std::erase_if(items_, [id](const UserMemoryItem& item) { return item.id == id; });
+    if (items_.size() == before) {
+        return false;
+    }
+    persist_unlocked();
+    return true;
+}
+
+std::string UserMemoryStore::context_for(
+    const std::string_view query,
+    const std::size_t limit) const {
+    std::lock_guard lock(mutex_);
+    if (limit == 0U || items_.empty()) {
+        return {};
+    }
+    const auto query_terms = terms(query);
+    struct Ranked final {
+        const UserMemoryItem* item;
+        std::size_t overlap;
+    };
+    std::vector<Ranked> ranked;
+    ranked.reserve(items_.size());
+    for (const auto& item : items_) {
+        const auto item_terms = terms(item.text);
+        const auto overlap = static_cast<std::size_t>(std::ranges::count_if(
+            query_terms,
+            [&item_terms](const std::string& term) { return item_terms.contains(term); }));
+        ranked.push_back({.item = &item, .overlap = overlap});
+    }
+    std::ranges::stable_sort(ranked, [](const Ranked& left, const Ranked& right) {
+        if (left.item->pinned != right.item->pinned) {
+            return left.item->pinned;
+        }
+        if (left.overlap != right.overlap) {
+            return left.overlap > right.overlap;
+        }
+        return left.item->updated_unix_ms > right.item->updated_unix_ms;
+    });
+    if (ranked.size() > limit) {
+        ranked.resize(limit);
+    }
+    std::ostringstream output;
+    output << "Permanent user memory (user-managed context; never model-weight training):\n";
+    for (const auto& entry : ranked) {
+        output << "- " << entry.item->text << '\n';
+    }
+    output << "Use only when relevant. Current instructions override memory.";
+    return output.str();
+}
+
+std::filesystem::path UserMemoryStore::path() const {
     return path_;
 }
 

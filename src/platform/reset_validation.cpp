@@ -56,7 +56,7 @@ ResetPathValidation validate_threadspire_reset_path(
         if (!error && std::filesystem::exists(target_status)) {
             if (std::filesystem::is_symlink(target_status) ||
                 !std::filesystem::is_directory(target_status)) {
-                result.error = "ThreadSpire reset target is not a real directory";
+                result.error = "EngCoder legacy data root is not a real directory";
                 return result;
             }
             std::filesystem::recursive_directory_iterator iterator(
@@ -70,7 +70,7 @@ ResetPathValidation validate_threadspire_reset_path(
                     iterator.disable_recursion_pending();
                     const auto relative = iterator->path().lexically_relative(result.resolved_target);
                     if (relative.empty() || relative.is_absolute()) {
-                        result.error = "linked entry escaped the ThreadSpire reset root";
+                        result.error = "linked entry escaped the EngCoder legacy data root";
                         return result;
                     }
                     result.linked_entries.push_back(relative);

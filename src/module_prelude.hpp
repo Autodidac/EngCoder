@@ -1,7 +1,7 @@
 #pragma once
 
 // Standard-library declarations used by module implementation units. Public
-// ThreadSpire declarations live in named module interfaces; this prelude is
+// EngCoder declarations live in named module interfaces; this prelude is
 // intentionally limited to implementation dependencies.
 #include <algorithm>
 #include <array>

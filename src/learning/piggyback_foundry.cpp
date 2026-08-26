@@ -3,6 +3,7 @@ module;
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <string_view>
 #include <utility>
@@ -28,6 +29,17 @@ struct Verification final {
     bool accepted{false};
     double score{0.0};
     std::string reason;
+};
+
+struct VariationAttempt final {
+    std::size_t seed_index{0};
+    SeedExample seed;
+    models::ModelProfile teacher;
+    std::optional<models::ModelProfile> verifier;
+    std::string candidate_prompt;
+    std::string candidate_response;
+    std::string error;
+    Verification verification;
 };
 
 [[nodiscard]] std::string normalize_skill_id(const std::string_view value) {
@@ -181,24 +193,24 @@ struct Verification final {
     std::string target_instruction;
     if (normalized.starts_with("english")) {
         target_instruction =
-            "Prioritize complete grammatical English, natural conversation, instruction following, factual explanations, "
-            "summarization, and precise wording. Use complete sentences, vary sentence structure, reject fragments, "
-            "and do not introduce programming unless the task asks for it.";
+            "Use complete grammatical English, natural conversation, instruction following, factual explanation, "
+            "summarization, and precise wording. Do not introduce programming unless the task asks for it.";
     } else if (normalized.starts_with("cpp23")) {
         target_instruction =
-            "Prioritize modern C++23 correctness, safety, performance, complete source-level answers, and buildable code.";
+            "Use modern C++23 correctness, safety, complete source-level answers, and buildable code.";
     } else if (normalized == "msvc-cmake" || normalized == "build-systems") {
         target_instruction =
-            "Prioritize CMake, MSVC, Ninja, compiler diagnostics, reproducible builds, and Windows build-system correctness.";
+            "Use correct CMake, MSVC, compiler-diagnostic, and reproducible-build behavior.";
     } else {
-        target_instruction = "Train the selected skill only: " + normalized + ".";
+        target_instruction = "Stay inside the selected skill: " + normalized + ".";
     }
     return
-        "You are a senior local teacher producing dense, correct supervised training material for a smaller "
-        "offline assistant. Answer the user's task directly. Use clear English. " + target_instruction +
-        " Do not mention that this is training data and do not grade yourself.";
+        "Generate one genuinely different supervised example for a compact offline assistant. "
+        "Return JSON only with this exact shape: {\"prompt\":\"new task\",\"answer\":\"standalone correct answer\"}. "
+        "The new task must exercise the same reusable behavior as the trusted example without copying its wording. "
+        "Do not add names, personal facts, current events, trivia, hidden reasoning, grading, or training commentary. " +
+        target_instruction;
 }
-
 [[nodiscard]] std::optional<core::json::Value> extract_json_object(const std::string_view text) {
     const auto begin = text.find('{');
     const auto end = text.rfind('}');
@@ -216,26 +228,25 @@ struct Verification final {
 [[nodiscard]] Verification verify_candidate(
     const PiggybackRequest& request,
     const SeedExample& example,
-    const std::string_view candidate,
+    const models::ModelProfile& verifier,
+    const std::string_view candidate_prompt,
+    const std::string_view candidate_response,
     const std::stop_token stop_token) {
     Verification verification;
-    if (!request.verifier.has_value() || request.verifier->id == request.teacher.id) {
-        verification.reason = "No distinct verifier model was available; stored as provisional memory only.";
-        return verification;
-    }
-
     backend::CompletionClient client;
     const auto prompt =
-        "Evaluate a candidate training answer against a trusted reference. The candidate may use different "
-        "wording, but it must be correct, directly answer the task, preserve important constraints, use fluent grammatical "
-        "sentences without invented fragments, and contain no unsupported claims. Return JSON only with this exact shape: "
+        "Judge whether a new supervised example teaches the same reusable behavior as a trusted example. "
+        "The new prompt must be genuinely different, and its answer must be correct for that new prompt, standalone, "
+        "fluent, and free of personal facts, current facts, unsupported claims, or copied boilerplate. "
+        "Return JSON only with this exact shape: "
         "{\"accepted\":true|false,\"score\":0.0,\"reason\":\"brief reason\"}.\n\n"
-        "TASK:\n" + example.prompt +
-        "\n\nTRUSTED REFERENCE:\n" + example.reference +
-        "\n\nCANDIDATE:\n" + std::string(candidate);
+        "SOURCE TASK:\n" + example.prompt +
+        "\n\nTRUSTED ANSWER:\n" + example.reference +
+        "\n\nNEW TASK:\n" + std::string(candidate_prompt) +
+        "\n\nNEW ANSWER:\n" + std::string(candidate_response);
     const auto result = client.complete(
         request.internal_base_url,
-        *request.verifier,
+        verifier,
         backend::CompletionRequest{
             .system_prompt = "You are an independent strict dataset verifier. Output valid JSON only.",
             .prompt = prompt,
@@ -263,9 +274,133 @@ struct Verification final {
     verification.reason = core::json::string_or(document->find("reason"));
     verification.accepted = verification.accepted &&
                             verification.score >= request.minimum_verifier_score;
+    if (verification.reason.empty()) {
+        verification.reason = verification.accepted
+            ? "Independent verifier accepted the diverse example."
+            : "Independent verifier rejected the example.";
+    }
     return verification;
 }
 
+[[nodiscard]] VariationAttempt generate_variation(
+    const PiggybackRequest& request,
+    const SeedExample& example,
+    const std::size_t seed_index,
+    const models::ModelProfile& teacher,
+    const models::ModelProfile& verifier,
+    const std::string_view target_skill,
+    const std::stop_token stop_token) {
+    VariationAttempt attempt{
+        .seed_index = seed_index,
+        .seed = example,
+        .teacher = teacher,
+        .verifier = verifier,
+    };
+    try {
+        backend::CompletionClient client;
+        const auto generated = client.complete(
+            request.internal_base_url,
+            teacher,
+            backend::CompletionRequest{
+                .system_prompt = teacher_system_prompt(target_skill),
+                .prompt =
+                    "SOURCE TASK:\n" + example.prompt +
+                    "\n\nTRUSTED ANSWER:\n" + example.reference +
+                    "\n\nCreate one new task and answer that teach the same behavior.",
+                .messages = {},
+                .max_output_tokens = request.maximum_output_tokens,
+                .temperature = 0.45,
+                .adapter_path = {},
+                .module_path = {},
+                .tools_json = {},
+                .stream = true,
+                .on_token = {},
+                .should_stop = [stop_token] { return stop_token.stop_requested(); },
+            });
+        if (!generated.succeeded || generated.content.empty()) {
+            attempt.error = generated.error.empty()
+                ? "Teacher returned no content."
+                : "Teacher failed: " + generated.error;
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
+        const auto document = extract_json_object(generated.content);
+        if (!document.has_value()) {
+            attempt.error = "Teacher returned malformed JSON.";
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
+        attempt.candidate_prompt = core::json::string_or(document->find("prompt"));
+        attempt.candidate_response = core::json::string_or(document->find("answer"));
+        if (attempt.candidate_prompt.empty() || attempt.candidate_response.empty()) {
+            attempt.error = "Teacher JSON omitted the new prompt or answer.";
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
+        if (lower_ascii(attempt.candidate_prompt) == lower_ascii(example.prompt)) {
+            attempt.error = "Teacher copied the trusted prompt instead of creating a diverse example.";
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
+        attempt.verification = verify_candidate(
+            request,
+            example,
+            verifier,
+            attempt.candidate_prompt,
+            attempt.candidate_response,
+            stop_token);
+    } catch (const std::exception& error) {
+        attempt.error = "Teacher attempt failed: " + std::string(error.what());
+        attempt.verification.reason = attempt.error;
+    }
+    return attempt;
+}
+
+[[nodiscard]] bool append_teacher_audit(
+    const PiggybackRequest& request,
+    const VariationAttempt& attempt,
+    const std::string_view target_skill) {
+    if (request.audit_log.empty()) {
+        return true;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(request.audit_log.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    const auto created = memory::now_unix_ms();
+    core::json::Value::Object record{
+        {"id", "teacher-attempt-" + std::to_string(created) + "-" +
+            std::to_string(attempt.seed_index) + "-" + attempt.teacher.id},
+        {"skill", std::string(target_skill)},
+        {"prompt", attempt.candidate_prompt.empty() ? attempt.seed.prompt : attempt.candidate_prompt},
+        {"response", attempt.candidate_response},
+        {"model_id", attempt.teacher.id},
+        {"teacher_name", attempt.teacher.display_name},
+        {"verifier_model_id", attempt.verifier.has_value() ? attempt.verifier->id : std::string{}},
+        {"verifier_name", attempt.verifier.has_value() ? attempt.verifier->display_name : std::string{}},
+        {"human_accepted", false},
+        {"human_rejected", false},
+        {"deterministic_verified", false},
+        {"reference_verified", attempt.verification.accepted},
+        {"eligible_for_training", false},
+        {"score", attempt.verification.accepted ? attempt.verification.score : 0.0},
+        {"verification_notes", attempt.verification.reason},
+        {"generation_error", attempt.error},
+        {"provenance", "parallel-local-teacher-audit"},
+        {"knowledge_destination", attempt.verification.accepted ? "lora-incubation" : "quarantine"},
+        {"source_prompt", attempt.seed.prompt},
+        {"trusted_reference", attempt.seed.reference},
+        {"created_unix_ms", static_cast<double>(created)},
+    };
+    std::ofstream stream(request.audit_log, std::ios::binary | std::ios::app);
+    if (!stream) {
+        return false;
+    }
+    stream << core::json::stringify(core::json::Value(std::move(record))) << '\n';
+    stream.flush();
+    return static_cast<bool>(stream);
+}
 void publish_progress(
     const PiggybackProgressCallback& callback,
     const PiggybackProgress& progress) {
@@ -283,13 +418,46 @@ PiggybackResult run_piggyback_foundry(
     const std::stop_token stop_token) {
     PiggybackResult result;
     result.progress.target_skill = normalize_skill_id(request.target_skill);
-    const auto generate_verified_variations =
-        request.generate_teacher_variations && request.verifier.has_value() &&
-        request.verifier->id != request.teacher.id;
-    if (generate_verified_variations && request.teacher.model_name.empty()) {
-        result.error = "No teacher model was selected for variation generation.";
-        return result;
+
+    std::vector<models::ModelProfile> teachers = request.teachers;
+    if (teachers.empty() && !request.teacher.model_name.empty()) {
+        teachers.push_back(request.teacher);
     }
+    std::vector<models::ModelProfile> unique_teachers;
+    for (const auto& teacher : teachers) {
+        if (std::ranges::none_of(unique_teachers, [&](const auto& existing) {
+                return existing.id == teacher.id;
+            })) {
+            unique_teachers.push_back(teacher);
+        }
+    }
+
+    std::vector<models::ModelProfile> verifiers = request.verifiers;
+    if (request.verifier.has_value() &&
+        std::ranges::none_of(verifiers, [&](const auto& existing) {
+            return existing.id == request.verifier->id;
+        })) {
+        verifiers.push_back(*request.verifier);
+    }
+
+    std::vector<std::pair<models::ModelProfile, models::ModelProfile>> assignments;
+    for (const auto& teacher : unique_teachers) {
+        const auto verifier = std::ranges::find_if(verifiers, [&](const auto& candidate) {
+            return candidate.id != teacher.id;
+        });
+        if (verifier != verifiers.end()) {
+            assignments.emplace_back(teacher, *verifier);
+        }
+    }
+
+    const auto per_teacher = std::clamp<std::size_t>(
+        request.maximum_parallel_per_teacher, 1U, 4U);
+    result.progress.teacher_models = assignments.size();
+    result.progress.maximum_parallel = assignments.size() * per_teacher;
+    const auto generate_verified_variations =
+        request.generate_teacher_variations && !assignments.empty();
+
+
     const auto examples = load_seed_examples(
         request.seed_dataset,
         request.maximum_examples,
@@ -302,18 +470,17 @@ PiggybackResult run_piggyback_foundry(
         return result;
     }
 
-    backend::CompletionClient client;
     for (const auto& example : examples) {
         if (stop_token.stop_requested()) {
             result.cancelled = true;
-            result.progress.message = "Piggyback generation cancelled.";
+            result.progress.message = "Teacher-data generation cancelled.";
             publish_progress(on_progress, result.progress);
             return result;
         }
         ++result.progress.examined;
         result.progress.next_seed_offset = request.seed_offset + result.progress.examined;
         result.progress.current_prompt = example.prompt;
-        result.progress.message = "Preparing " + result.progress.target_skill + " example " +
+        result.progress.message = "Saving trusted " + result.progress.target_skill + " example " +
                                   std::to_string(result.progress.examined) + " of " +
                                   std::to_string(examples.size());
         publish_progress(on_progress, result.progress);
@@ -354,101 +521,123 @@ PiggybackResult run_piggyback_foundry(
             ++result.progress.trusted_seeded;
             ++result.progress.stored;
         }
+    }
 
-        if (!generate_verified_variations) {
-            result.progress.message = request.generate_teacher_variations
-                ? "Trusted " + result.progress.target_skill +
-                    " example retained; synthetic rewriting waits for a separate verifier."
-                : "Trusted " + result.progress.target_skill +
-                    " example imported without synthetic variation.";
+    if (!generate_verified_variations) {
+        result.succeeded = result.progress.examined > 0U;
+        result.progress.message = request.generate_teacher_variations
+            ? "Trusted examples saved. Diverse generation waits for a distinct verifier."
+            : "Trusted dataset import complete.";
+        publish_progress(on_progress, result.progress);
+        return result;
+    }
+
+    const auto wave_capacity = std::max<std::size_t>(1U, result.progress.maximum_parallel);
+    for (std::size_t wave_begin = 0; wave_begin < examples.size(); wave_begin += wave_capacity) {
+        if (stop_token.stop_requested()) {
+            result.cancelled = true;
+            result.progress.message = "Teacher-data generation cancelled.";
             publish_progress(on_progress, result.progress);
-            continue;
+            return result;
         }
 
-        result.progress.message = "Teacher generating " + result.progress.target_skill + " variation " +
-                                  std::to_string(result.progress.examined) + " of " +
-                                  std::to_string(examples.size());
+        const auto wave_end = std::min(examples.size(), wave_begin + wave_capacity);
+        std::vector<std::future<VariationAttempt>> futures;
+        futures.reserve(wave_end - wave_begin);
+        for (auto index = wave_begin; index < wave_end; ++index) {
+            const auto assignment = assignments[index % assignments.size()];
+            const auto example = examples[index];
+            futures.push_back(std::async(
+                std::launch::async,
+                [request, example, index, assignment, target = result.progress.target_skill, stop_token] {
+                    return generate_variation(
+                        request,
+                        example,
+                        request.seed_offset + index,
+                        assignment.first,
+                        assignment.second,
+                        target,
+                        stop_token);
+                }));
+        }
+
+        result.progress.message =
+            "Running " + std::to_string(futures.size()) + " audited teacher attempts across " +
+            std::to_string(assignments.size()) + " local models.";
         publish_progress(on_progress, result.progress);
 
-        const auto teacher_system = teacher_system_prompt(result.progress.target_skill);
-        const auto generated = client.complete(
-            request.internal_base_url,
-            request.teacher,
-            backend::CompletionRequest{
-                .system_prompt = teacher_system,
-                .prompt = example.prompt,
-                .messages = {},
-                .max_output_tokens = request.maximum_output_tokens,
-                .temperature = 0.35,
-                .adapter_path = {},
-                .module_path = {},
-                .tools_json = {},
-                .stream = true,
-                .on_token = {},
-                .should_stop = [stop_token] { return stop_token.stop_requested(); },
-            });
-        if (!generated.succeeded || generated.content.empty()) {
-            ++result.progress.rejected;
-            result.progress.message = "Teacher generation failed: " + generated.error;
-            publish_progress(on_progress, result.progress);
-            continue;
-        }
-        ++result.progress.generated;
+        for (auto& future : futures) {
+            auto attempt = future.get();
+            ++result.progress.attempted;
+            result.progress.current_prompt = attempt.candidate_prompt.empty()
+                ? attempt.seed.prompt
+                : attempt.candidate_prompt;
 
-        const auto verification = verify_candidate(request, example, generated.content, stop_token);
-        if (verification.accepted) {
+            if (!append_teacher_audit(request, attempt, result.progress.target_skill)) {
+                result.error = "Could not append the teacher-attempt audit log.";
+                result.progress.message = result.error;
+                publish_progress(on_progress, result.progress);
+                return result;
+            }
+
+            if (!attempt.candidate_prompt.empty() && !attempt.candidate_response.empty()) {
+                ++result.progress.generated;
+            }
+            if (!attempt.verification.accepted) {
+                ++result.progress.rejected;
+                result.progress.message =
+                    attempt.teacher.display_name + " attempt rejected and retained in the audit: " +
+                    attempt.verification.reason;
+                publish_progress(on_progress, result.progress);
+                continue;
+            }
+
             ++result.progress.verified;
-        } else if (request.verifier.has_value()) {
-            ++result.progress.rejected;
+            const auto stored = learning_service.submit(memory::Episode{
+                .id = {},
+                .skill = target_skill_for(request, attempt.seed),
+                .prompt = attempt.candidate_prompt,
+                .response = attempt.candidate_response,
+                .model_id = attempt.teacher.id,
+                .score = attempt.verification.score,
+                .compiler_passed = false,
+                .tests_passed = false,
+                .human_accepted = false,
+                .human_rejected = false,
+                .deterministic_verified = false,
+                .reference_verified = true,
+                .self_generated = true,
+                .eligible_for_training = false,
+                .verifier_model_id = attempt.verifier.has_value()
+                    ? attempt.verifier->id
+                    : std::string{},
+                .verification_notes = attempt.verification.reason,
+                .provenance = "parallel-local-teacher",
+                .knowledge_destination = "lora-incubation",
+                .content_hash = {},
+                .correction = {},
+                .tool_trace_hash = {},
+                .created_unix_ms = 0,
+            });
+            if (stored) {
+                ++result.progress.stored;
+            }
+            result.progress.message =
+                attempt.teacher.display_name + " produced an independently verified diverse example.";
+            publish_progress(on_progress, result.progress);
         }
-
-        const auto stored = learning_service.submit(memory::Episode{
-            .id = {},
-            .skill = target_skill_for(request, example),
-            .prompt = example.prompt,
-            .response = generated.content,
-            .model_id = request.teacher.id,
-            .score = verification.accepted ? verification.score : 0.72,
-            .compiler_passed = false,
-            .tests_passed = false,
-            .human_accepted = false,
-            .human_rejected = false,
-            .deterministic_verified = false,
-            .reference_verified = verification.accepted,
-            .self_generated = true,
-            .eligible_for_training = false,
-            .verifier_model_id = request.verifier.has_value() ? request.verifier->id : std::string{},
-            .verification_notes = verification.reason,
-            .provenance = "local-model-piggyback",
-            .knowledge_destination = verification.accepted ? "lora-incubation" : "episodic-memory",
-            .content_hash = {},
-            .correction = example.reference,
-            .tool_trace_hash = {},
-            .created_unix_ms = 0,
-        });
-        if (stored) {
-            ++result.progress.stored;
-        }
-        result.progress.message = verification.accepted
-            ? "Verified teacher example stored for the continual-learning pipeline."
-            : "Teacher example quarantined as provisional memory: " + verification.reason;
-        publish_progress(on_progress, result.progress);
     }
 
-    result.succeeded = result.progress.stored > 0U ||
-        (!generate_verified_variations && result.progress.examined > 0U);
-    if (!result.succeeded) {
-        result.error = "No independently verified teacher examples were stored.";
-    }
+    result.succeeded = result.progress.examined > 0U;
     result.progress.message = result.succeeded
-        ? (generate_verified_variations
-            ? "Verified teacher-data batch complete."
-            : request.generate_teacher_variations
-                ? "Trusted seed pass complete; no unverified rewrites were created."
-                : "Trusted dataset import complete.")
-        : result.error;
+        ? "Audited teacher-data batch complete: " +
+            std::to_string(result.progress.verified) + " verified, " +
+            std::to_string(result.progress.rejected) + " rejected."
+        : "No teacher examples were processed.";
+    if (!result.succeeded) {
+        result.error = result.progress.message;
+    }
     publish_progress(on_progress, result.progress);
     return result;
 }
-
 } // namespace threadspire::ai::learning

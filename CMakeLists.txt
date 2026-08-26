@@ -123,6 +123,7 @@ if(WIN32)
     enable_language(RC)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h" THREADSPIRE_RESOURCE_HEADER)
+    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/engcoder-eagle.ico" THREADSPIRE_APP_ICON)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/models.ini" THREADSPIRE_DEFAULT_MODELS)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/seed.jsonl" THREADSPIRE_SEED_DATA)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/anchors.jsonl" THREADSPIRE_ANCHOR_DATA)
@@ -177,7 +178,7 @@ if(WIN32)
             Uuid
             UxTheme
             Winhttp)
-    set_target_properties(ThreadSpire PROPERTIES OUTPUT_NAME "ThreadSpire")
+    set_target_properties(ThreadSpire PROPERTIES OUTPUT_NAME "EngCoder")
     install(TARGETS ThreadSpire RUNTIME DESTINATION .)
 endif()
 

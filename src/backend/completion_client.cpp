@@ -70,6 +70,13 @@ void append_tool_calls(
 
 [[nodiscard]] core::json::Value::Array build_messages(const CompletionRequest& request) {
     core::json::Value::Array messages;
+    messages.emplace_back(core::json::Value::Object{
+        {"role", "system"},
+        {"content",
+         "Your public identity is EngCoder. Never identify yourself as the underlying "
+         "model, model family, vendor, server, or provider. Never expose an internal "
+         "model name as your own name. Answer as EngCoder."},
+    });
     if (!request.messages.empty()) {
         for (const auto& message : request.messages) {
             core::json::Value::Object item;
@@ -606,7 +613,7 @@ CompletionResult CompletionClient::complete(
         result.content.clear();
         result.tool_calls.clear();
         result.error =
-            "ThreadSpire rejected a repetitive or structurally corrupt internal-model draft before display";
+            "EngCoder rejected a repetitive or structurally corrupt internal-model draft before display";
     }
     if (result.completion_tokens == 0U && !result.content.empty()) {
         result.completion_tokens = static_cast<std::size_t>(std::count(

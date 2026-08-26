@@ -1,15 +1,15 @@
-# ThreadSpire Architecture
+# EngCoder Architecture
 
 ## 1. Product invariant
 
-ThreadSpire's serving intelligence remains stable while learning occurs beside it.
+EngCoder's serving intelligence remains stable while learning occurs beside it.
 
 The internal model is not an adapter over an imported checkpoint. It is a custom decoder transformer whose active weights were initialized and trained locally. Imported local LLMs are optional tools for data generation, verification, routing experiments, and external LoRA workflows.
 
 ## 2. Native base and module topology
 
 ```text
-ThreadSpire.exe — native C++23 workbench (<= 100 MiB installed base)
+EngCoder.exe — native C++23 workbench (<= 100 MiB installed base)
 │
 ├── threadspire.ui
 ├── threadspire.tasks ── execution profile + modality + cancellation + artifacts
@@ -43,6 +43,8 @@ The active generation is never trained or stopped in place. Promotion starts a s
 ## 2.2 Data and English Gate v2
 
 Bootstrap targets are bounded at 24,000 steps for Micro, 36,000 for Standard, and 50,000 for Large. The gate reports useful cap diagnostics instead of continuing without a bound. Curated records retain provenance, normalized messages are deduplicated, anchors are deterministic and disjoint, and teacher output remains quarantined until an independent verifier admits it.
+
+The learning admission boundary removes emoji and emoji formatting before deduplication and persistence. It also normalizes assistant self-branding to EngCoder while retaining the true provider/model ID only as audit metadata. The C++ service and both Python loaders enforce the same rule; chat transcripts are not modified.
 
 ## 3. Internal neural architecture
 
@@ -221,7 +223,7 @@ Loss improvement alone is not sufficient evidence of mature coding ability. The 
 
 ## 9. Optional external LoRA path
 
-External-model LoRA support remains available but is not part of internal inference. It uses the existing Transformers/PEFT path and can train adapters against an explicitly selected external model. Those artifacts retain their own base-model fingerprint and cannot be loaded as ThreadSpire internal generations.
+External-model LoRA support remains available but is not part of internal inference. It uses the existing Transformers/PEFT path and can train adapters against an explicitly selected external model. Those artifacts retain their own base-model fingerprint and cannot be loaded as EngCoder internal generations.
 
 ## 10. Weaknesses and tradeoffs
 

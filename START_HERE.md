@@ -1,8 +1,8 @@
-# Start Here — ThreadSpire 0.6.0
+# Start Here — EngCoder 0.6.0
 
 ## 1. Build and validate
 
-From PowerShell in the ThreadSpire source directory:
+From PowerShell in the EngCoder source directory:
 
 ```powershell
 cmake --fresh --preset windows-vs2022
@@ -10,13 +10,13 @@ cmake --build --preset windows-vs2022-release --clean-first -- /m:1
 ctest --preset windows-vs2022-release
 ```
 
-Launch `out\build\windows-vs2022\bin\Release\ThreadSpire.exe` after the tests pass. The base application is native C++23 and does not require Python or PyTorch.
+Launch `out\build\windows-vs2022\bin\Release\EngCoder.exe` after the tests pass. The base application is native C++23 and does not require Python or PyTorch.
 
 ## 2. Use the unified Task workbench
 
 Open **Task**, choose a modality, select a compatible provider, and submit the prompt. Ask/write, code help, repository work, images, speech, and tools share the same request, streaming, cancellation, and artifact path. Coding Agent and Long Horizon are execution profiles of that task instead of separate interfaces.
 
-Connected OpenAI-compatible local servers can be used without an internal-training runtime. Repository tasks keep compiler/test details on **Run Details**, while generated image/audio artifacts are written under `%LOCALAPPDATA%\ThreadSpire\outputs`.
+Connected OpenAI-compatible local servers can be used without an internal-training runtime. Repository tasks keep compiler/test details in Chat and **Files & Activity**, while generated image/audio artifacts are written under `%LOCALAPPDATA%\ThreadSpire\outputs`.
 
 ## 3. Install capability packs only when wanted
 
@@ -34,6 +34,6 @@ The strengthened English Gate v2 uses curated provenance, deduplication, determi
 
 ## 5. Watch storage
 
-The Task page shows large cards for current model, accepted training data, installed packs, outputs/cache, total usage and growth, and free disk. **Storage & Logs** adds largest files/directories, pack projections, quotas, and safe no-follow cleanup for logs, unpromoted candidates, checkpoints, outputs, and caches.
+The Task page shows large cards for current model, accepted training data, installed packs, outputs/cache, total usage and growth, and free disk. **Files & Activity** adds largest files/directories, pack projections, quotas, and safe no-follow cleanup for logs, unpromoted candidates, checkpoints, outputs, and caches.
 
 The native installed base must remain at or below 100 MiB, excluding models and optional packs. See [BUILDING.md](BUILDING.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [CUSTOM_TRAINING.md](CUSTOM_TRAINING.md).

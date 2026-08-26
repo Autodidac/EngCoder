@@ -235,7 +235,7 @@ util::OperationResult initialize_internal_model(
         log_path,
         true,
         stop_token,
-        "Creating ThreadSpire's random-initialized internal model");
+        "Creating EngCoder's random-initialized internal model");
     if (result.state == util::OperationState::succeeded) {
         result.message = "Internal model initialized locally with no external base weights";
     }

@@ -29,7 +29,7 @@ namespace {
 
 [[nodiscard]] std::string answer_system(const routing::TaskAnalysis& analysis) {
     std::ostringstream stream;
-    stream << "You are the execution lane in ThreadSpire. Answer the user's task directly. "
+    stream << "You are the execution lane in EngCoder. Answer the user's task directly. "
            << "Return only the user-facing answer. Never expose private reasoning, chain-of-thought, "
               "analysis, or instructions about how to respond. "
            << "Prefer correctness, low latency, and concise output. The task was classified as "
@@ -250,6 +250,16 @@ AgentResult AgentOrchestrator::execute(
             "or repository-scale requests.";
     }
 
+    if (!active_options_.allow_automatic_fallback) {
+        auto stage = result.plan.stages.front();
+        stage.role = "answer";
+        stage.parallel = false;
+        result.plan.mode = routing::RouteMode::direct;
+        result.plan.stages = {std::move(stage)};
+        result.plan.rationale =
+            "One selected AI answers once. No other AI is contacted.";
+    }
+
     const auto built_in_memory_enabled = std::ranges::any_of(
         models_.models(),
         [](const models::ModelProfile& model) {
@@ -315,7 +325,14 @@ AgentResult AgentOrchestrator::execute(
         generated_tokens += completion.completion_tokens;
     };
 
-    const auto run_answer_stage = [&](const routing::RouteStage& stage) {
+    const auto run_answer_stage = [&](routing::RouteStage stage) {
+        if (const auto* model = models_.find(stage.model_id);
+            model != nullptr && !models::is_internal_model(*model)) {
+            stage.max_output_tokens = std::clamp(
+                std::max<std::size_t>(256U, stage.max_output_tokens),
+                static_cast<std::size_t>(256U),
+                static_cast<std::size_t>(1024U));
+        }
         auto completion = run_stage(
             internal_base_url,
             stage,
@@ -323,25 +340,6 @@ AgentResult AgentOrchestrator::execute(
             augmented,
             true);
         consume(stage, completion);
-        if (completion.hidden_reasoning_only &&
-            !(active_options_.should_stop && active_options_.should_stop())) {
-            const auto* model = models_.find(stage.model_id);
-            if (model != nullptr && !models::is_internal_model(*model)) {
-                auto retry_stage = stage;
-                retry_stage.max_output_tokens = std::clamp(
-                    std::max<std::size_t>(256U, stage.max_output_tokens * 4U),
-                    static_cast<std::size_t>(256U),
-                    static_cast<std::size_t>(1024U));
-                completion = run_stage(
-                    internal_base_url,
-                    retry_stage,
-                    answer_system(active_analysis_) +
-                        " Return the final answer directly and keep private reasoning internal.",
-                    augmented,
-                    true);
-                consume(retry_stage, completion);
-            }
-        }
         return completion;
     };
     if (result.plan.mode == routing::RouteMode::direct) {

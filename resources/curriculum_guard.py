@@ -1,4 +1,4 @@
-"""Hard curriculum boundary for ThreadSpire internal weight training.
+"""Hard curriculum boundary for EngCoder internal weight training.
 
 The native UI may request any curriculum label, but the internal model must
 train its English expert first.  This module applies that policy at the Python
@@ -332,7 +332,7 @@ def write_status(
     report = state / "MODEL_STORAGE.txt"
     if not report.exists():
         report.write_text(
-            "ThreadSpire model storage\n"
+            "EngCoder model storage\n"
             "========================\n"
             f"Application data root: {data_root}\n"
             f"Curriculum guard: {path}\n"

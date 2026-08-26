@@ -110,7 +110,9 @@ function Stop-ThreadSpireOwnedProcesses {
         $executable = [string]$process.ExecutablePath
         $ownedByPath = -not [string]::IsNullOrWhiteSpace($executable) -and
             (Get-NormalizedPath -Path $executable).StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
-        $ownedByName = [string]::Equals([string]$process.Name, 'ThreadSpire.exe', [StringComparison]::OrdinalIgnoreCase)
+        $ownedByName =
+            [string]::Equals([string]$process.Name, 'EngCoder.exe', [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals([string]$process.Name, 'ThreadSpire.exe', [StringComparison]::OrdinalIgnoreCase)
         if (-not ($ownedByPath -or $ownedByName)) {
             continue
         }
@@ -125,10 +127,10 @@ function Stop-ThreadSpireOwnedProcesses {
             Wait-Process -Id $process.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
             $record.Stopped = -not [bool](Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue)
         } catch {
-            throw "Unable to stop ThreadSpire-owned process $($process.ProcessId): $($_.Exception.Message)"
+            throw "Unable to stop EngCoder-owned process $($process.ProcessId): $($_.Exception.Message)"
         }
         if (-not $record.Stopped) {
-            throw "ThreadSpire-owned process $($process.ProcessId) did not stop within 15 seconds."
+            throw "EngCoder-owned process $($process.ProcessId) did not stop within 15 seconds."
         }
         $stopped.Add($record)
     }
@@ -201,7 +203,7 @@ if ($ValidateOnly) {
     $validation
     return
 }
-if (-not $PSCmdlet.ShouldProcess($resolvedTarget, 'Stop ThreadSpire processes, write reset manifest, and delete no-follow application data')) {
+if (-not $PSCmdlet.ShouldProcess($resolvedTarget, 'Stop EngCoder processes, write reset manifest, and delete no-follow application data')) {
     return
 }
 
@@ -209,12 +211,15 @@ $stoppedProcesses = Stop-ThreadSpireOwnedProcesses -Root $resolvedTarget
 $resolvedTarget = Assert-ExactResetTarget -Candidate $resolvedTarget -LocalAppDataRoot $localAppData
 $inventory = Get-TreeInventoryNoFollow -Root $resolvedTarget
 $legacyVersion = $null
-$legacyExecutable = Join-Path $resolvedTarget 'ThreadSpire.exe'
+$legacyExecutable = Join-Path $resolvedTarget 'EngCoder.exe'
+if (-not (Test-Path -LiteralPath $legacyExecutable -PathType Leaf)) {
+    $legacyExecutable = Join-Path $resolvedTarget 'ThreadSpire.exe'
+}
 if (Test-Path -LiteralPath $legacyExecutable -PathType Leaf) {
     $legacyVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($legacyExecutable).FileVersion
 }
 $stamp = [DateTimeOffset]::Now.ToString('yyyyMMdd-HHmmss')
-$manifestPath = Join-Path (Get-NormalizedPath -Path $localAppData) "ThreadSpire-reset-$stamp-manifest.json"
+$manifestPath = Join-Path (Get-NormalizedPath -Path $localAppData) "EngCoder-reset-$stamp-manifest.json"
 $manifest = [ordered]@{
     Schema = 'threadspire.safe-reset.v1'
     Created = [DateTimeOffset]::Now.ToString('o')
@@ -237,7 +242,7 @@ try {
     Remove-TreeNoFollow -Root $resolvedTarget
     $manifest.DeletionCompleted = -not (Test-Path -LiteralPath $resolvedTarget)
     if (-not $manifest.DeletionCompleted) {
-        throw 'ThreadSpire directory still exists after reset traversal.'
+        throw 'EngCoder legacy data directory still exists after reset traversal.'
     }
 } catch {
     $manifest.DeletionError = $_.Exception.Message

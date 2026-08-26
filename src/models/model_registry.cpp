@@ -112,7 +112,7 @@ ModelRegistry ModelRegistry::defaults() {
     result.models_ = {
         ModelProfile{
             .id = "fast",
-            .display_name = "ThreadSpire Internal — fast lane",
+            .display_name = "EngCoder",
             .model_name = "threadspire://fast",
             .endpoint = "internal",
             .api_key = {},
@@ -136,7 +136,7 @@ ModelRegistry ModelRegistry::defaults() {
         },
         ModelProfile{
             .id = "coder",
-            .display_name = "ThreadSpire Internal — C++23 coding",
+            .display_name = "EngCoder Code",
             .model_name = "threadspire://coder",
             .endpoint = "internal",
             .api_key = {},
@@ -160,7 +160,7 @@ ModelRegistry ModelRegistry::defaults() {
         },
         ModelProfile{
             .id = "thinker",
-            .display_name = "ThreadSpire Internal — reasoning",
+            .display_name = "EngCoder Plan",
             .model_name = "threadspire://thinker",
             .endpoint = "internal",
             .api_key = {},
@@ -184,7 +184,7 @@ ModelRegistry ModelRegistry::defaults() {
         },
         ModelProfile{
             .id = "reviewer",
-            .display_name = "ThreadSpire Internal — verifier",
+            .display_name = "EngCoder Review",
             .model_name = "threadspire://reviewer",
             .endpoint = "internal",
             .api_key = {},

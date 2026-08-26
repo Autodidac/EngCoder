@@ -1,4 +1,4 @@
-# Building ThreadSpire
+# Building EngCoder
 
 ## Windows target
 
@@ -23,7 +23,7 @@ ctest --preset windows-vs2022-release
 The executable is written to:
 
 ```text
-out\build\windows-vs2022\bin\Release\ThreadSpire.exe
+out\build\windows-vs2022\bin\Release\EngCoder.exe
 ```
 
 Install the base into a clean staging directory, then enforce the 100 MiB ceiling:
@@ -33,7 +33,9 @@ cmake --install out\build\windows-vs2022 --config Release --prefix out\install\w
 cmake -DTHREADSPIRE_BASE_ROOT=out\install\windows-vs2022 -P tools\check_base_footprint.cmake
 ```
 
-Models and optional packs are excluded from the base budget. The installed base currently contains only `ThreadSpire.exe`; it does not materialize Python scripts or install a private runtime.
+The `%LOCALAPPDATA%\ThreadSpire` directory name is retained only for existing-data compatibility.
+
+Models and optional packs are excluded from the base budget. The installed base currently contains only `EngCoder.exe`; it does not materialize Python scripts or install a private runtime.
 
 ## C++23 modules
 
@@ -87,12 +89,12 @@ A release reset is permitted only after the replacement release build, CTest, sm
 
 ```powershell
 .\tools\reset_threadspire_appdata.ps1 `
-  -Target "$env:LOCALAPPDATA\ThreadSpire" `
+  -Target "$env:LOCALAPPDATA\EngCoder" `
   -ReplacementVersion 0.6.0 `
   -ValidateOnly
 ```
 
-The destructive invocation accepts only the exact resolved `%LOCALAPPDATA%\ThreadSpire` directory, rejects reparse roots and escaped links, stops only ThreadSpire-owned processes, writes a dated size/version/deletion manifest beside the directory, and performs a no-follow deletion. It must never be pointed at a source checkout.
+The destructive invocation accepts only the exact resolved `%LOCALAPPDATA%\ThreadSpire` directory, rejects reparse roots and escaped links, stops only EngCoder-owned processes, writes a dated size/version/deletion manifest beside the directory, and performs a no-follow deletion. It must never be pointed at a source checkout.
 
 ## Linux core validation
 

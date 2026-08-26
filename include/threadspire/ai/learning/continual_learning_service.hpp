@@ -83,6 +83,9 @@ struct LearningSubmissionPreview final {
     std::size_t accepted_skill_examples{0};
     std::string content_hash;
     std::string reason;
+    std::string stored_prompt;
+    std::string stored_response;
+    bool training_text_adjusted{false};
 };
 
 
