@@ -185,7 +185,8 @@ struct StorageCleanupResult final {
     std::string error;
 };
 
-struct StorageSnapshot final {    std::filesystem::path root;
+struct StorageSnapshot final {
+    std::filesystem::path root;
     std::uintmax_t total_bytes{0};
     std::uintmax_t free_disk_bytes{0};
     std::intmax_t growth_bytes{0};
@@ -194,7 +195,24 @@ struct StorageSnapshot final {    std::filesystem::path root;
     std::size_t training_data_files{0};
     std::uintmax_t active_model_bytes{0};
     std::size_t active_model_files{0};
+    std::uintmax_t active_weights_bytes{0};
+    std::uint64_t active_parameter_count{0};
+    std::uint64_t active_tokens_seen{0};
+    std::size_t active_training_steps{0};
+    std::size_t active_context_length{0};
+    std::size_t active_layer_count{0};
+    std::string active_training_scope;
+    std::string active_training_data_scope;
+    std::string active_origin;
+    std::vector<std::string> active_skills;
+    std::uintmax_t all_generation_bytes{0};
+    std::uintmax_t inactive_generation_bytes{0};
     std::uintmax_t runtime_bytes{0};
+    std::uintmax_t training_pack_bytes{0};
+    std::uintmax_t pytorch_bytes{0};
+    std::uintmax_t pytorch_native_libraries_bytes{0};
+    std::uintmax_t pytorch_code_bytes{0};
+    std::uintmax_t private_runtime_other_bytes{0};
     std::string active_generation;
     std::size_t generation_directories{0};
     std::size_t trajectory_directories{0};

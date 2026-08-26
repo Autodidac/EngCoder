@@ -3207,7 +3207,7 @@ void MainWindow::create_logs_page() {
         0, id::logs_refresh_storage, parent);
     create_control(
         L"EDIT", L"Measuring storage in the background…", WS_CHILD | WS_VISIBLE | WS_BORDER |
-        ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::logs_storage, parent);
     create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
@@ -3237,9 +3237,10 @@ void MainWindow::layout_controls() {
     if (tab_count > 0) {
         RECT tab_client{};
         static_cast<void>(::GetClientRect(tabs, &tab_client));
-        const auto tab_width = std::max(
+        const auto tab_space = std::max(
             1,
-            static_cast<int>(tab_client.right - tab_client.left) / tab_count);
+            static_cast<int>(tab_client.right - tab_client.left) - scaled(12, dpi_));
+        const auto tab_width = std::max(1, tab_space / tab_count);
         static_cast<void>(::SendMessageW(
             tabs,
             TCM_SETITEMSIZE,
@@ -3374,7 +3375,7 @@ void MainWindow::layout_controls() {
         scaled(600, dpi_));
     const auto conversation_width = width - sidebar_width - gap;
     const auto sidebar_x = conversation_width + gap;
-    const auto compact_actions = conversation_width < scaled(720, dpi_);
+    const auto compact_actions = conversation_width < scaled(550, dpi_);
     const auto compact_bottom_actions = conversation_width < scaled(560, dpi_);
     const auto compact_vertical = height < scaled(760, dpi_);
     const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
@@ -3382,7 +3383,7 @@ void MainWindow::layout_controls() {
     const auto prompt_height = std::clamp(
         height * 18 / 100,
         scaled(compact_vertical ? 75 : 95, dpi_),
-        scaled(compact_vertical ? 135 : 165, dpi_));
+        scaled(compact_vertical ? 120 : 165, dpi_));
     const auto prompt_y = action_y - gap - prompt_height;
     const auto prompt_label_y = prompt_y - row;
     const auto conversation_y = workspace_content_top + row;
@@ -3442,7 +3443,7 @@ void MainWindow::layout_controls() {
         move_second_row(id::chat_learning_preview, scaled(92, dpi_));
     } else {
         const auto review_fixed_width =
-            scaled(62 + 62 + 70 + 120 + 70 + 80, dpi_) + gap * 6;
+            scaled(55 + 55 + 62 + 120 + 62 + 68, dpi_) + gap * 6;
         const auto reply_selector_width = std::clamp(
             conversation_width - review_fixed_width,
             scaled(80, dpi_),
@@ -3453,12 +3454,12 @@ void MainWindow::layout_controls() {
             review_x += control_width + gap;
         };
         move_review_action(id::chat_turn, reply_selector_width);
-        move_review_action(id::chat_copy, scaled(62, dpi_));
-        move_review_action(id::chat_edit, scaled(62, dpi_));
-        move_review_action(id::chat_retry, scaled(70, dpi_));
+        move_review_action(id::chat_copy, scaled(55, dpi_));
+        move_review_action(id::chat_edit, scaled(55, dpi_));
+        move_review_action(id::chat_retry, scaled(62, dpi_));
         move_review_action(id::chat_accept, scaled(120, dpi_));
-        move_review_action(id::chat_reject, scaled(70, dpi_));
-        move_review_action(id::chat_learning_preview, scaled(80, dpi_));
+        move_review_action(id::chat_reject, scaled(62, dpi_));
+        move_review_action(id::chat_learning_preview, scaled(68, dpi_));
     }
 
     move_control(
@@ -4284,7 +4285,11 @@ void MainWindow::layout_controls() {
         storage_card_height);
 
     const auto storage_y = storage_cards_third_y + storage_card_height + gap;
-    const auto storage_height = std::max(scaled(150, dpi_), (height - storage_y) * 55 / 100);
+    const auto storage_available = std::max(1, height - storage_y);
+    const auto storage_height = std::clamp(
+        storage_available * 68 / 100,
+        std::min(scaled(150, dpi_), storage_available),
+        std::max(1, storage_available - gap - scaled(90, dpi_)));
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
     const auto log_y = storage_y + storage_height + gap;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
@@ -4660,6 +4665,11 @@ void MainWindow::refresh_model_selectors() {
     const auto bootstrap_training =
         lifecycle_action_ == LifecycleAction::bootstrap_model &&
         backend_operation_.running();
+    const auto internal_state = runtime::inspect_internal_model_state(paths_);
+    const auto built_in_starting = !custom_host_running &&
+        internal_state.manifest_valid && internal_state.bootstrap_complete &&
+        internal_state.generation_ready && runtime::backend_files_present(paths_) &&
+        automatic_lifecycle_enabled_;
     std::vector<models::ModelProfile> available;
     for (const auto& model : snapshot.models()) {
         if (!model.enabled || !source_accepts(model) ||
@@ -4711,7 +4721,9 @@ void MainWindow::refresh_model_selectors() {
                 return L"Best built-in AI — no connected AI ready";
             }
             if (connected_ready > 0U) {
-                return L"Best connected AI — built-in AI not ready";
+                return built_in_starting
+                    ? L"Best connected AI — built-in answer service starting"
+                    : L"Best connected AI — built-in AI not ready";
             }
             return L"Waiting for an AI";
         }
@@ -4737,7 +4749,9 @@ void MainWindow::refresh_model_selectors() {
         model_selector_ids_.emplace_back(internal_pool_selection_id);
         const auto* pool_label = internal_ready > 0U
             ? L"Built-in EngCoders only"
-            : L"Built-in EngCoders only — not ready";
+            : built_in_starting
+                ? L"Built-in EngCoders only — answer service starting"
+                : L"Built-in EngCoders only — not ready";
         for (const auto identifier : {id::chat_model, id::coding_model}) {
             static_cast<void>(::SendMessageW(
                 control(identifier),
@@ -5455,7 +5469,10 @@ std::wstring MainWindow::runtime_summary(
         }
         built_in_status = value.str();
     } else if (host_starting) {
-        built_in_status = L"NOT READY — starting automatically";
+        built_in_status = internal_state.manifest_valid && internal_state.bootstrap_complete &&
+                internal_state.generation_ready
+            ? L"MODEL READY — answer service starting automatically"
+            : L"NOT READY — setup is still finishing automatically";
     } else if (!automatic_lifecycle_enabled_) {
         built_in_status = L"NOT READY — automatic setup paused";
     } else if (automatic_learning_limit_reached(paths_, internal_state)) {
@@ -5469,7 +5486,7 @@ std::wstring MainWindow::runtime_summary(
     } else if (!internal_state.bootstrap_complete) {
         built_in_status = L"NOT READY — learning will resume automatically";
     } else {
-        built_in_status = L"READY — starting automatically";
+        built_in_status = L"MODEL READY — answer service starting automatically";
     }
 
     std::wostringstream stream;
@@ -5489,7 +5506,12 @@ std::wstring MainWindow::runtime_summary(
             } else if (custom_host_running) {
                 stream << L"AI: EngCoder built-in • no connected AI backup is ready";
             } else if (connected_ready > 0U) {
-                stream << L"AI: connected app • Built-in EngCoder is not ready";
+                if (internal_state.manifest_valid && internal_state.bootstrap_complete &&
+                    internal_state.generation_ready && runtime::backend_files_present(paths_)) {
+                    stream << L"AI: connected app while the built-in answer service starts";
+                } else {
+                    stream << L"AI: connected app • Built-in EngCoder is not ready";
+                }
             } else {
                 stream << L"AI: waiting for a ready AI";
             }
@@ -8899,6 +8921,19 @@ void MainWindow::update_storage_report(const bool force) {
                 : static_cast<std::uintmax_t>(growth);
             return std::wstring(growth > 0 ? L"+" : L"-") + format_bytes_compact(magnitude);
         };
+        const auto compact_count = [](const std::uint64_t count) {
+            std::wostringstream value;
+            if (count >= 1'000'000U) {
+                value << std::fixed << std::setprecision(1)
+                      << static_cast<double>(count) / 1'000'000.0 << L"M";
+            } else if (count >= 1'000U) {
+                value << std::fixed << std::setprecision(1)
+                      << static_cast<double>(count) / 1'000.0 << L"K";
+            } else {
+                value << count;
+            }
+            return value.str();
+        };
 
         const auto* current_model = find_card("current-model");
         const auto* all_models = find_card("all-models");
@@ -8942,15 +8977,23 @@ void MainWindow::update_storage_report(const bool force) {
         if (!snapshot->active_generation.empty()) {
             model_card << L" — " << widen(snapshot->active_generation);
         }
-        model_card << L"\r\n" << format_bytes_compact(
-            current_model == nullptr ? snapshot->active_model_bytes : current_model->bytes);
+        const auto displayed_weights = snapshot->active_weights_bytes > 0U
+            ? snapshot->active_weights_bytes
+            : (current_model == nullptr ? snapshot->active_model_bytes : current_model->bytes);
+        model_card << L"\r\n" << format_bytes_compact(displayed_weights) << L" weights";
+        if (snapshot->active_parameter_count > 0U) {
+            model_card << L" • " << compact_count(snapshot->active_parameter_count)
+                       << L" parameters";
+        }
         set_control_text(id::chat_active_model_size, model_card.str());
 
         std::wostringstream all_models_card;
         all_models_card << L"ALL MODELS\r\n"
                         << format_bytes_compact(models_bytes)
-                        << L" • " << (all_models == nullptr ? 0U : all_models->files)
-                        << L" files • " << growth_text(models_growth);
+                        << L" • " << snapshot->generation_directories
+                        << L" stored version"
+                        << (snapshot->generation_directories == 1U ? L"" : L"s")
+                        << L" • " << growth_text(models_growth);
         set_control_text(id::chat_all_models_size, all_models_card.str());
 
         std::wostringstream training_card;
@@ -8964,7 +9007,8 @@ void MainWindow::update_storage_report(const bool force) {
         set_control_text(
             id::chat_installed_packs_size,
             L"INSTALLED PACKS\r\n" + format_bytes_compact(
-                installed_packs == nullptr ? 0U : installed_packs->bytes));
+                installed_packs == nullptr ? 0U : installed_packs->bytes) +
+                L" • training software, not weights");
         set_control_text(
             id::chat_outputs_cache_size,
             L"OUTPUTS / CACHE\r\n" + format_bytes_compact(
@@ -8984,8 +9028,59 @@ void MainWindow::update_storage_report(const bool force) {
             L"LIVE RAM\r\n" + format_bytes_compact(memory.resident_bytes) +
                 L" • " + memory_activity + L" • " + growth_text(ram_growth));
 
+        std::wstring active_skills_text{L"none reported"};
+        if (!snapshot->active_skills.empty()) {
+            active_skills_text.clear();
+            for (const auto& skill : snapshot->active_skills) {
+                if (!active_skills_text.empty()) {
+                    active_skills_text += L", ";
+                }
+                active_skills_text += widen(skill);
+            }
+        }
+
         std::wostringstream report;
-        report << L"LIVE STORAGE CARDS\r\n";
+        report << L"WHAT IS IN THE ACTIVE MODEL\r\n";
+        if (snapshot->active_generation.empty()) {
+            report << L"  No promoted built-in model is active.\r\n";
+        } else {
+            report << L"  Version: " << widen(snapshot->active_generation) << L"\r\n"
+                   << L"  Learned numeric weights: " << format_bytes(snapshot->active_weights_bytes)
+                   << L" • " << snapshot->active_parameter_count << L" parameters\r\n"
+                   << L"  Training completed: " << snapshot->active_training_steps
+                   << L" steps • " << snapshot->active_tokens_seen << L" verified target tokens\r\n"
+                   << L"  Working text window: " << snapshot->active_context_length
+                   << L" tokens • " << snapshot->active_layer_count << L" neural layers\r\n"
+                   << L"  Learned areas: " << active_skills_text << L"\r\n"
+                   << L"  Accepted data focus: "
+                   << widen(snapshot->active_training_data_scope.empty()
+                       ? std::string{"not reported"}
+                       : snapshot->active_training_data_scope)
+                   << L"\r\n"
+                   << L"  The weights contain learned numeric patterns. The training engine below is software and is not inside these weights.\r\n";
+        }
+        report << L"\r\nSTORED MODEL VERSIONS\r\n"
+               << L"  All generations: " << format_bytes(snapshot->all_generation_bytes)
+               << L" • " << snapshot->generation_directories << L" versions\r\n"
+               << L"  Active version: " << format_bytes(snapshot->active_model_bytes) << L"\r\n"
+               << L"  Inactive candidates and rollback versions: "
+               << format_bytes(snapshot->inactive_generation_bytes) << L"\r\n";
+
+        report << L"\r\nTRAINING ENGINE (SOFTWARE, NOT LEARNED KNOWLEDGE)\r\n"
+               << L"  Internal PyTorch capability pack: "
+               << format_bytes(snapshot->training_pack_bytes) << L"\r\n"
+               << L"  Private model/training runtime: " << format_bytes(snapshot->runtime_bytes)
+               << L"\r\n"
+               << L"    PyTorch total: " << format_bytes(snapshot->pytorch_bytes) << L"\r\n"
+               << L"      Compiled CPU/GPU math libraries: "
+               << format_bytes(snapshot->pytorch_native_libraries_bytes) << L"\r\n"
+               << L"      PyTorch program files: " << format_bytes(snapshot->pytorch_code_bytes)
+               << L"\r\n"
+               << L"    Private Python and other support files: "
+               << format_bytes(snapshot->private_runtime_other_bytes) << L"\r\n"
+               << L"  This optional pack runs training and the current Python model host; its size does not represent learned facts.\r\n";
+
+        report << L"\r\nLIVE STORAGE CARDS\r\n";
         for (const auto& card : snapshot->cards) {
             report << L"  " << widen(card.label) << L": " << format_bytes(card.bytes);
             if (card.growth_bytes != 0) {
@@ -9006,9 +9101,7 @@ void MainWindow::update_storage_report(const bool force) {
                << L"\r\n  EngCoder-owned private committed memory: "
                << format_bytes(memory.private_commit_bytes)
                << L"\r\n  Other AI applications, including LM Studio, are not counted in EngCoder RAM.\r\n";
-        report << L"  Legacy/private PyTorch runtime (not training data): "
-               << format_bytes(snapshot->runtime_bytes)
-               << L"\r\n\r\nModel generations: " << snapshot->generation_directories
+        report << L"\r\nModel generations: " << snapshot->generation_directories
                << L" • repository trajectories: " << snapshot->trajectory_directories
                << L"\r\nGrowth since previous sample: " << growth_text(snapshot->growth_bytes)
                << L"\r\n\r\nTOP-LEVEL USAGE\r\n";

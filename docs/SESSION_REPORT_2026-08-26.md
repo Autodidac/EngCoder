@@ -52,3 +52,30 @@ This report is updated as changes are implemented. Claims about other platforms 
 
 - Incremental Visual Studio 2022 Release build after the arithmetic implementation: passed.
 - Release CTest after the arithmetic implementation: 4/4 passed, including the expanded core suite and the 100 MiB base-footprint check.
+
+## Work completed after the user handoff timestamp
+
+### Storage, model, and RAM transparency
+
+- Replaced repeated secondary directory walks with a single-pass classifier during the five-second storage sample. The UI no longer rescans the 17,000-file private runtime several times per refresh.
+- Added exact accounting for active weights, every stored model generation, inactive candidate/rollback generations, the internal PyTorch pack, PyTorch itself, compiled CPU/GPU libraries, PyTorch program files, and private Python/support files.
+- Parsed the promoted generation's real manifest and config through the existing JSON parser. The live report now shows the exact parameter count, completed steps, verified target-token count, context length, layer count, training-data focus, and learned areas.
+- Changed the installed-pack card to say explicitly that the 4.20 GiB is training software, not model weights or learned knowledge. The active-model card now shows 85.95 MiB of weights and 22.5M parameters; all-model storage shows six retained versions separately.
+- Preserved and visually verified EngCoder-owned live RAM reporting, including app RAM, helper-process RAM, private committed memory, current activity, growth, and the explicit exclusion of LM Studio and other unrelated AI applications.
+- Brought the legacy storage declaration into parity with the named `threadspire.storage` module so stale declarations cannot silently disagree with module consumers.
+- Added a synthetic exact-byte regression fixture covering Windows-style private-runtime paths, PyTorch library/code separation, active and inactive generations, manifest metadata, cards, and file totals.
+
+### Autonomous visual QA and interface corrections
+
+- Launched the built Release executable under a DPI-aware QA harness, captured Chat and Files & Activity at the minimum supported 980x680 logical size (1470x1020 at the active 150% display scale) and at 2100x1250, inspected the images, and closed only the spawned QA process.
+- Removed the tab-strip overflow that created navigation arrows and hid the first tab after selecting Files & Activity. All five primary tabs now remain visible at the minimum size.
+- Reclaimed a full row of conversation height at the minimum size by fitting per-reply controls into one responsive toolbar and reducing the compact prompt ceiling. The message area, prompt, learning controls, and bottom actions remain distinct and usable.
+- Removed the storage report's horizontal scrollbar, enabled wrapping, and increased its share of the Files & Activity page while reserving usable space for the live log.
+- Corrected the contradictory startup text. A trained model whose answer service is launching is now reported as `MODEL READY — answer service starting automatically`; it is no longer simultaneously called ready and not ready.
+- Visually verified the dark card treatment, tab visibility, storage cards, model facts, live RAM, and startup wording at both tested sizes.
+
+### Post-handoff verification
+
+- Visual Studio 2022 Release build after the storage and first visual-QA pass: passed.
+- Release CTest after the storage and first visual-QA pass: 4/4 passed.
+- Final Visual Studio 2022 Release rebuild after the compact-toolbar polish: passed. Final Release CTest: 4/4 passed, including the base-footprint and curriculum-guard checks.

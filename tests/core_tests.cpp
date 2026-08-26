@@ -1126,21 +1126,47 @@ void test_internal_model_lifecycle_state_and_progress() {
 
 void test_storage_monitor_reports_exact_background_footprint() {
     const auto root = temporary_root();
+    const auto active = root / "models" / "internal" / "generations" / "g000000";
+    const auto inactive = root / "models" / "internal" / "generations" / "g000001";
+    const auto pack = root / "packs" / "internal-pytorch-training";
+    const auto torch = pack / "runtime" / "Lib" / "site-packages" / "torch";
     std::filesystem::create_directories(root / "runtime");
-    std::filesystem::create_directories(
-        root / "models" / "internal" / "generations" / "g000000");
-    std::filesystem::create_directories(
-        root / "models" / "internal" / "generations" / "g000001");
+    std::filesystem::create_directories(active);
+    std::filesystem::create_directories(inactive);
+    std::filesystem::create_directories(torch / "lib");
     std::filesystem::create_directories(root / "trajectories" / "run-1");
     std::filesystem::create_directories(root / "logs");
     std::filesystem::create_directories(root / "data");
     std::filesystem::create_directories(root / "memory");
+
+    constexpr std::size_t legacy_runtime_bytes = 1024U;
+    constexpr std::size_t active_weights_bytes = 4096U;
+    constexpr std::size_t inactive_weights_bytes = 512U;
+    constexpr std::size_t torch_library_bytes = 2048U;
+    constexpr std::size_t torch_code_bytes = 128U;
+    constexpr std::size_t private_support_bytes = 64U;
+    constexpr std::size_t pack_manifest_bytes = 32U;
     std::ofstream(root / "runtime" / "stable.bin", std::ios::binary)
-        << std::string(1024U, 'r');
-    std::ofstream(
-        root / "models" / "internal" / "generations" / "g000000" / "weights.bin",
-        std::ios::binary) << std::string(4096U, 'm');
+        << std::string(legacy_runtime_bytes, 'r');
+    std::ofstream(active / "weights.bin", std::ios::binary)
+        << std::string(active_weights_bytes, 'm');
+    std::ofstream(inactive / "weights.bin", std::ios::binary)
+        << std::string(inactive_weights_bytes, 'i');
+    std::ofstream(torch / "lib" / "torch_cpu.dll", std::ios::binary)
+        << std::string(torch_library_bytes, 'l');
+    std::ofstream(torch / "__init__.py", std::ios::binary)
+        << std::string(torch_code_bytes, 'p');
+    std::ofstream(pack / "runtime" / "python.exe", std::ios::binary)
+        << std::string(private_support_bytes, 's');
+    std::ofstream(pack / "pack.json", std::ios::binary)
+        << std::string(pack_manifest_bytes, 'c');
+
+    const std::string manifest_text{
+        R"({"origin":"random-initialized-local-model","parameter_count":22527360,"tokens_seen":3142451,"steps":24000,"training_scope":"all","training_data_scope":"english-core","skills":["english-core","cpp23-core"],"weights_file":"weights.bin"})"};
+    const std::string config_text{R"({"context_length":1024,"n_layers":8})"};
     const std::string pointer_text{R"({"generation":"g000000"})"};
+    std::ofstream(active / "manifest.json", std::ios::binary) << manifest_text;
+    std::ofstream(active / "config.json", std::ios::binary) << config_text;
     std::ofstream(root / "models" / "internal" / "active.json", std::ios::binary)
         << pointer_text;
     std::ofstream(root / "logs" / "app.log", std::ios::binary)
@@ -1151,8 +1177,12 @@ void test_storage_monitor_reports_exact_background_footprint() {
         << std::string(32U, 'e');
 
     const auto snapshot = threadspire::ai::runtime::inspect_storage(root, 3U);
-    const auto expected_total = 5136U + pointer_text.size() + 64U + 32U;
-    require(snapshot.total_bytes == expected_total && snapshot.files == 6U,
+    const auto active_model_bytes = active_weights_bytes + manifest_text.size() + config_text.size();
+    const auto all_generation_bytes = active_model_bytes + inactive_weights_bytes;
+    const auto expected_total = legacy_runtime_bytes + all_generation_bytes +
+        torch_library_bytes + torch_code_bytes + private_support_bytes + pack_manifest_bytes +
+        pointer_text.size() + 16U + 64U + 32U;
+    require(snapshot.total_bytes == expected_total && snapshot.files == 13U,
             "storage monitor must report exact recursive bytes and files");
     require(snapshot.generation_directories == 2U &&
                 snapshot.trajectory_directories == 1U,
@@ -1160,12 +1190,35 @@ void test_storage_monitor_reports_exact_background_footprint() {
     require(snapshot.training_data_bytes == 96U &&
                 snapshot.training_data_files == 2U &&
                 snapshot.active_generation == "g000000" &&
-                snapshot.active_model_bytes == 4096U &&
-                snapshot.active_model_files == 1U &&
-                snapshot.runtime_bytes == 1024U,
-            "storage monitor must surface training data, active model, and runtime sizes separately");
+                snapshot.active_model_bytes == active_model_bytes &&
+                snapshot.active_model_files == 3U &&
+                snapshot.active_weights_bytes == active_weights_bytes &&
+                snapshot.all_generation_bytes == all_generation_bytes &&
+                snapshot.inactive_generation_bytes == inactive_weights_bytes,
+            "storage monitor must distinguish the active weights from stored rollback generations");
+    require(snapshot.training_pack_bytes ==
+                torch_library_bytes + torch_code_bytes + private_support_bytes +
+                    pack_manifest_bytes &&
+                snapshot.runtime_bytes ==
+                    legacy_runtime_bytes + torch_library_bytes + torch_code_bytes +
+                        private_support_bytes &&
+                snapshot.pytorch_bytes == torch_library_bytes + torch_code_bytes &&
+                snapshot.pytorch_native_libraries_bytes == torch_library_bytes &&
+                snapshot.pytorch_code_bytes == torch_code_bytes &&
+                snapshot.private_runtime_other_bytes ==
+                    legacy_runtime_bytes + private_support_bytes,
+            "storage monitor must explain exactly which training software consumes runtime space");
+    require(snapshot.active_parameter_count == 22527360U &&
+                snapshot.active_tokens_seen == 3142451U &&
+                snapshot.active_training_steps == 24000U &&
+                snapshot.active_context_length == 1024U &&
+                snapshot.active_layer_count == 8U &&
+                snapshot.active_training_scope == "all" &&
+                snapshot.active_training_data_scope == "english-core" &&
+                snapshot.active_skills == std::vector<std::string>{"english-core", "cpp23-core"},
+            "storage monitor must surface exact active-model architecture and training metadata");
     require(!snapshot.largest_files.empty() &&
-                snapshot.largest_files.front().bytes == 4096U,
+                snapshot.largest_files.front().bytes == active_weights_bytes,
             "storage monitor must identify the largest application-data files");
     require(!snapshot.categories.empty() &&
                 snapshot.categories.front().name == "models",
@@ -1173,8 +1226,8 @@ void test_storage_monitor_reports_exact_background_footprint() {
     const auto all_models = std::ranges::find(
         snapshot.cards, std::string{"all-models"}, &threadspire::ai::runtime::StorageCard::key);
     require(all_models != snapshot.cards.end() &&
-                all_models->bytes == 4096U + pointer_text.size() &&
-                all_models->files == 2U,
+                all_models->bytes == all_generation_bytes + pointer_text.size() &&
+                all_models->files == 5U,
             "the all-models card must include every model generation and the active pointer");
     std::filesystem::remove_all(root);
 }
@@ -1259,7 +1312,10 @@ void test_windows_ui_source_contract() {
                 ui.find("LIVE RAM") != std::string::npos &&
                 ui.find("CreateToolhelp32Snapshot") != std::string::npos &&
                 ui.find("Other AI applications, including LM Studio, are not counted") != std::string::npos &&
-                ui.find("Legacy/private PyTorch runtime (not training data)") != std::string::npos,
+                ui.find("WHAT IS IN THE ACTIVE MODEL") != std::string::npos &&
+                ui.find("TRAINING ENGINE (SOFTWARE, NOT LEARNED KNOWLEDGE)") != std::string::npos &&
+                ui.find("Compiled CPU/GPU math libraries") != std::string::npos &&
+                ui.find("training software, not weights") != std::string::npos,
             "the Task surface must route every capability through execution profiles and expose all eight live disk and RAM cards");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
@@ -1342,8 +1398,10 @@ void test_windows_ui_source_contract() {
                 ui.find("RoundRect") != std::string::npos &&
                 ui.find("header_brush") != std::string::npos &&
                 ui.find("accent_rule") != std::string::npos &&
-                ui.find("compact_actions") != std::string::npos &&
-                ui.find("compact_bottom_actions") != std::string::npos,
+                ui.find("compact_actions = conversation_width < scaled(550, dpi_)") != std::string::npos &&
+                ui.find("compact_bottom_actions") != std::string::npos &&
+                ui.find("tab_client.right - tab_client.left) - scaled(12, dpi_)") != std::string::npos &&
+                ui.find("storage_available * 68 / 100") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&
                 ui.find("failed • retry available") != std::string::npos &&
@@ -1469,6 +1527,8 @@ void test_windows_ui_source_contract() {
                 ui.find("AI group: Built-in EngCoder only") != std::string::npos &&
                 ui.find("set_status(runtime_summary(snapshot, backend_server_.running()))") != std::string::npos &&
                 ui.find("NOT INSTALLED — required files are missing") != std::string::npos &&
+                ui.find("MODEL READY — answer service starting automatically") != std::string::npos &&
+                ui.find("connected app while the built-in answer service starts") != std::string::npos &&
                 ui.find("No setup is running because the built-in AI package is not installed") != std::string::npos &&
                 ui.find("waiting for optional setup files") == std::string::npos &&
                 ui.find("show_progress ? SW_SHOW : SW_HIDE") != std::string::npos &&

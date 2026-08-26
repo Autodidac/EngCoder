@@ -13,6 +13,89 @@ struct Measure final {
     std::size_t files{0};
 };
 
+[[nodiscard]] std::string lower_ascii(std::string value) {
+    std::ranges::transform(value, value.begin(), [](const char character) {
+        return character >= 'A' && character <= 'Z'
+            ? static_cast<char>(character + ('a' - 'A'))
+            : character;
+    });
+    return value;
+}
+
+[[nodiscard]] std::vector<std::string> relative_components(
+    const StorageSnapshot& snapshot,
+    const std::filesystem::path& path) {
+    std::vector<std::string> result;
+    const auto relative = path.lexically_relative(snapshot.root);
+    for (const auto& component : relative) {
+        const auto text = component.string();
+        if (!text.empty() && text != ".") {
+            result.push_back(lower_ascii(text));
+        }
+    }
+    return result;
+}
+
+void account_file(
+    StorageSnapshot& snapshot,
+    const std::filesystem::path& path,
+    const std::uintmax_t bytes) {
+    const auto components = relative_components(snapshot, path);
+    if (components.empty()) {
+        return;
+    }
+
+    if (components.front() == "data" ||
+        (components.size() == 2U && components[0] == "memory" &&
+         components[1] == "episodes.jsonl")) {
+        snapshot.training_data_bytes += bytes;
+        ++snapshot.training_data_files;
+    }
+
+    if (components.size() >= 4U && components[0] == "models" &&
+        components[1] == "internal" && components[2] == "generations") {
+        snapshot.all_generation_bytes += bytes;
+        if (!snapshot.active_generation.empty() &&
+            components[3] == lower_ascii(snapshot.active_generation)) {
+            snapshot.active_model_bytes += bytes;
+            ++snapshot.active_model_files;
+        } else {
+            snapshot.inactive_generation_bytes += bytes;
+        }
+    }
+
+    const bool legacy_runtime = components.front() == "runtime";
+    const bool training_pack = components.size() >= 2U && components[0] == "packs" &&
+        components[1] == "internal-pytorch-training";
+    if (training_pack) {
+        snapshot.training_pack_bytes += bytes;
+    }
+    const bool pack_runtime = training_pack && components.size() >= 3U &&
+        components[2] == "runtime";
+    if (!legacy_runtime && !pack_runtime) {
+        return;
+    }
+
+    snapshot.runtime_bytes += bytes;
+    auto torch_index = components.size();
+    for (std::size_t index = 0U; index + 1U < components.size(); ++index) {
+        if (components[index] == "site-packages" && components[index + 1U] == "torch") {
+            torch_index = index + 1U;
+            break;
+        }
+    }
+    if (torch_index == components.size()) {
+        snapshot.private_runtime_other_bytes += bytes;
+        return;
+    }
+    snapshot.pytorch_bytes += bytes;
+    if (torch_index + 1U < components.size() && components[torch_index + 1U] == "lib") {
+        snapshot.pytorch_native_libraries_bytes += bytes;
+    } else {
+        snapshot.pytorch_code_bytes += bytes;
+    }
+}
+
 void remember_large_file(
     StorageSnapshot& snapshot,
     const std::filesystem::path& path,
@@ -47,6 +130,7 @@ void remember_large_file(
         result.bytes = std::filesystem::file_size(item, error);
         result.files = error ? 0U : 1U;
         if (!error && snapshot != nullptr) {
+            account_file(*snapshot, item, result.bytes);
             remember_large_file(*snapshot, item, result.bytes, largest_file_count);
         }
         return result;
@@ -67,6 +151,7 @@ void remember_large_file(
                 result.bytes += bytes;
                 ++result.files;
                 if (snapshot != nullptr) {
+                    account_file(*snapshot, iterator->path(), bytes);
                     remember_large_file(*snapshot, iterator->path(), bytes, largest_file_count);
                 }
             }
@@ -114,6 +199,83 @@ void remember_large_file(
         return {};
     }
     return generation;
+}
+
+[[nodiscard]] std::optional<core::json::Value> read_json_file(
+    const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        return std::nullopt;
+    }
+    const std::string text{
+        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    std::string error;
+    return core::json::try_parse(text, error);
+}
+
+template <typename Integer>
+[[nodiscard]] Integer unsigned_number(const core::json::Value* const value) noexcept {
+    if (value == nullptr || !value->is_number()) {
+        return 0;
+    }
+    const auto number = value->as_number();
+    if (!std::isfinite(number) || number < 0.0 ||
+        number > static_cast<double>(std::numeric_limits<Integer>::max())) {
+        return 0;
+    }
+    return static_cast<Integer>(number);
+}
+
+void read_active_model_details(StorageSnapshot& snapshot) {
+    if (snapshot.active_generation.empty()) {
+        return;
+    }
+    const auto generation_root = snapshot.root / "models" / "internal" / "generations" /
+        snapshot.active_generation;
+    const auto manifest = read_json_file(generation_root / "manifest.json");
+    if (manifest.has_value()) {
+        snapshot.active_parameter_count = unsigned_number<std::uint64_t>(
+            manifest->find("parameter_count"));
+        snapshot.active_tokens_seen = unsigned_number<std::uint64_t>(
+            manifest->find("tokens_seen"));
+        snapshot.active_training_steps = unsigned_number<std::size_t>(manifest->find("steps"));
+        snapshot.active_training_scope = core::json::string_or(
+            manifest->find("training_scope"));
+        snapshot.active_training_data_scope = core::json::string_or(
+            manifest->find("training_data_scope"));
+        snapshot.active_origin = core::json::string_or(manifest->find("origin"));
+        if (const auto* skills = manifest->find("skills"); skills != nullptr) {
+            if (const auto* array = skills->as_array(); array != nullptr) {
+                for (const auto& item : *array) {
+                    if (item.is_string()) {
+                        snapshot.active_skills.emplace_back(item.as_string());
+                    }
+                }
+            }
+        }
+        const auto weights_name = core::json::string_or(manifest->find("weights_file"));
+        const std::filesystem::path component(weights_name);
+        if (!weights_name.empty() && component.filename() == component &&
+            weights_name.find('/') == std::string::npos &&
+            weights_name.find('\\') == std::string::npos) {
+            std::error_code error;
+            const auto weights_path = generation_root / component;
+            const auto status = std::filesystem::symlink_status(weights_path, error);
+            if (!error && std::filesystem::is_regular_file(status) &&
+                !std::filesystem::is_symlink(status)) {
+                snapshot.active_weights_bytes = std::filesystem::file_size(weights_path, error);
+                if (error) {
+                    snapshot.active_weights_bytes = 0U;
+                }
+            }
+        }
+    }
+    const auto config = read_json_file(generation_root / "config.json");
+    if (config.has_value()) {
+        snapshot.active_context_length = unsigned_number<std::size_t>(
+            config->find("context_length"));
+        snapshot.active_layer_count = unsigned_number<std::size_t>(config->find("n_layers"));
+    }
 }
 
 [[nodiscard]] const StorageCategory* category(
@@ -180,6 +342,7 @@ StorageSnapshot inspect_storage_with_growth(
             snapshot.free_disk_bytes = space.available;
         }
         error.clear();
+        snapshot.active_generation = read_active_generation(snapshot.root);
         std::filesystem::directory_iterator iterator(
             snapshot.root, std::filesystem::directory_options::skip_permission_denied, error);
         const std::filesystem::directory_iterator end;
@@ -219,26 +382,8 @@ StorageSnapshot inspect_storage_with_growth(
         snapshot.generation_directories = directory_count(
             snapshot.root / "models" / "internal" / "generations");
         snapshot.trajectory_directories = directory_count(snapshot.root / "trajectories");
-        const auto data = measure_tree(snapshot.root / "data", nullptr, 0U, stop_token);
-        const auto episodes = measure_tree(
-            snapshot.root / "memory" / "episodes.jsonl", nullptr, 0U, stop_token);
-        snapshot.training_data_bytes = data.bytes + episodes.bytes;
-        snapshot.training_data_files = data.files + episodes.files;
-        snapshot.active_generation = read_active_generation(snapshot.root);
-        if (!snapshot.active_generation.empty()) {
-            const auto active = measure_tree(
-                snapshot.root / "models" / "internal" / "generations" /
-                    snapshot.active_generation,
-                nullptr, 0U, stop_token);
-            snapshot.active_model_bytes = active.bytes;
-            snapshot.active_model_files = active.files;
-        }
-        const auto legacy_runtime = measure_tree(
-            snapshot.root / "runtime", nullptr, 0U, stop_token);
-        const auto pack_runtime = measure_tree(
-            snapshot.root / "packs" / "internal-pytorch-training" / "runtime",
-            nullptr, 0U, stop_token);
-        snapshot.runtime_bytes = legacy_runtime.bytes + pack_runtime.bytes;
+        read_active_model_details(snapshot);
+
         const auto packs_bytes = category_bytes(snapshot, "packs");
         const auto models_bytes = category_bytes(snapshot, "models");
         const auto outputs_bytes = category_bytes(snapshot, "outputs") +
