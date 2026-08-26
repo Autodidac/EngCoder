@@ -144,6 +144,8 @@ private:
     void update_skill_report();
     void update_media_result();
     void update_storage_report(bool force = false);
+    void update_storage_cleanup_result();
+    void run_storage_cleanup(bool dry_run);
     void update_log_view();
     void flush_stream_text();
     void handle_command(int identifier);
@@ -296,6 +298,7 @@ private:
     util::AsyncOperation long_horizon_operation_;
     util::AsyncOperation media_operation_;
     util::AsyncOperation storage_operation_;
+    util::AsyncOperation storage_cleanup_operation_;
     std::unordered_map<int, HWND> controls_;
     std::vector<HWND> page_windows_;
     std::filesystem::path active_log_;
@@ -308,6 +311,7 @@ private:
     std::optional<long_horizon::Result> pending_long_horizon_result_;
     std::optional<backend::MediaResult> pending_media_result_;
     std::optional<runtime::StorageSnapshot> pending_storage_snapshot_;
+    std::optional<runtime::StorageCleanupResult> pending_storage_cleanup_result_;
     mutable std::mutex stream_mutex_;
     std::string pending_stream_text_;
     int stream_target_control_{0};
@@ -350,6 +354,7 @@ private:
     std::uintmax_t previous_models_bytes_{0};
     std::uintmax_t previous_ram_bytes_{0};
     bool storage_sample_available_{false};
+    std::wstring storage_cleanup_summary_{L"No cleanup has run. Preview shows exactly what would be removed."};
     bool media_result_pending_{false};
 };
 

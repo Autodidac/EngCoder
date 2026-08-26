@@ -315,6 +315,8 @@ constexpr int logs_view = 802;
 constexpr int logs_refresh_storage = 803;
 constexpr int logs_storage = 804;
 constexpr int logs_storage_header = 805;
+constexpr int logs_preview_cleanup = 806;
+constexpr int logs_run_cleanup = 807;
 } // namespace id
 
 
@@ -1111,7 +1113,7 @@ void draw_workspace_card(
         return L"Built-in AI setup was interrupted. EngCoder will continue from the last safe point.";
     }
     if (state.bootstrap_complete) {
-        return L"Built-in AI is ready. Answers run through the compact native engine; Python is used only for optional learning.";
+        return L"Built-in AI is ready. Answers use the compact built-in engine; the large training pack runs only during learning.";
     }
 
     const auto progress = runtime::read_internal_model_progress(paths);
@@ -2035,6 +2037,7 @@ MainWindow::~MainWindow() {
     long_horizon_operation_.cancel();
     media_operation_.cancel();
     storage_operation_.cancel();
+    storage_cleanup_operation_.cancel();
 
     backend_operation_.wait();
     discovery_operation_.wait();
@@ -2044,6 +2047,7 @@ MainWindow::~MainWindow() {
     long_horizon_operation_.wait();
     media_operation_.wait();
     storage_operation_.wait();
+    storage_cleanup_operation_.wait();
 
     if (learning_service_ != nullptr) {
         learning_service_->request_stop();
@@ -3206,6 +3210,12 @@ void MainWindow::create_logs_page() {
         L"BUTTON", L"Refresh sizes", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::logs_refresh_storage, parent);
     create_control(
+        L"BUTTON", L"Preview cleanup", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::logs_preview_cleanup, parent);
+    create_control(
+        L"BUTTON", L"Clean safely", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::logs_run_cleanup, parent);
+    create_control(
         L"EDIT", L"Measuring storage in the background…", WS_CHILD | WS_VISIBLE | WS_BORDER |
         ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::logs_storage, parent);
@@ -4249,9 +4259,16 @@ void MainWindow::layout_controls() {
     const auto horizon_report_y = horizon_options_y + row + gap;
     move_control(control(id::horizon_report), 0, horizon_report_y, width, height - horizon_report_y);
 
-    move_control(control(id::logs_open), 0, 0, button, row);
-    move_control(control(id::logs_open_root), button + gap, 0, scaled(180, dpi_), row);
-    move_control(control(id::logs_refresh_storage), button + gap + scaled(188, dpi_), 0, scaled(130, dpi_), row);
+    auto logs_action_x = 0;
+    const auto place_log_action = [&](const int identifier, const int action_width) {
+        move_control(control(identifier), logs_action_x, 0, action_width, row);
+        logs_action_x += action_width + gap;
+    };
+    place_log_action(id::logs_open, button);
+    place_log_action(id::logs_open_root, scaled(180, dpi_));
+    place_log_action(id::logs_refresh_storage, scaled(130, dpi_));
+    place_log_action(id::logs_preview_cleanup, scaled(150, dpi_));
+    place_log_action(id::logs_run_cleanup, scaled(130, dpi_));
     move_control(control(id::logs_storage_header), 0, row + gap, width, row);
 
     const auto storage_card_height = scaled(56, dpi_);
@@ -4596,6 +4613,18 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::logs_refresh_storage:
         update_storage_report(true);
+        break;
+    case id::logs_preview_cleanup:
+        run_storage_cleanup(true);
+        break;
+    case id::logs_run_cleanup:
+        if (::MessageBoxW(
+                window_,
+                L"EngCoder will remove only old or over-quota logs, inactive candidates, checkpoints, outputs, and caches. Active work, active models, locks, and protected rollback copies are kept. Continue?",
+                L"Run safe cleanup?",
+                MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK) {
+            run_storage_cleanup(false);
+        }
         break;
     case id::chat_open_output: {
         std::error_code error;
@@ -8073,6 +8102,7 @@ void MainWindow::update_periodic_state() {
     update_mcp_result();
     update_piggyback_result();
     update_long_horizon_result();
+    update_storage_cleanup_result();
     update_storage_report();
     drive_automatic_lifecycle();
     update_internal_model_lifecycle_ui();
@@ -8900,6 +8930,82 @@ void MainWindow::update_learning_report() {
     set_control_text(id::learning_jobs, report.str());
 }
 
+void MainWindow::run_storage_cleanup(const bool dry_run) {
+    if (storage_cleanup_operation_.running()) {
+        set_status(L"Safe cleanup is already running");
+        return;
+    }
+    if (storage_operation_.running()) {
+        set_status(L"Storage is still being measured. Try cleanup again when the current scan finishes.");
+        return;
+    }
+    set_status(dry_run
+        ? L"Previewing safe cleanup in the background — nothing will be deleted"
+        : L"Running safe cleanup in the background");
+    static_cast<void>(storage_cleanup_operation_.start(
+        [this, dry_run](const std::stop_token token) {
+            auto result = runtime::cleanup_storage(
+                paths_.root,
+                runtime::default_storage_quotas(),
+                dry_run,
+                token);
+            const auto succeeded = result.succeeded;
+            const auto error = result.error;
+            {
+                std::lock_guard lock(result_mutex_);
+                pending_storage_cleanup_result_ = std::move(result);
+            }
+            return util::OperationResult{
+                .state = succeeded
+                    ? util::OperationState::succeeded
+                    : (token.stop_requested()
+                        ? util::OperationState::cancelled
+                        : util::OperationState::failed),
+                .exit_code = succeeded ? 0 : 1,
+                .message = succeeded
+                    ? (dry_run ? "safe cleanup preview complete" : "safe cleanup complete")
+                    : (error.empty() ? "safe cleanup failed" : error),
+            };
+        },
+        dry_run ? "previewing safe storage cleanup" : "running safe storage cleanup"));
+}
+
+void MainWindow::update_storage_cleanup_result() {
+    std::optional<runtime::StorageCleanupResult> result;
+    {
+        std::lock_guard lock(result_mutex_);
+        if (pending_storage_cleanup_result_.has_value()) {
+            result = std::move(pending_storage_cleanup_result_);
+            pending_storage_cleanup_result_.reset();
+        }
+    }
+    if (!result.has_value()) {
+        return;
+    }
+
+    std::wostringstream summary;
+    if (!result->succeeded) {
+        summary << L"Safe cleanup did not run: "
+                << widen(result->error.empty() ? std::string{"unknown error"} : result->error);
+        set_status(summary.str());
+    } else if (result->removed.empty()) {
+        summary << (result->dry_run ? L"Cleanup preview: " : L"Safe cleanup: ")
+                << L"nothing exceeds the protected quotas.";
+        set_status(summary.str());
+    } else {
+        summary << (result->dry_run ? L"Cleanup preview: " : L"Safe cleanup removed: ")
+                << format_bytes(result->bytes_reclaimed)
+                << L" across " << result->removed.size() << L" item"
+                << (result->removed.size() == 1U ? L"" : L"s");
+        if (result->dry_run) {
+            summary << L". Nothing was deleted.";
+        }
+        set_status(summary.str());
+    }
+    storage_cleanup_summary_ = summary.str();
+    update_storage_report(true);
+}
+
 void MainWindow::update_storage_report(const bool force) {
     std::optional<runtime::StorageSnapshot> snapshot;
     {
@@ -9010,7 +9116,7 @@ void MainWindow::update_storage_report(const bool force) {
             id::chat_installed_packs_size,
             L"INSTALLED PACKS\r\n" + format_bytes_compact(
                 installed_packs == nullptr ? 0U : installed_packs->bytes) +
-                L" • training software, not weights");
+                L" • software separate from model weights");
         set_control_text(
             id::chat_outputs_cache_size,
             L"OUTPUTS / CACHE\r\n" + format_bytes_compact(
@@ -9083,7 +9189,7 @@ void MainWindow::update_storage_report(const bool force) {
                << L"\r\n"
                << L"    Private Python and other support files: "
                << format_bytes(snapshot->private_runtime_other_bytes) << L"\r\n"
-               << L"  This optional pack runs training and the current Python model host; its size does not represent learned facts.\r\n";
+               << L"  This optional pack runs learning only. Normal answers use the separate compact native engine; pack size does not represent learned facts.\r\n";
 
         report << L"\r\nLIVE STORAGE CARDS\r\n";
         for (const auto& card : snapshot->cards) {
@@ -9136,7 +9242,8 @@ void MainWindow::update_storage_report(const bool force) {
                    << L" • " << (pack.installed ? L"installed" : L"not installed")
                    << L"\r\n";
         }
-        report << L"\r\nSAFE CLEANUP QUOTAS\r\n";
+        report << L"\r\nSAFE CLEANUP STATUS\r\n  " << storage_cleanup_summary_
+               << L"\r\n\r\nSAFE CLEANUP QUOTAS\r\n";
         for (const auto& quota : snapshot->quotas) {
             report << L"  " << widen(quota.name) << L": "
                    << format_bytes(quota.maximum_bytes);
@@ -9156,7 +9263,8 @@ void MainWindow::update_storage_report(const bool force) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (storage_operation_.running() || (!force && now < next_storage_refresh_)) {
+    if (storage_operation_.running() || storage_cleanup_operation_.running() ||
+        (!force && now < next_storage_refresh_)) {
         return;
     }
     next_storage_refresh_ = now + std::chrono::seconds(5);

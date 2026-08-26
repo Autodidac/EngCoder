@@ -1318,8 +1318,16 @@ void test_windows_ui_source_contract() {
                 ui.find("WHAT IS IN THE ACTIVE MODEL") != std::string::npos &&
                 ui.find("TRAINING ENGINE (SOFTWARE, NOT LEARNED KNOWLEDGE)") != std::string::npos &&
                 ui.find("Compiled CPU/GPU math libraries") != std::string::npos &&
-                ui.find("training software, not weights") != std::string::npos,
-            "the Task surface must route every capability through execution profiles and expose all eight live disk and RAM cards");
+                ui.find("software separate from model weights") != std::string::npos &&
+                ui.find("Normal answers use the separate compact native engine") != std::string::npos &&
+                ui.find("current Python model host") == std::string::npos &&
+                ui.find("L\"Preview cleanup\"") != std::string::npos &&
+                ui.find("L\"Clean safely\"") != std::string::npos &&
+                ui.find("run_storage_cleanup(true)") != std::string::npos &&
+                ui.find("runtime::cleanup_storage(") != std::string::npos &&
+                ui.find("storage_cleanup_operation_.running()") != std::string::npos &&
+                ui.find("MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2") != std::string::npos,
+            "the Task surface must route every capability, expose all eight disk/RAM cards, describe native inference honestly, and provide protected cleanup preview and execution");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
                 ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos &&

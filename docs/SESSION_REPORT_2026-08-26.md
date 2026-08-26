@@ -103,3 +103,12 @@ Verification for this checkpoint: Python bytecode compilation passed, `git diff 
 - Exercised the actual local HTTP server against active generation g000011: health passed, JSON returned the verified Hello! response, SSE ended with [DONE], and /shutdown exited cleanly. A free-form neural smoke generated at about 171 byte tokens/s and its malformed draft was correctly rejected by the native quality gate.
 
 Verification for this checkpoint: Visual Studio 2022 Release build passed with /W4 /WX; Release CTest passed 5/5; git diff --check passed. The active model was read for smoke testing, but live AppData was not modified.
+### Safe cleanup controls and runtime wording
+
+- Added a dry-run `Preview cleanup` action and an explicitly confirmed `Clean safely` action to Files & Activity. Both use the existing quota-aware cleanup engine in a background operation and refuse to overlap a live storage scan.
+- The UI now reports the exact projected or reclaimed bytes and item count. A preview states that nothing was deleted; execution preserves active work, promoted models, locks, and protected rollback copies.
+- Corrected the remaining stale storage description: the large PyTorch capability pack runs only while learning, while normal built-in answers use the compact native engine. Installed packs are described as software separate from model weights.
+- Repeated minimum-size and wide visual QA. The five tabs, cleanup controls, eight storage/RAM cards, report, and log panel remained visible and non-overlapping in the dark interface.
+- Verified after QA that no EngCoder, ThreadSpire, Python, or native-host process was left running. The inspected model-server log ended in a successful `/shutdown` request.
+
+Verification for this checkpoint: Visual Studio 2022 Release build passed; Release CTest passed 5/5; `git diff --check` passed.
