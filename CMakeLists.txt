@@ -182,6 +182,39 @@ if(WIN32)
             Winhttp)
     set_target_properties(ThreadSpire PROPERTIES OUTPUT_NAME "EngCoder")
     install(TARGETS ThreadSpire RUNTIME DESTINATION .)
+
+    add_executable(EngCoderNativeHost src/native_host/main.cpp)
+    target_link_libraries(
+        EngCoderNativeHost
+        PRIVATE
+            threadspire::ai::core
+            Bcrypt
+            Ws2_32)
+    target_compile_definitions(
+        EngCoderNativeHost
+        PRIVATE
+            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+    target_compile_options(
+        EngCoderNativeHost
+        PRIVATE
+            /W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus /Zc:preprocessor /Zc:inline /MP)
+    set_target_properties(
+        EngCoderNativeHost
+        PROPERTIES OUTPUT_NAME "threadspire-native-host")
+    add_dependencies(ThreadSpire EngCoderNativeHost)
+    add_custom_command(
+        TARGET ThreadSpire POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:ThreadSpire>/optional-packs/compact-native-inference/bin"
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:EngCoderNativeHost>"
+            "$<TARGET_FILE_DIR:ThreadSpire>/optional-packs/compact-native-inference/bin/threadspire-native-host.exe"
+        VERBATIM)
+    install(
+        TARGETS EngCoderNativeHost
+        RUNTIME DESTINATION optional-packs/compact-native-inference/bin)
 endif()
 
 if(THREADSPIRE_AI_BUILD_TESTS)
@@ -222,6 +255,9 @@ if(THREADSPIRE_AI_BUILD_TESTS)
     add_test(NAME threadspire_workbench_tests COMMAND threadspire_workbench_tests)
 
     if(WIN32)
+        add_test(
+            NAME threadspire_native_inference_contract
+            COMMAND "$<TARGET_FILE:EngCoderNativeHost>" --engine-contract-self-test)
         add_test(
             NAME threadspire_base_footprint
             COMMAND

@@ -1002,7 +1002,7 @@ void draw_workspace_card(
 }
 
 [[nodiscard]] bool internal_host_startable(const AppPaths& paths) {
-    return internal_model_ready(paths) && runtime::backend_files_present(paths);
+    return internal_model_ready(paths) && runtime::native_inference_source_available(paths);
 }
 
 [[nodiscard]] bool training_pack_payload_ready(
@@ -1105,13 +1105,13 @@ void draw_workspace_card(
 [[nodiscard]] std::wstring internal_model_status_text(const AppPaths& paths) {
     const auto state = runtime::inspect_internal_model_state(paths);
     if (!state.exists) {
-        return L"Built-in AI is not installed.";
+        return L"Built-in AI: NOT INSTALLED — required files are missing.";
     }
     if (!state.manifest_valid) {
         return L"Built-in AI setup was interrupted. EngCoder will continue from the last safe point.";
     }
     if (state.bootstrap_complete) {
-        return L"Built-in AI is ready and uses only local model files.";
+        return L"Built-in AI is ready. Answers run through the compact native engine; Python is used only for optional learning.";
     }
 
     const auto progress = runtime::read_internal_model_progress(paths);
@@ -2893,7 +2893,7 @@ void MainWindow::create_models_page() {
         L"BUTTON", L"Stop built-in AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_stop, parent);
     create_control(
-        L"STATIC", L"No backup action has run",
+        L"STATIC", L"No backup action has run. Built-in AI uses only local model files.",
         WS_CHILD | WS_VISIBLE, 0, id::models_status, parent);
 
     create_control(
@@ -4668,7 +4668,7 @@ void MainWindow::refresh_model_selectors() {
     const auto internal_state = runtime::inspect_internal_model_state(paths_);
     const auto built_in_starting = !custom_host_running &&
         internal_state.manifest_valid && internal_state.bootstrap_complete &&
-        internal_state.generation_ready && runtime::backend_files_present(paths_) &&
+        internal_state.generation_ready && runtime::native_inference_source_available(paths_) &&
         automatic_lifecycle_enabled_;
     std::vector<models::ModelProfile> available;
     for (const auto& model : snapshot.models()) {
@@ -5477,7 +5477,7 @@ std::wstring MainWindow::runtime_summary(
         built_in_status = L"NOT READY — automatic setup paused";
     } else if (automatic_learning_limit_reached(paths_, internal_state)) {
         built_in_status = L"NOT READY — failed quality checks; rejected copy was never used";
-    } else if (!runtime::backend_files_present(paths_)) {
+    } else if (!runtime::native_inference_source_available(paths_)) {
         built_in_status = L"NOT INSTALLED — required files are missing";
     } else if (!internal_state.exists) {
         built_in_status = L"NOT READY — automatic setup starting";
@@ -5507,7 +5507,7 @@ std::wstring MainWindow::runtime_summary(
                 stream << L"AI: EngCoder built-in • no connected AI backup is ready";
             } else if (connected_ready > 0U) {
                 if (internal_state.manifest_valid && internal_state.bootstrap_complete &&
-                    internal_state.generation_ready && runtime::backend_files_present(paths_)) {
+                    internal_state.generation_ready && runtime::native_inference_source_available(paths_)) {
                     stream << L"AI: connected app while the built-in answer service starts";
                 } else {
                     stream << L"AI: connected app • Built-in EngCoder is not ready";
@@ -7281,7 +7281,6 @@ void MainWindow::create_internal_model(
 
             std::string message;
             const auto host_started = backend_server_.start(
-                selected_paths.python,
                 token,
                 message);
             return util::OperationResult{
@@ -7421,7 +7420,7 @@ void MainWindow::start_backend(const bool automatic) {
     const auto started = backend_operation_.start(
         [this](const std::stop_token token) {
             std::string message;
-            const auto success = backend_server_.start(selected_python_, token, message);
+            const auto success = backend_server_.start(token, message);
             return util::OperationResult{
                 .state = success ? util::OperationState::succeeded : util::OperationState::failed,
                 .exit_code = success ? 0 : 1,
@@ -7936,6 +7935,16 @@ void MainWindow::drive_automatic_lifecycle() {
         return;
     }
 
+    // Once a promoted model exists, normal answers use the compact native pack.
+    // The optional Python/PyTorch training pack is not verified, started, or even
+    // required on this path.
+    if (state.manifest_valid && state.bootstrap_complete && state.generation_ready) {
+        if (!backend_server_.running()) {
+            start_backend(true);
+        }
+        return;
+    }
+
     auto selected_paths = paths_;
     selected_paths.python = selected_python_;
     if (backend_repair_required_ || !runtime::backend_files_present(selected_paths)) {
@@ -7949,19 +7958,13 @@ void MainWindow::drive_automatic_lifecycle() {
         return;
     }
 
-    if (!state.manifest_valid || !state.bootstrap_complete) {
-        if (automatic_learning_limit_reached(paths_, state)) {
-            lifecycle_last_error_ =
-                "Built-in AI reached its bounded learning target without passing every quality check; "
-                "no unapproved model was activated.";
-            return;
-        }
-        create_internal_model(true, true);
+    if (automatic_learning_limit_reached(paths_, state)) {
+        lifecycle_last_error_ =
+            "Built-in AI reached its bounded learning target without passing every quality check; "
+            "no unapproved model was activated.";
         return;
     }
-    if (!backend_server_.running()) {
-        start_backend(true);
-    }
+    create_internal_model(true, true);
 }
 void MainWindow::update_internal_model_lifecycle_ui() {
     const auto state = runtime::inspect_internal_model_state(paths_);

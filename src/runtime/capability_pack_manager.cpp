@@ -49,8 +49,8 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
             .name = "Compact Native Inference",
             .version = "1",
             .kind = CapabilityPackKind::compact_native_inference,
-            .projected_download_bytes = 72U * mib,
-            .projected_install_bytes = 92U * mib,
+            .projected_download_bytes = 8U * mib,
+            .projected_install_bytes = 16U * mib,
             .required_files = {"bin/threadspire-native-host.exe"},
         },
         {

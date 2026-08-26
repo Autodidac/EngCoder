@@ -91,3 +91,15 @@ This report is updated as changes are implemented. Claims about other platforms 
 - Repeated visual QA on the built Release executable at the minimum supported size and a wide size. The Chat and Files & Activity pages remained dark, readable, non-overlapping, and retained all five primary tabs. The live installation still truthfully shows six full copies because no live AppData mutation was performed; automatic compaction takes effect after a future completed learning pass.
 
 Verification for this checkpoint: Python bytecode compilation passed, `git diff --check` passed, the Visual Studio 2022 Release build passed, and Release CTest passed 4/4.
+
+### Compact native inference
+
+- Replaced the normal built-in answer host with a standalone C++23 executable. It reads the active generation's manifest, configuration, and F32 safetensors directly; validates the active pointer, safe leaf paths, tensor shapes, format, and SHA-256; and implements the exact RMSNorm, RoPE attention, SwiGLU, per-skill expert, tied-embedding, KV-cache, and sampling path used by the trained model.
+- Preserved the established loopback provider contract: health, JSON completion, streaming completion, cancellation-compatible shutdown, usage, generation provenance, and quality metadata.
+- Ported verified greeting/reversible-answer retrieval and the structural/English quality gate. Invalid UTF-8, control bytes, repetition loops, malformed vocabulary, and unusable drafts are withheld instead of reaching Chat.
+- Packaged the host as the explicit compact-native-inference capability pack. The app installs that bundled pack transactionally on demand and starts it before checking the separate Python/PyTorch learning pack. Normal built-in answers no longer load Python or PyTorch.
+- The Release native host is 267,264 bytes. Its imported libraries are Windows system libraries plus the Visual C++ runtime; it has no Python or PyTorch import. EngCoder.exe is 5,073,920 bytes, remaining far below the 100 MiB base budget.
+- Added a deterministic native engine contract test for matrix multiplication, RMS normalization, and strict UTF-8 validation, plus source-contract coverage that normal inference launches the transactional native pack and does not launch Python.
+- Exercised the actual local HTTP server against active generation g000011: health passed, JSON returned the verified Hello! response, SSE ended with [DONE], and /shutdown exited cleanly. A free-form neural smoke generated at about 171 byte tokens/s and its malformed draft was correctly rejected by the native quality gate.
+
+Verification for this checkpoint: Visual Studio 2022 Release build passed with /W4 /WX; Release CTest passed 5/5; git diff --check passed. The active model was read for smoke testing, but live AppData was not modified.

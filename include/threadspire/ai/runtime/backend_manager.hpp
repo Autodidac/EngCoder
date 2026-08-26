@@ -10,6 +10,8 @@
 namespace threadspire::ai::runtime {
 
 [[nodiscard]] bool backend_files_present(const app::AppPaths& paths) noexcept;
+[[nodiscard]] bool native_inference_files_present(const app::AppPaths& paths) noexcept;
+[[nodiscard]] bool native_inference_source_available(const app::AppPaths& paths) noexcept;
 
 [[nodiscard]] util::OperationResult install_backend(
     const app::AppPaths& paths,

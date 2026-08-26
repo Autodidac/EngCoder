@@ -26,8 +26,68 @@ namespace {
     return 0;
 }
 
+[[nodiscard]] std::filesystem::path native_host_path(const app::AppPaths& paths) {
+    return paths.packs / "compact-native-inference" / "bin" / "threadspire-native-host.exe";
+}
+
+[[nodiscard]] std::filesystem::path native_host_source(const app::AppPaths& paths) {
+    return paths.executable.parent_path() / "optional-packs" /
+        "compact-native-inference";
+}
+
+[[nodiscard]] bool regular_file_no_follow(const std::filesystem::path& path) noexcept {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    return !error && std::filesystem::is_regular_file(status) &&
+        !std::filesystem::is_symlink(status);
+}
+
+[[nodiscard]] std::filesystem::path ensure_native_host(
+    const app::AppPaths& paths,
+    const std::stop_token stop_token,
+    std::string& message) {
+    const auto installed = native_host_path(paths);
+    if (regular_file_no_follow(installed)) {
+        return installed;
+    }
+    const auto source = native_host_source(paths);
+    if (!regular_file_no_follow(
+            source / "bin" / "threadspire-native-host.exe")) {
+        message = "Compact native inference pack is unavailable: " + source.string();
+        return {};
+    }
+    const auto catalog = CapabilityPackManager::catalog();
+    const auto descriptor = std::ranges::find(
+        catalog,
+        std::string_view{"compact-native-inference"},
+        &CapabilityPackDescriptor::id);
+    if (descriptor == catalog.end()) {
+        message = "Compact native inference pack description is missing";
+        return {};
+    }
+    CapabilityPackManager manager(paths.packs);
+    const auto result = manager.install_transactional({
+        .descriptor = *descriptor,
+        .source_directory = source,
+    }, stop_token);
+    if (!result.succeeded || !regular_file_no_follow(installed)) {
+        message = result.error.empty()
+            ? "Compact native inference pack did not publish its host"
+            : result.error;
+        return {};
+    }
+    return installed;
+}
 } // namespace
 
+bool native_inference_files_present(const app::AppPaths& paths) noexcept {
+    return regular_file_no_follow(native_host_path(paths));
+}
+
+bool native_inference_source_available(const app::AppPaths& paths) noexcept {
+    return native_inference_files_present(paths) ||
+        regular_file_no_follow(native_host_source(paths) / "bin" / "threadspire-native-host.exe");
+}
 BackendServer::BackendServer(app::AppPaths paths)
     : paths_(std::move(paths)),
       log_path_(paths_.logs / "model-server.log") {}
@@ -37,20 +97,16 @@ BackendServer::~BackendServer() {
 }
 
 bool BackendServer::start(
-    const std::filesystem::path& python,
     const std::stop_token stop_token,
     std::string& message) {
     std::lock_guard lock(mutex_);
     if (process_.running() && !base_url_.empty()) {
-        message = "Model server is already running at " + base_url_;
+        message = "Native model server is already running at " + base_url_;
         return true;
     }
-    if (!std::filesystem::is_regular_file(python)) {
-        message = "Python runtime not found: " + python.string();
-        return false;
-    }
-    if (!std::filesystem::is_regular_file(paths_.worker)) {
-        message = "Embedded model worker not found: " + paths_.worker.string();
+
+    const auto host = ensure_native_host(paths_, stop_token, message);
+    if (host.empty()) {
         return false;
     }
 
@@ -64,28 +120,25 @@ bool BackendServer::start(
     std::string launch_error;
     if (!process_.start(
             platform::ProcessSpec{
-                .executable = python,
+                .executable = host,
                 .arguments = {
-                    paths_.worker.string(),
-                    "serve",
                     "--port", "0",
                     "--ready-file", paths_.ready_file.string(),
                     "--state-root", paths_.root.string(),
-                    "--max-loaded-models", "2",
                 },
                 .working_directory = paths_.root,
                 .log_file = log_path_,
                 .append_log = false,
             },
             launch_error)) {
-        message = "Unable to start model server: " + launch_error;
+        message = "Unable to start compact native model server: " + launch_error;
         return false;
     }
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     while (!stop_token.stop_requested() && std::chrono::steady_clock::now() < deadline) {
         if (!process_.running()) {
-            message = "Model server exited during startup; inspect " + log_path_.string();
+            message = "Native model server exited during startup; inspect " + log_path_.string();
             return false;
         }
         const auto port = read_port(paths_.ready_file);
@@ -93,23 +146,20 @@ bool BackendServer::start(
             base_url_ = "http://127.0.0.1:" + std::to_string(port);
             const auto response = backend::http_get(base_url_ + "/health", std::chrono::seconds(5));
             if (response.succeeded()) {
-                message = "Model server ready at " + base_url_;
+                message = "Compact native model server ready at " + base_url_;
                 return true;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
 
-    if (stop_token.stop_requested()) {
-        message = "Model server startup cancelled";
-    } else {
-        message = "Model server did not become ready; inspect " + log_path_.string();
-    }
+    message = stop_token.stop_requested()
+        ? "Native model server startup cancelled"
+        : "Native model server did not become ready; inspect " + log_path_.string();
     process_.stop();
     base_url_.clear();
     return false;
 }
-
 void BackendServer::stop() noexcept {
     std::lock_guard lock(mutex_);
     if (!base_url_.empty()) {

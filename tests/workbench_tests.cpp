@@ -622,6 +622,8 @@ void test_named_module_and_native_base_contract() {
     const auto resource_ids = read_text(source / "resources" / "resource.h");
     const auto app_paths = read_text(source / "src" / "app" / "app_paths.cpp");
     const auto backend = read_text(source / "src" / "runtime" / "backend_manager.cpp");
+    const auto backend_server = read_text(source / "src" / "runtime" / "backend_server.cpp");
+    const auto native_host = read_text(source / "src" / "native_host" / "main.cpp");
     require(resources.find("model_worker.py") == std::string::npos &&
                 resources.find("internal_model.py") == std::string::npos &&
                 resources.find("curriculum_guard.py") == std::string::npos &&
@@ -631,6 +633,19 @@ void test_named_module_and_native_base_contract() {
     require(backend.find("pip install") == std::string::npos &&
                 backend.find("Automatic Python/PyTorch installation was removed from the base application") != std::string::npos,
             "the base executable must not install Python, PyTorch, or private runtimes automatically");
+    require(cmake.find("add_executable(EngCoderNativeHost") != std::string::npos &&
+                cmake.find("optional-packs/compact-native-inference/bin") != std::string::npos &&
+                cmake.find("threadspire_native_inference_contract") != std::string::npos &&
+                backend_server.find(".executable = host") != std::string::npos &&
+                backend_server.find(".executable = python") == std::string::npos &&
+                backend_server.find("install_transactional") != std::string::npos &&
+                native_host.find("--engine-contract-self-test") != std::string::npos &&
+                native_host.find("/v1/chat/completions") != std::string::npos &&
+                native_host.find("text/event-stream; charset=utf-8") != std::string::npos &&
+                native_host.find("valid_utf8") != std::string::npos &&
+                native_host.find("#include <Python") == std::string::npos &&
+                native_host.find("#include <torch") == std::string::npos,
+            "normal built-in answers must use the small transactional native pack with no Python or PyTorch dependency");
     require(cmake.find("resources/engcoder-eagle.ico") != std::string::npos &&
                 cmake.find("OUTPUT_NAME \"EngCoder\"") != std::string::npos &&
                 resources.find("IDI_ENGCODER ICON") != std::string::npos &&

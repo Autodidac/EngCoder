@@ -1529,7 +1529,15 @@ void test_windows_ui_source_contract() {
                 ui.find("Improving the built-in AI automatically from approved examples") != std::string::npos &&
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
             "Chat and AI & Tools must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
-    require(ui.find("internal_host_startable") != std::string::npos &&
+    const auto native_missing_status =
+        ui.find("else if (!runtime::native_inference_source_available(paths_))");
+    const auto native_missing_assignment =
+        ui.find("built_in_status = L\"NOT INSTALLED — required files are missing\"",
+                native_missing_status);
+    require(native_missing_status != std::string::npos &&
+                native_missing_assignment > native_missing_status &&
+                native_missing_assignment - native_missing_status < 180U &&
+                ui.find("internal_host_startable") != std::string::npos &&
                 ui.find("A stale internal-only preference must never hide a working connected model") == std::string::npos &&
                 ui.find("AI group: Built-in EngCoder only") != std::string::npos &&
                 ui.find("set_status(runtime_summary(snapshot, backend_server_.running()))") != std::string::npos &&

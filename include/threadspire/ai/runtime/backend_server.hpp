@@ -19,7 +19,6 @@ public:
     BackendServer& operator=(const BackendServer&) = delete;
 
     [[nodiscard]] bool start(
-        const std::filesystem::path& python,
         std::stop_token stop_token,
         std::string& message);
     void stop() noexcept;
