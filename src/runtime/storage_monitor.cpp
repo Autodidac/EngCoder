@@ -240,12 +240,14 @@ StorageSnapshot inspect_storage_with_growth(
             nullptr, 0U, stop_token);
         snapshot.runtime_bytes = legacy_runtime.bytes + pack_runtime.bytes;
         const auto packs_bytes = category_bytes(snapshot, "packs");
+        const auto models_bytes = category_bytes(snapshot, "models");
         const auto outputs_bytes = category_bytes(snapshot, "outputs") +
             category_bytes(snapshot, "cache");
         const auto outputs_files = category_files(snapshot, "outputs") +
             category_files(snapshot, "cache");
         snapshot.cards = {
             {.key = "current-model", .label = "Current model", .bytes = snapshot.active_model_bytes, .files = snapshot.active_model_files},
+            {.key = "all-models", .label = "All models", .bytes = models_bytes, .files = category_files(snapshot, "models")},
             {.key = "accepted-training-data", .label = "Accepted training data", .bytes = snapshot.training_data_bytes, .files = snapshot.training_data_files},
             {.key = "installed-packs", .label = "Installed packs", .bytes = packs_bytes, .files = category_files(snapshot, "packs")},
             {.key = "outputs-cache", .label = "Outputs and cache", .bytes = outputs_bytes, .files = outputs_files},

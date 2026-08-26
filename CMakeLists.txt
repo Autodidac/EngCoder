@@ -174,6 +174,7 @@ if(WIN32)
             Dwmapi
             Gdi32
             Ole32
+            Psapi
             Shell32
             Uuid
             UxTheme

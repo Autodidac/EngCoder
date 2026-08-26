@@ -5,8 +5,10 @@ module;
 #include <CommCtrl.h>
 #include <Richedit.h>
 #include <Dwmapi.h>
+#include <Psapi.h>
 #include <ShObjIdl.h>
 #include <Shellapi.h>
+#include <TlHelp32.h>
 #include <Uxtheme.h>
 #include <algorithm>
 #include <array>
@@ -54,6 +56,73 @@ constexpr COLORREF transcript_output_color = RGB(125, 220, 160);
 constexpr DWORD immersive_dark_mode_attribute = 20U;
 constexpr std::array<std::size_t, 3> automatic_bootstrap_targets{24000U, 36000U, 50000U};
 constexpr std::string_view internal_pool_selection_id = "@threadspire/internal-pool";
+
+struct OwnedMemorySample final {
+    std::uintmax_t resident_bytes{0};
+    std::uintmax_t app_resident_bytes{0};
+    std::uintmax_t worker_resident_bytes{0};
+    std::uintmax_t private_commit_bytes{0};
+    std::size_t worker_processes{0};
+};
+
+[[nodiscard]] OwnedMemorySample sample_owned_memory() noexcept {
+    OwnedMemorySample sample;
+    const auto app_process_id = ::GetCurrentProcessId();
+    std::vector<std::pair<DWORD, DWORD>> processes;
+    const auto process_snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (process_snapshot != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W entry{};
+        entry.dwSize = static_cast<DWORD>(sizeof(entry));
+        if (::Process32FirstW(process_snapshot, &entry) != FALSE) {
+            do {
+                processes.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
+            } while (::Process32NextW(process_snapshot, &entry) != FALSE);
+        }
+        static_cast<void>(::CloseHandle(process_snapshot));
+    }
+
+    std::unordered_set<DWORD> owned_processes{app_process_id};
+    bool found_child = true;
+    while (found_child) {
+        found_child = false;
+        for (const auto& [process_id, parent_id] : processes) {
+            if (!owned_processes.contains(process_id) && owned_processes.contains(parent_id)) {
+                static_cast<void>(owned_processes.insert(process_id));
+                found_child = true;
+            }
+        }
+    }
+
+    for (const auto process_id : owned_processes) {
+        const auto is_app = process_id == app_process_id;
+        const auto process = is_app
+            ? ::GetCurrentProcess()
+            : ::OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
+        if (process == nullptr) {
+            continue;
+        }
+        PROCESS_MEMORY_COUNTERS_EX counters{};
+        counters.cb = static_cast<DWORD>(sizeof(counters));
+        if (::GetProcessMemoryInfo(
+                process,
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                static_cast<DWORD>(sizeof(counters))) != FALSE) {
+            const auto resident = static_cast<std::uintmax_t>(counters.WorkingSetSize);
+            sample.resident_bytes += resident;
+            sample.private_commit_bytes += static_cast<std::uintmax_t>(counters.PrivateUsage);
+            if (is_app) {
+                sample.app_resident_bytes = resident;
+            } else {
+                sample.worker_resident_bytes += resident;
+                ++sample.worker_processes;
+            }
+        }
+        if (!is_app) {
+            static_cast<void>(::CloseHandle(process));
+        }
+    }
+    return sample;
+}
 
 namespace id {
 constexpr int tabs = 100;
@@ -113,6 +182,8 @@ constexpr int chat_edit = 342;
 constexpr int chat_retry = 343;
 constexpr int chat_attach = 344;
 constexpr int chat_attachment_status = 345;
+constexpr int chat_all_models_size = 346;
+constexpr int chat_live_ram_size = 347;
 
 constexpr int coding_repository_label = 350;
 constexpr int coding_repository = 351;
@@ -721,7 +792,9 @@ void draw_dark_text(
          item.CtlID == id::chat_installed_packs_size ||
          item.CtlID == id::chat_outputs_cache_size ||
          item.CtlID == id::chat_total_usage_size ||
-         item.CtlID == id::chat_free_disk_size)) {
+         item.CtlID == id::chat_free_disk_size ||
+         item.CtlID == id::chat_all_models_size ||
+         item.CtlID == id::chat_live_ram_size)) {
         auto rectangle = item.rcItem;
         fill_solid_rect(item.hDC, rectangle, edit_color);
         frame_solid_rect(item.hDC, rectangle, border_color);
@@ -2936,6 +3009,14 @@ void MainWindow::create_logs_page() {
         L"STATIC", L"FREE DISK\r\nMeasuring…",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, id::chat_free_disk_size, parent);
+    create_control(
+        L"STATIC", L"ALL MODELS\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_all_models_size, parent);
+    create_control(
+        L"STATIC", L"LIVE RAM\r\nMeasuring…",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0, id::chat_live_ram_size, parent);
 
     create_control(
         L"BUTTON", L"Open active log", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -3946,19 +4027,33 @@ void MainWindow::layout_controls() {
     const auto storage_card_width = (width - gap * 2) / 3;
     const auto storage_cards_first_y = row * 2 + gap * 2;
     const auto storage_cards_second_y = storage_cards_first_y + storage_card_height + gap;
+    const auto storage_cards_third_y = storage_cards_second_y + storage_card_height + gap;
     const auto place_storage_card = [&](const int identifier, const int column, const int y) {
         const auto x = column * (storage_card_width + gap);
         const auto card_width = column == 2 ? width - x : storage_card_width;
         move_control(control(identifier), x, y, card_width, storage_card_height);
     };
     place_storage_card(id::chat_active_model_size, 0, storage_cards_first_y);
-    place_storage_card(id::chat_training_data_size, 1, storage_cards_first_y);
-    place_storage_card(id::chat_installed_packs_size, 2, storage_cards_first_y);
-    place_storage_card(id::chat_outputs_cache_size, 0, storage_cards_second_y);
-    place_storage_card(id::chat_total_usage_size, 1, storage_cards_second_y);
-    place_storage_card(id::chat_free_disk_size, 2, storage_cards_second_y);
+    place_storage_card(id::chat_all_models_size, 1, storage_cards_first_y);
+    place_storage_card(id::chat_training_data_size, 2, storage_cards_first_y);
+    place_storage_card(id::chat_installed_packs_size, 0, storage_cards_second_y);
+    place_storage_card(id::chat_outputs_cache_size, 1, storage_cards_second_y);
+    place_storage_card(id::chat_live_ram_size, 2, storage_cards_second_y);
+    const auto half_card_width = (width - gap) / 2;
+    move_control(
+        control(id::chat_total_usage_size),
+        0,
+        storage_cards_third_y,
+        half_card_width,
+        storage_card_height);
+    move_control(
+        control(id::chat_free_disk_size),
+        half_card_width + gap,
+        storage_cards_third_y,
+        width - half_card_width - gap,
+        storage_card_height);
 
-    const auto storage_y = storage_cards_second_y + storage_card_height + gap;
+    const auto storage_y = storage_cards_third_y + storage_card_height + gap;
     const auto storage_height = std::max(scaled(150, dpi_), (height - storage_y) * 55 / 100);
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
     const auto log_y = storage_y + storage_height + gap;
@@ -8390,11 +8485,41 @@ void MainWindow::update_storage_report(const bool force) {
         };
 
         const auto* current_model = find_card("current-model");
+        const auto* all_models = find_card("all-models");
         const auto* accepted_data = find_card("accepted-training-data");
         const auto* installed_packs = find_card("installed-packs");
         const auto* outputs_cache = find_card("outputs-cache");
         const auto* total_usage = find_card("total-usage");
         const auto* free_disk = find_card("free-disk");
+        const auto memory = sample_owned_memory();
+        const auto growth_between = [](const std::uintmax_t current, const std::uintmax_t previous) {
+            return current >= previous
+                ? static_cast<std::intmax_t>(current - previous)
+                : -static_cast<std::intmax_t>(previous - current);
+        };
+        const auto models_bytes = all_models == nullptr ? 0U : all_models->bytes;
+        const auto models_growth = storage_sample_available_
+            ? growth_between(models_bytes, previous_models_bytes_)
+            : 0;
+        const auto ram_growth = storage_sample_available_
+            ? growth_between(memory.resident_bytes, previous_ram_bytes_)
+            : 0;
+        std::wstring memory_activity{L"idle"};
+        const auto learning_pipeline = learning_service_->pipeline_snapshot();
+        if (chat_operation_.running()) {
+            memory_activity = L"answering";
+        } else if (media_operation_.running()) {
+            memory_activity = L"creating media";
+        } else if (long_horizon_operation_.running()) {
+            memory_activity = L"repository work";
+        } else if (piggyback_operation_.running() ||
+                   learning_pipeline.active_job.has_value() ||
+                   (lifecycle_action_ == LifecycleAction::bootstrap_model &&
+                    backend_operation_.running())) {
+            memory_activity = L"learning";
+        } else if (backend_server_.running()) {
+            memory_activity = L"ready";
+        }
 
         std::wostringstream model_card;
         model_card << L"CURRENT MODEL";
@@ -8404,6 +8529,13 @@ void MainWindow::update_storage_report(const bool force) {
         model_card << L"\r\n" << format_bytes_compact(
             current_model == nullptr ? snapshot->active_model_bytes : current_model->bytes);
         set_control_text(id::chat_active_model_size, model_card.str());
+
+        std::wostringstream all_models_card;
+        all_models_card << L"ALL MODELS\r\n"
+                        << format_bytes_compact(models_bytes)
+                        << L" • " << (all_models == nullptr ? 0U : all_models->files)
+                        << L" files • " << growth_text(models_growth);
+        set_control_text(id::chat_all_models_size, all_models_card.str());
 
         std::wostringstream training_card;
         training_card << L"ACCEPTED TRAINING DATA\r\n"
@@ -8431,6 +8563,10 @@ void MainWindow::update_storage_report(const bool force) {
             id::chat_free_disk_size,
             L"FREE DISK\r\n" + format_bytes_compact(
                 free_disk == nullptr ? snapshot->free_disk_bytes : free_disk->bytes));
+        set_control_text(
+            id::chat_live_ram_size,
+            L"LIVE RAM\r\n" + format_bytes_compact(memory.resident_bytes) +
+                L" • " + memory_activity + L" • " + growth_text(ram_growth));
 
         std::wostringstream report;
         report << L"LIVE STORAGE CARDS\r\n";
@@ -8444,6 +8580,16 @@ void MainWindow::update_storage_report(const bool force) {
             }
             report << L"\r\n";
         }
+        report << L"  EngCoder-owned resident RAM: " << format_bytes(memory.resident_bytes)
+               << L" • app " << format_bytes(memory.app_resident_bytes)
+               << L" • model/training helpers " << format_bytes(memory.worker_resident_bytes)
+               << L" • " << memory.worker_processes << L" helper process"
+               << (memory.worker_processes == 1U ? L"" : L"es")
+               << L" • " << memory_activity
+               << L" • growth " << growth_text(ram_growth)
+               << L"\r\n  EngCoder-owned private committed memory: "
+               << format_bytes(memory.private_commit_bytes)
+               << L"\r\n  Other AI applications, including LM Studio, are not counted in EngCoder RAM.\r\n";
         report << L"  Legacy/private PyTorch runtime (not training data): "
                << format_bytes(snapshot->runtime_bytes)
                << L"\r\n\r\nModel generations: " << snapshot->generation_directories
@@ -8487,6 +8633,8 @@ void MainWindow::update_storage_report(const bool force) {
             report << L"\r\n";
         }
         previous_storage_bytes_ = snapshot->total_bytes;
+        previous_models_bytes_ = models_bytes;
+        previous_ram_bytes_ = memory.resident_bytes;
         storage_sample_available_ = true;
         set_control_text(id::logs_storage, report.str());
     }

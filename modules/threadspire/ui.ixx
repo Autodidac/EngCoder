@@ -343,6 +343,8 @@ private:
     std::chrono::steady_clock::time_point next_piggyback_at_{};
     std::chrono::steady_clock::time_point next_storage_refresh_{};
     std::uintmax_t previous_storage_bytes_{0};
+    std::uintmax_t previous_models_bytes_{0};
+    std::uintmax_t previous_ram_bytes_{0};
     bool storage_sample_available_{false};
     bool media_result_pending_{false};
 };

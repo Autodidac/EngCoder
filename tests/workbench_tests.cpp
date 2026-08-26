@@ -545,9 +545,11 @@ void test_storage_cards_growth_projections_quotas_and_cleanup() {
     write_text(root / "logs" / "two.log", "abcdefghij");
 
     const auto snapshot = inspect_storage_with_growth(root, 0U, 8U, 8U);
-    require(snapshot.cards.size() == 6U && snapshot.growth_bytes > 0 &&
-                snapshot.cards.front().key == "current-model",
-            "storage reporting must expose the six live cards and growth since the prior sample");
+    require(snapshot.cards.size() == 7U && snapshot.growth_bytes > 0 &&
+                snapshot.cards.front().key == "current-model" &&
+                snapshot.cards[1].key == "all-models" &&
+                snapshot.cards[1].bytes > snapshot.cards.front().bytes,
+            "storage reporting must expose all seven disk cards, including every model generation, and growth since the prior sample");
     require(snapshot.pack_projections.size() == CapabilityPackManager::catalog().size() &&
                 std::ranges::any_of(snapshot.pack_projections, [](const PackSizeProjection& projection) {
                     return projection.id == "image-engine" && projection.installed &&

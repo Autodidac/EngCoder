@@ -1107,6 +1107,12 @@ void test_storage_monitor_reports_exact_background_footprint() {
     require(!snapshot.categories.empty() &&
                 snapshot.categories.front().name == "models",
             "storage categories must be sorted by descending disk usage");
+    const auto all_models = std::ranges::find(
+        snapshot.cards, std::string{"all-models"}, &threadspire::ai::runtime::StorageCard::key);
+    require(all_models != snapshot.cards.end() &&
+                all_models->bytes == 4096U + pointer_text.size() &&
+                all_models->files == 2U,
+            "the all-models card must include every model generation and the active pointer");
     std::filesystem::remove_all(root);
 }
 
@@ -1181,13 +1187,17 @@ void test_windows_ui_source_contract() {
                 ui.find("backend::ExecutionProfile::long_horizon") != std::string::npos &&
                 ui.find("backend::MediaTaskProvider") != std::string::npos &&
                 ui.find("CURRENT MODEL") != std::string::npos &&
+                ui.find("ALL MODELS") != std::string::npos &&
                 ui.find("ACCEPTED TRAINING DATA") != std::string::npos &&
                 ui.find("INSTALLED PACKS") != std::string::npos &&
                 ui.find("OUTPUTS / CACHE") != std::string::npos &&
                 ui.find("TOTAL USAGE") != std::string::npos &&
                 ui.find("FREE DISK") != std::string::npos &&
+                ui.find("LIVE RAM") != std::string::npos &&
+                ui.find("CreateToolhelp32Snapshot") != std::string::npos &&
+                ui.find("Other AI applications, including LM Studio, are not counted") != std::string::npos &&
                 ui.find("Legacy/private PyTorch runtime (not training data)") != std::string::npos,
-            "the Task surface must route every capability through execution profiles and expose all six live storage cards");
+            "the Task surface must route every capability through execution profiles and expose all eight live disk and RAM cards");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
                 ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos &&
