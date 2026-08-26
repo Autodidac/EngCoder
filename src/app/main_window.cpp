@@ -260,6 +260,12 @@ constexpr int skills_report = 503;
 constexpr int skills_rollback = 504;
 constexpr int skills_bootstrap = 505;
 constexpr int skills_skill_label = 506;
+constexpr int skills_pack_header = 507;
+constexpr int skills_pack_choice = 508;
+constexpr int skills_pack_source = 509;
+constexpr int skills_pack_browse = 510;
+constexpr int skills_pack_install = 511;
+constexpr int skills_pack_status = 512;
 
 constexpr int learning_pause = 600;
 constexpr int learning_policy = 601;
@@ -2038,6 +2044,7 @@ MainWindow::~MainWindow() {
     media_operation_.cancel();
     storage_operation_.cancel();
     storage_cleanup_operation_.cancel();
+    capability_pack_operation_.cancel();
 
     backend_operation_.wait();
     discovery_operation_.wait();
@@ -2048,6 +2055,7 @@ MainWindow::~MainWindow() {
     media_operation_.wait();
     storage_operation_.wait();
     storage_cleanup_operation_.wait();
+    capability_pack_operation_.wait();
 
     if (learning_service_ != nullptr) {
         learning_service_->request_stop();
@@ -3095,27 +3103,65 @@ void MainWindow::create_learning_page() {
 void MainWindow::create_skills_page() {
     const auto parent = control(id::page_skills);
     create_control(
-        L"BUTTON", L"Bootstrap local core", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Set up built-in capabilities", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_bootstrap, parent);
     create_control(
         L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_refresh, parent);
     create_control(
-        L"STATIC", L"Skill ID",
+        L"STATIC", L"Area to improve",
         WS_CHILD | WS_VISIBLE, 0, id::skills_skill_label, parent);
     create_control(
         L"EDIT", L"cpp23-debugging", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::skills_skill, parent);
     create_control(
-        L"BUTTON", L"Queue LoRA update", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Improve selected area", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_queue, parent);
     create_control(
-        L"BUTTON", L"Rollback active skill", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Undo last area update", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::skills_rollback, parent);
     create_control(
+        L"STATIC", L"Optional add-ons — adding files starts no task and changes no AI choice",
+        WS_CHILD | WS_VISIBLE, 0, id::skills_pack_header, parent);
+    const auto pack_choice = create_control(
+        L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+        CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, id::skills_pack_choice, parent);
+    for (const auto& descriptor : runtime::CapabilityPackManager::catalog()) {
+        if (descriptor.kind == runtime::CapabilityPackKind::compact_native_inference ||
+            descriptor.kind == runtime::CapabilityPackKind::internal_pytorch_training) {
+            continue;
+        }
+        const auto label = widen(descriptor.name) + L" — download about " +
+            format_bytes_compact(descriptor.projected_download_bytes) +
+            L" • uses about " + format_bytes_compact(descriptor.projected_install_bytes);
+        static_cast<void>(::SendMessageW(
+            pack_choice, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())));
+        capability_pack_ids_.push_back(descriptor.id);
+    }
+    if (!capability_pack_ids_.empty()) {
+        static_cast<void>(::SendMessageW(pack_choice, CB_SETCURSEL, 0, 0));
+        selected_capability_pack_source_ =
+            paths_.root / "pack-inbox" / capability_pack_ids_.front();
+    }
+    create_control(
+        L"EDIT", selected_capability_pack_source_.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE, id::skills_pack_source, parent);
+    create_control(
+        L"BUTTON", L"Choose files…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::skills_pack_browse, parent);
+    create_control(
+        L"BUTTON", L"Add or update safely", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::skills_pack_install, parent);
+    create_control(
+        L"STATIC", L"Choose an add-on and its prepared folder.",
+        WS_CHILD | WS_VISIBLE, 0, id::skills_pack_status, parent);
+    create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
-        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::skills_report, parent);
+    refresh_capability_pack_controls();
 }
 
 void MainWindow::create_long_horizon_page() {
@@ -4197,10 +4243,10 @@ void MainWindow::layout_controls() {
             width,
             std::max(1, height - library_y));
     }
-    move_control(control(id::skills_bootstrap), 0, 0, scaled(180, dpi_), row);
+    move_control(control(id::skills_bootstrap), 0, 0, scaled(240, dpi_), row);
     move_control(
         control(id::skills_refresh),
-        scaled(188, dpi_),
+        scaled(248, dpi_),
         0,
         scaled(120, dpi_),
         row);
@@ -4209,33 +4255,55 @@ void MainWindow::layout_controls() {
         control(id::skills_skill_label),
         0,
         skills_actions_y,
-        scaled(62, dpi_),
+        scaled(120, dpi_),
         row);
     move_control(
         control(id::skills_skill),
-        scaled(66, dpi_),
+        scaled(124, dpi_),
         skills_actions_y,
-        scaled(250, dpi_),
+        scaled(220, dpi_),
         row);
     move_control(
         control(id::skills_queue),
-        scaled(324, dpi_),
+        scaled(352, dpi_),
         skills_actions_y,
-        scaled(160, dpi_),
+        scaled(190, dpi_),
         row);
     move_control(
         control(id::skills_rollback),
-        scaled(492, dpi_),
+        scaled(550, dpi_),
         skills_actions_y,
-        scaled(175, dpi_),
+        scaled(190, dpi_),
         row);
-    const auto skills_report_y = skills_actions_y + row + gap;
+    const auto pack_header_y = skills_actions_y + row + gap;
+    move_control(control(id::skills_pack_header), 0, pack_header_y, width, row);
+    const auto pack_choice_y = pack_header_y + row;
+    const auto pack_choice_width = std::min(scaled(440, dpi_), std::max(scaled(260, dpi_), width * 44 / 100));
+    const auto pack_browse_width = scaled(130, dpi_);
+    move_control(
+        control(id::skills_pack_choice), 0, pack_choice_y,
+        pack_choice_width, row + scaled(220, dpi_));
+    move_control(
+        control(id::skills_pack_source), pack_choice_width + gap, pack_choice_y,
+        std::max(1, width - pack_choice_width - pack_browse_width - gap * 2), row);
+    move_control(
+        control(id::skills_pack_browse), width - pack_browse_width, pack_choice_y,
+        pack_browse_width, row);
+    const auto pack_action_y = pack_choice_y + row + gap;
+    const auto pack_install_width = scaled(190, dpi_);
+    move_control(
+        control(id::skills_pack_install), 0, pack_action_y,
+        pack_install_width, row);
+    move_control(
+        control(id::skills_pack_status), pack_install_width + gap, pack_action_y,
+        std::max(1, width - pack_install_width - gap), row);
+    const auto skills_report_y = pack_action_y + row + gap;
     move_control(
         control(id::skills_report),
         0,
         skills_report_y,
         width,
-        height - skills_report_y);
+        std::max(1, height - skills_report_y));
 
     move_control(control(id::horizon_repository_label), 0, 0, scaled(130, dpi_), row);
     move_control(control(id::horizon_repository), scaled(135, dpi_), 0, width - scaled(255, dpi_), row);
@@ -4594,6 +4662,15 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::skills_rollback:
         rollback_skill();
+        break;
+    case id::skills_pack_choice:
+        refresh_capability_pack_controls();
+        break;
+    case id::skills_pack_browse:
+        browse_capability_pack_source();
+        break;
+    case id::skills_pack_install:
+        install_selected_capability_pack();
         break;
     case id::horizon_browse:
         browse_repository();
@@ -5752,7 +5829,7 @@ void MainWindow::run_media_request(const backend::MediaKind kind) {
     if (selected == nullptr) {
         const auto capability = kind == backend::MediaKind::image ? L"image" : L"speech/audio";
         const auto error = L"No ready " + std::wstring(capability) +
-            L" model is configured. Add an OpenAI-compatible endpoint in Connections and advertise that capability.";
+            L" model is configured. Add an OpenAI-compatible endpoint in AI & Tools and mark that ability.";
         set_control_text(id::chat_response, error);
         set_control_text(id::chat_plan, L"No compatible endpoint was selected; no request was sent.");
         set_status(error);
@@ -7959,18 +8036,18 @@ void MainWindow::drive_automatic_lifecycle() {
         learning_service_->interactive_lease_count() > reserved_bootstrap_lease) {
         return;
     }
-    const auto learning_pipeline = learning_service_->pipeline_snapshot();
-    if (learning_pipeline.active_job.has_value()) {
-        return;
-    }
-
     // Once a promoted model exists, normal answers use the compact native pack.
-    // The optional Python/PyTorch training pack is not verified, started, or even
-    // required on this path.
+    // Start that serving copy even while a separate shadow candidate is learning;
+    // background learning must never make the last promoted model unavailable.
     if (state.manifest_valid && state.bootstrap_complete && state.generation_ready) {
         if (!backend_server_.running()) {
             start_backend(true);
         }
+        return;
+    }
+
+    const auto learning_pipeline = learning_service_->pipeline_snapshot();
+    if (learning_pipeline.active_job.has_value()) {
         return;
     }
 
@@ -8103,6 +8180,7 @@ void MainWindow::update_periodic_state() {
     update_piggyback_result();
     update_long_horizon_result();
     update_storage_cleanup_result();
+    update_capability_pack_result();
     update_storage_report();
     drive_automatic_lifecycle();
     update_internal_model_lifecycle_ui();
@@ -8623,32 +8701,216 @@ void MainWindow::update_piggyback_result() {
 void MainWindow::update_skill_report() {
     const auto modules = learning_service_->expert_snapshot();
     std::wostringstream report;
-    report << L"Skill modules\r\n"
-           << L"Accepted memory is immediate. LoRA is the fast candidate layer; promoted full-rank modules remain independently versioned.\r\n\r\n";
+    report << L"Specialized capability areas\r\n"
+           << L"Approved examples are available immediately. Lightweight updates build a review copy; approved full updates remain independently versioned.\r\n\r\n";
     if (modules.empty()) {
-        report << L"No skill has accepted evidence yet. Accept a verified Task response or use local teacher generation.";
+        report << L"No capability area has approved examples yet. Approve a verified reply or let automatic learning prepare examples.";
     }
     for (const auto& module : modules) {
+        const auto built_from = module.base_model.starts_with("threadspire://")
+            ? std::string{"EngCoder built-in"}
+            : module.base_model;
         report << L"[" << widen(module.skill) << L"]\r\n"
-               << L"  state: " << widen(learning::to_string(module.state)) << L"\r\n"
-               << L"  base: " << widen(module.base_model) << L"\r\n"
-               << L"  accepted episodes: " << module.accepted_episodes << L"\r\n"
-               << L"  since LoRA update: " << module.episodes_since_update << L"\r\n"
-               << L"  active generation: " << module.generation << L"\r\n"
-               << L"  LoRA generations: " << module.lora_generations << L"\r\n"
-               << L"  compiler verified: " << module.compiler_verified_episodes
+               << L"  status: " << widen(learning::to_string(module.state)) << L"\r\n"
+               << L"  built from: " << widen(built_from) << L"\r\n"
+               << L"  approved examples: " << module.accepted_episodes << L"\r\n"
+               << L"  examples since lightweight update: " << module.episodes_since_update << L"\r\n"
+               << L"  active version: " << module.generation << L"\r\n"
+               << L"  lightweight update versions: " << module.lora_generations << L"\r\n"
+               << L"  compile-checked: " << module.compiler_verified_episodes
                << L"  tests verified: " << module.test_verified_episodes << L"\r\n"
-               << L"  validation: " << module.validation_score
-               << L"  regression: " << module.regression_score << L"\r\n"
-               << L"  promoted candidate: " << widen(module.promoted_candidate_id) << L"\r\n"
-               << L"  adapter: " << module.adapter_path.wstring() << L"\r\n"
-               << L"  full expert: " << module.module_path.wstring() << L"\r\n"
-               << L"  rollback state: " << widen(learning::to_string(module.previous_state))
+               << L"  quality score: " << module.validation_score
+               << L"  quality loss: " << module.regression_score << L"\r\n"
+               << L"  approved update: " << widen(module.promoted_candidate_id) << L"\r\n"
+               << L"  lightweight update file: " << module.adapter_path.wstring() << L"\r\n"
+               << L"  full capability file: " << module.module_path.wstring() << L"\r\n"
+               << L"  restore status: " << widen(learning::to_string(module.previous_state))
                << L"\r\n\r\n";
     }
     set_control_text(id::skills_report, report.str());
 }
 
+std::optional<runtime::CapabilityPackDescriptor> MainWindow::selected_capability_pack() const {
+    const auto choice = control(id::skills_pack_choice);
+    if (choice == nullptr) {
+        return std::nullopt;
+    }
+    const auto selected = static_cast<int>(::SendMessageW(choice, CB_GETCURSEL, 0, 0));
+    if (selected < 0 || static_cast<std::size_t>(selected) >= capability_pack_ids_.size()) {
+        return std::nullopt;
+    }
+    const auto catalog = runtime::CapabilityPackManager::catalog();
+    const auto descriptor = std::ranges::find(
+        catalog,
+        capability_pack_ids_[static_cast<std::size_t>(selected)],
+        &runtime::CapabilityPackDescriptor::id);
+    if (descriptor == catalog.end()) {
+        return std::nullopt;
+    }
+    return *descriptor;
+}
+
+void MainWindow::refresh_capability_pack_controls() {
+    const auto descriptor = selected_capability_pack();
+    if (!descriptor.has_value()) {
+        set_control_text(id::skills_pack_status, L"No optional add-on is selected.");
+        static_cast<void>(::EnableWindow(control(id::skills_pack_install), FALSE));
+        return;
+    }
+    if (selected_capability_pack_id_ != descriptor->id) {
+        selected_capability_pack_id_ = descriptor->id;
+        selected_capability_pack_source_ = paths_.root / "pack-inbox" / descriptor->id;
+        set_control_text(id::skills_pack_source, selected_capability_pack_source_.wstring());
+    }
+
+    runtime::CapabilityPackManager manager(paths_.packs);
+    const auto records = manager.inspect();
+    const auto record = std::ranges::find_if(records, [&](const auto& item) {
+        return item.descriptor.id == descriptor->id;
+    });
+    std::wostringstream status;
+    if (record != records.end() && record->state == runtime::CapabilityPackState::installed) {
+        status << L"Installed (" << format_bytes_compact(record->installed_bytes)
+               << L"). Adding again safely replaces only this add-on.";
+    } else {
+        status << L"Not installed. Choose its prepared folder, then add it safely.";
+    }
+    if (!descriptor->dependencies.empty()) {
+        status << L" Requires the built-in learning engine first.";
+    }
+    set_control_text(id::skills_pack_status, status.str());
+    static_cast<void>(::EnableWindow(
+        control(id::skills_pack_install), capability_pack_operation_.running() ? FALSE : TRUE));
+}
+
+void MainWindow::browse_capability_pack_source() {
+    if (capability_pack_operation_.running()) {
+        set_status(L"An optional add-on is already being added");
+        return;
+    }
+    const auto selected = choose_directory(L"Choose the prepared optional add-on folder");
+    if (!selected.has_value()) {
+        return;
+    }
+    selected_capability_pack_source_ = selected->lexically_normal();
+    set_control_text(id::skills_pack_source, selected_capability_pack_source_.wstring());
+    set_status(L"Optional add-on folder selected; no work was started and the chosen AI is unchanged");
+}
+
+void MainWindow::install_selected_capability_pack() {
+    if (capability_pack_operation_.running()) {
+        set_status(L"An optional add-on is already being added");
+        return;
+    }
+    const auto descriptor = selected_capability_pack();
+    if (!descriptor.has_value()) {
+        set_status(L"Choose an optional add-on first");
+        return;
+    }
+    const auto source = std::filesystem::path(
+        control_text(id::skills_pack_source)).lexically_normal();
+    std::error_code error;
+    const auto source_status = std::filesystem::symlink_status(source, error);
+    if (error || !std::filesystem::is_directory(source_status) ||
+        std::filesystem::is_symlink(source_status)) {
+        set_status(L"Choose a real prepared add-on folder first");
+        return;
+    }
+
+    selected_capability_pack_source_ = source;
+    active_capability_pack_name_ = descriptor->name;
+    const runtime::CapabilityPackInstallRequest request{
+        .descriptor = *descriptor,
+        .source_directory = source,
+    };
+    const auto packs_root = paths_.packs;
+    const auto started = capability_pack_operation_.start(
+        [this, packs_root, request](const std::stop_token token) {
+            runtime::CapabilityPackManager manager(packs_root);
+            auto result = manager.install_transactional(request, token);
+            const auto succeeded = result.succeeded;
+            const auto cancelled = result.cancelled;
+            const auto message = result.error;
+            {
+                std::lock_guard lock(result_mutex_);
+                pending_capability_pack_result_ = std::move(result);
+            }
+            return util::OperationResult{
+                .state = succeeded
+                    ? util::OperationState::succeeded
+                    : (cancelled
+                        ? util::OperationState::cancelled
+                        : util::OperationState::failed),
+                .exit_code = succeeded ? 0 : 1,
+                .message = succeeded
+                    ? "optional add-on installed"
+                    : (message.empty() ? "optional add-on installation failed" : message),
+            };
+        },
+        "adding optional capability pack");
+    if (!started) {
+        active_capability_pack_name_.clear();
+        set_status(L"The optional add-on could not be started");
+        return;
+    }
+
+    for (const auto identifier : {
+             id::skills_pack_choice,
+             id::skills_pack_source,
+             id::skills_pack_browse,
+             id::skills_pack_install}) {
+        static_cast<void>(::EnableWindow(control(identifier), FALSE));
+    }
+    const auto status = L"Adding " + widen(descriptor->name) +
+        L" in the background. Current tasks and the chosen AI are unchanged.";
+    set_control_text(id::skills_pack_status, status);
+    set_status(status);
+}
+
+void MainWindow::update_capability_pack_result() {
+    std::optional<runtime::CapabilityPackInstallResult> result;
+    {
+        std::lock_guard lock(result_mutex_);
+        if (pending_capability_pack_result_.has_value()) {
+            result = std::move(pending_capability_pack_result_);
+            pending_capability_pack_result_.reset();
+        }
+    }
+    if (!result.has_value()) {
+        return;
+    }
+
+    for (const auto identifier : {
+             id::skills_pack_choice,
+             id::skills_pack_source,
+             id::skills_pack_browse,
+             id::skills_pack_install}) {
+        static_cast<void>(::EnableWindow(control(identifier), TRUE));
+    }
+    const auto pack_name = active_capability_pack_name_.empty()
+        ? std::wstring{L"Optional add-on"}
+        : widen(active_capability_pack_name_);
+    active_capability_pack_name_.clear();
+    refresh_capability_pack_controls();
+
+    std::wostringstream status;
+    if (result->succeeded) {
+        status << pack_name << L" was added safely ("
+               << format_bytes_compact(result->installed_bytes)
+               << L"). No task was started and the chosen AI was not changed.";
+    } else if (result->cancelled) {
+        status << pack_name << L" was cancelled. The previous working copy was "
+               << (result->previous_install_preserved ? L"kept." : L"not restored; inspect Files & Activity.");
+    } else {
+        status << pack_name << L" was not added: " << widen(result->error)
+               << L". The previous working copy was "
+               << (result->previous_install_preserved ? L"kept." : L"not restored; inspect Files & Activity.");
+    }
+    set_control_text(id::skills_pack_status, status.str());
+    set_status(status.str());
+    static_cast<void>(::EnableWindow(control(id::skills_pack_install), TRUE));
+    update_storage_report(true);
+}
 void MainWindow::update_user_memory_controls(const std::string_view selected_id) {
     const auto selector = control(id::learning_memory_selector);
     if (selector == nullptr) {

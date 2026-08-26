@@ -112,3 +112,20 @@ Verification for this checkpoint: Visual Studio 2022 Release build passed with /
 - Verified after QA that no EngCoder, ThreadSpire, Python, or native-host process was left running. The inspected model-server log ended in a successful `/shutdown` request.
 
 Verification for this checkpoint: Visual Studio 2022 Release build passed; Release CTest passed 5/5; `git diff --check` passed.
+### Plain-language capabilities and optional add-ons
+
+- Replaced the remaining jargon-heavy Capabilities controls with `Set up built-in capabilities`, `Area to improve`, `Improve selected area`, and `Undo last area update`. The live capability report now describes lightweight/full updates in plain language and maps the legacy internal URI to `EngCoder built-in` before display.
+- Added an advanced optional-add-on picker for fine-tuning, image generation, and audio generation. It shows projected download/install size, dependency status, a prepared-source folder, and installed size.
+- Add-on installation runs in its own cancellation-aware background operation through the existing transactional pack manager. Choosing or adding one neither starts a task or host, requests training, changes the selected AI, nor cancels active Chat work. Previous installed copies survive cancellation or validation failure.
+- Corrected the last stale `Connections` tab reference and updated README/BUILDING terminology, storage-card count, pack source contract, and locations.
+- Visually inspected the real Capabilities page at 1470x1020 (980x680 logical at 150% DPI) and 2100x1250. All five tabs, plain-language update controls, add-on selector/path/actions/status, and scrollable report fit without overlap. No EngCoder-owned process remained after shutdown.
+
+Verification for this checkpoint: Visual Studio 2022 Release build passed; Release CTest passed 5/5.
+### Native serving during background learning
+
+- A real minimized-GUI startup test exposed a lifecycle-order bug that source tests had missed: an active shadow-learning job returned before the promoted-model serving branch, so Chat could remain on connected AI while claiming the compact answer service was starting. The native pack was never published.
+- Moved the promoted-model branch ahead of shadow-learning backpressure. The last promoted model now starts through the native pack while a separate candidate learns, satisfying the serving/promotion safety boundary.
+- Rebuilt and launched the actual Release GUI against the live pre-reset state. EngCoder transactionally installed the compact native pack, published its readiness file, and answered `/health` as `engcoder-native-v1` for active generation `g000011`. Closing the GUI shut down the native host; no EngCoder-owned process remained.
+- Ran the full optional-pack `internal_model_smoke.py` and `internal_server_smoke.py` suites with the installed PyTorch runtime. Persistent checkpoints/resume, English filtering, repair lineage, promotion, active and isolated shadow servers, JSON/SSE, and shutdown all passed.
+
+This live start test intentionally added only the small compact-native pack to the legacy AppData tree; the authorized fresh reset remains deferred until the final clean build, CTest, smoke, and footprint pass.

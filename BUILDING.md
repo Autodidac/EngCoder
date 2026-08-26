@@ -57,7 +57,7 @@ Implementation units and native tests consume the interfaces with `import`. Wind
 
 ## Capability packs
 
-Heavy functionality is installed explicitly from **Connections**. Each pack is staged and verified before an atomic commit; cancellation or failure restores the prior pack. Installing a pack never starts training, selects a model, starts a host, or interrupts a task.
+Heavy functionality is separated into capability packs. EngCoder manages the small built-in answer engine automatically; built-in learning setup and repair live under **AI & Tools**; advanced fine-tuning, image, and audio add-ons are added explicitly under **Capabilities**. Each pack is staged and verified before an atomic commit; cancellation or failure restores the prior pack. Adding an optional pack never starts training, selects a model, starts a host, or interrupts a task.
 
 Supported pack classes are:
 
@@ -67,7 +67,7 @@ Supported pack classes are:
 - optional image engine
 - optional audio engine
 
-A pack source must contain its declared files and `pack.json`. Python is needed only inside packs that declare it. Internal training payloads include `model_worker.py`, `internal_model.py`, and `curriculum_guard.py`; these files are source assets for pack assembly and are not embedded in the base executable.
+A prepared pack source must contain every file declared for that pack; EngCoder writes the installed `pack.json` only after validation and an atomic commit. Python is needed only inside packs that declare it. Internal training payloads include `model_worker.py`, `internal_model.py`, and `curriculum_guard.py`; these files are source assets for pack assembly and are not embedded in the base executable.
 
 ## Validation
 

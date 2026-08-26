@@ -1328,6 +1328,29 @@ void test_windows_ui_source_contract() {
                 ui.find("storage_cleanup_operation_.running()") != std::string::npos &&
                 ui.find("MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2") != std::string::npos,
             "the Task surface must route every capability, expose all eight disk/RAM cards, describe native inference honestly, and provide protected cleanup preview and execution");
+    require(ui.find("L\"Set up built-in capabilities\"") != std::string::npos &&
+                ui.find("L\"Area to improve\"") != std::string::npos &&
+                ui.find("L\"Improve selected area\"") != std::string::npos &&
+                ui.find("L\"Undo last area update\"") != std::string::npos &&
+                ui.find("L\"Optional add-ons — adding files starts no task and changes no AI choice\"") != std::string::npos &&
+                ui.find("L\"Add or update safely\"") != std::string::npos &&
+                ui.find("L\"Bootstrap local core\"") == std::string::npos &&
+                ui.find("L\"Queue LoRA update\"") == std::string::npos &&
+                ui.find("L\"Rollback active skill\"") == std::string::npos,
+            "Capabilities controls must use plain language and expose optional add-ons without crowding primary Chat");
+    const auto optional_pack_begin = ui.find("void MainWindow::install_selected_capability_pack()");
+    const auto optional_pack_end = ui.find("void MainWindow::update_capability_pack_result()", optional_pack_begin);
+    require(optional_pack_begin != std::string::npos && optional_pack_end > optional_pack_begin,
+            "the optional add-on transaction must remain inspectable");
+    const auto optional_pack_body = ui.substr(optional_pack_begin, optional_pack_end - optional_pack_begin);
+    require(optional_pack_body.find("install_transactional") != std::string::npos &&
+                optional_pack_body.find("capability_pack_operation_.start") != std::string::npos &&
+                optional_pack_body.find("inference_source_") == std::string::npos &&
+                optional_pack_body.find("preferred_model_id_") == std::string::npos &&
+                optional_pack_body.find("current_task_") == std::string::npos &&
+                optional_pack_body.find("request_skill_update") == std::string::npos &&
+                optional_pack_body.find("start_backend") == std::string::npos,
+            "adding an optional pack must be background, transactional, and isolated from tasks, training, and AI selection");
     require(ui.find("recent_conversation_context") != std::string::npos &&
                 ui.find("conversation_history_") != std::string::npos &&
                 ui.find(".analysis_prompt = std::move(analysis_prompt)") != std::string::npos &&
@@ -1524,6 +1547,18 @@ void test_windows_ui_source_contract() {
                 ui.find("start_backend(true)") != std::string::npos &&
                 ui.find("page == page_ ? WS_VISIBLE : 0U") != std::string::npos,
             "setup, checking, learning, recovery, and startup must default to one idle-safe automatic coordinator without forcing tab navigation");
+    const auto lifecycle_begin = ui.find("void MainWindow::drive_automatic_lifecycle()");
+    const auto ready_serve_branch = ui.find(
+        "state.manifest_valid && state.bootstrap_complete && state.generation_ready",
+        lifecycle_begin);
+    const auto active_learning_block = ui.find(
+        "learning_pipeline.active_job.has_value()",
+        ready_serve_branch);
+    require(lifecycle_begin != std::string::npos &&
+                ready_serve_branch > lifecycle_begin &&
+                active_learning_block > ready_serve_branch &&
+                ui.find("background learning must never make the last promoted model unavailable") != std::string::npos,
+            "the last promoted native model must start serving before shadow-learning backpressure is considered");
     require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
                 ui.find("AI: best available") != std::string::npos &&
                 ui.find("EngCoder built-in: ") != std::string::npos &&

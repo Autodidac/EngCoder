@@ -64,7 +64,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
         },
         {
             .id = "transformers-peft-finetuning",
-            .name = "Transformers and PEFT Fine-tuning",
+            .name = "Advanced Fine-tuning (Transformers/PEFT)",
             .version = "1",
             .kind = CapabilityPackKind::transformers_peft_finetuning,
             .projected_download_bytes = 900U * mib,
@@ -74,7 +74,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
         },
         {
             .id = "image-engine",
-            .name = "Image Generation Engine",
+            .name = "Image Generation",
             .version = "1",
             .kind = CapabilityPackKind::image_engine,
             .projected_download_bytes = 3500U * mib,
@@ -83,7 +83,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
         },
         {
             .id = "audio-engine",
-            .name = "Audio Generation Engine",
+            .name = "Audio Generation",
             .version = "1",
             .kind = CapabilityPackKind::audio_engine,
             .projected_download_bytes = 1200U * mib,

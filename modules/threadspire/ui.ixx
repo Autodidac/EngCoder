@@ -142,6 +142,10 @@ private:
     void save_user_memory();
     void forget_user_memory();
     void update_skill_report();
+    void refresh_capability_pack_controls();
+    void browse_capability_pack_source();
+    void install_selected_capability_pack();
+    void update_capability_pack_result();
     void update_media_result();
     void update_storage_report(bool force = false);
     void update_storage_cleanup_result();
@@ -207,6 +211,7 @@ private:
     void bootstrap_core_skills();
     void queue_skill_update();
     void rollback_skill();
+    [[nodiscard]] std::optional<runtime::CapabilityPackDescriptor> selected_capability_pack() const;
     void browse_coding_repository();
     void run_coding_agent();
     void browse_repository();
@@ -276,6 +281,10 @@ private:
     memory::UserMemoryStore user_memory_store_;
     std::filesystem::path selected_python_;
     std::filesystem::path selected_pack_source_;
+    std::filesystem::path selected_capability_pack_source_;
+    std::vector<std::string> capability_pack_ids_;
+    std::string selected_capability_pack_id_;
+    std::string active_capability_pack_name_;
     models::ModelRegistry model_registry_;
     mutable std::mutex model_mutex_;
     std::shared_ptr<mcp::Client> mcp_client_;
@@ -299,6 +308,7 @@ private:
     util::AsyncOperation media_operation_;
     util::AsyncOperation storage_operation_;
     util::AsyncOperation storage_cleanup_operation_;
+    util::AsyncOperation capability_pack_operation_;
     std::unordered_map<int, HWND> controls_;
     std::vector<HWND> page_windows_;
     std::filesystem::path active_log_;
@@ -312,6 +322,7 @@ private:
     std::optional<backend::MediaResult> pending_media_result_;
     std::optional<runtime::StorageSnapshot> pending_storage_snapshot_;
     std::optional<runtime::StorageCleanupResult> pending_storage_cleanup_result_;
+    std::optional<runtime::CapabilityPackInstallResult> pending_capability_pack_result_;
     mutable std::mutex stream_mutex_;
     std::string pending_stream_text_;
     int stream_target_control_{0};
