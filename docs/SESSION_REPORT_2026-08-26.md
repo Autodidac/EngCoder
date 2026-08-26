@@ -129,3 +129,25 @@ Verification for this checkpoint: Visual Studio 2022 Release build passed; Relea
 - Ran the full optional-pack `internal_model_smoke.py` and `internal_server_smoke.py` suites with the installed PyTorch runtime. Persistent checkpoints/resume, English filtering, repair lineage, promotion, active and isolated shadow servers, JSON/SSE, and shutdown all passed.
 
 This live start test intentionally added only the small compact-native pack to the legacy AppData tree; the authorized fresh reset remains deferred until the final clean build, CTest, smoke, and footprint pass.
+
+### Final release verification and authorized fresh reset
+
+- Configured from scratch with the Visual Studio 2022 generator using CMake 4.4.2 (newer than the required 3.30) and MSVC 19.44.35227.0 with Windows SDK 10.0.26100.
+- Completed a clean Release build, installed it into a fresh staging directory, and verified the staged base footprint at 5,384,192 bytes (5.13 MiB), safely below the 100 MiB limit. Models and optional capability packs remain outside that base measurement.
+- Release CTest passed 5/5: module/core behavior, unified workbench routing and persistence, native inference contract, base footprint, and curriculum guard. Debug build and Debug CTest also passed 5/5.
+- The optional learning-pack smoke suites passed with the previously installed private runtime: checkpoint/resume, English filtering, repair lineage, atomic promotion, active and isolated shadow servers, JSON/SSE, and clean shutdown.
+- The first manual footprint invocation used the obsolete `cmake/check_footprint.cmake` path and failed before doing work. The corrected `tools/check_base_footprint.cmake` invocation passed at 5.13 MiB; no check was weakened or skipped.
+
+Only after those gates passed, the explicitly authorized reset was performed for exactly `C:\Users\iammi\AppData\Local\ThreadSpire`:
+
+- The reset tool resolved and validated that exact path, refused links escaping the root, checked ThreadSpire-owned processes, and wrote `C:\Users\iammi\AppData\Local\EngCoder-reset-20260826-043239-manifest.json` beside the directory before deletion.
+- It deleted 5,068,451,150 bytes across 18,058 files, including the legacy private Python/PyTorch runtime, models, training data, settings, queues, and failed generations. The manifest records `DeletionCompleted: true`, no followed linked entries, and no deletion error.
+- The original detached Downloads checkout remains untouched at `ad94ad4`. The obsolete `threadspire-native` worktree is absent; the persistent implementation worktree is the only project worktree besides the original Downloads checkout.
+
+### Clean first-run validation after reset
+
+- Launched the verified release from the clean staging install and closed it normally. It recreated only 3,311,642 bytes (3.16 MiB) in AppData: five curated/accepted-data files plus small configuration, chat, state, and control records.
+- No internal PyTorch training pack, compact-native model pack, promoted model, cache, candidate, output, or project process was silently recreated. This preserves the explicit on-demand capability-pack boundary; connected local AI remains usable while built-in learning software is absent.
+- Repeated autonomous visual QA at the minimum supported 980x680 logical size (1470x1020 at 150% DPI) and at 2100x1250. The dark Chat and Files & Activity pages remained readable, all five tabs stayed visible, controls did not overlap, and the clean state truthfully reported 0 B of models/packs, 3.16 MiB total AppData, and about 31 MiB of idle EngCoder RAM.
+- Confirmed separately that the launched process was the verified Release executable and its real title was `EngCoder — local evolving intelligence`; the screenshot capture compositor briefly exposed an unrelated host title in its border.
+- Re-ran Release CTest after the reset and visual pass: 5/5 passed. No EngCoder, ThreadSpire, Python, or native-host process remained afterward.
