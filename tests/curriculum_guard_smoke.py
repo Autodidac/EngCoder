@@ -36,9 +36,9 @@ def main() -> int:
     sys.path.insert(0, str(source_root / "resources"))
 
     temporary = Path(tempfile.mkdtemp(prefix="threadspire-curriculum-guard-"))
-    previous_root = os.environ.get("THREADSPIRE_DATA_ROOT")
+    previous_root = os.environ.get("ENGCODER_DATA_ROOT")
     try:
-        os.environ["THREADSPIRE_DATA_ROOT"] = str(temporary)
+        os.environ["ENGCODER_DATA_ROOT"] = str(temporary)
         data = temporary / "data"
         data.mkdir(parents=True)
         mixed = data / "mixed.jsonl"
@@ -116,9 +116,9 @@ def main() -> int:
         return 0
     finally:
         if previous_root is None:
-            os.environ.pop("THREADSPIRE_DATA_ROOT", None)
+            os.environ.pop("ENGCODER_DATA_ROOT", None)
         else:
-            os.environ["THREADSPIRE_DATA_ROOT"] = previous_root
+            os.environ["ENGCODER_DATA_ROOT"] = previous_root
         shutil.rmtree(temporary, ignore_errors=True)
 
 

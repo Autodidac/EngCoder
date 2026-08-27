@@ -11,7 +11,7 @@
 
 ## Baseline build and tests
 
-Official commands from `BUILDING.md`:
+Official commands from `building.md`:
 
 ```powershell
 cmake --fresh --preset windows-vs2022
@@ -171,7 +171,7 @@ Final post-v2 gate: a clean Visual Studio 2022 Release rebuild and Release CTest
 
 ### Unified composer capability routing
 
-- Audited the current surface against the unified-workbench brief and recorded the remaining work in `docs/UNIFIED_WORKBENCH_QUEUE.md`.
+- Audited the current surface against the unified-workbench brief and recorded the remaining work in `docs/unified-workbench-queue.md`.
 - Made the composer action automatic by default. Natural requests now classify and dispatch text/writing, supporting-language code help, repository build/test work, image generation, audio/music generation, and tools without requiring a top-level mode change.
 - Moved the plain-language `Action` override beside Send. Manual selection remains authoritative; choosing a specific action does not silently fall through to a different class of work.
 - Kept image, audio, text, coding, project, and tool requests inside the same conversation and existing unified provider contract. Repository requests ask for a folder only when one is actually needed.
@@ -235,7 +235,7 @@ The earlier timed improvement-session checkpoint above was superseded after the 
 
 - Removed the improvement-session state file, countdown, duration selector, Pause, End, and every worker/teacher dependency on that state.
 - Restored automatic idle learning as an independent continuous curator of verified practice examples. Disabling it stops only new automatic examples; it does not discard queued evidence or pause explicit weight work.
-- Added a separate `Compile data + train model` action. It coalesces every topic with pending verified, weight-eligible evidence into the existing persistent serialized shadow-training queue. Chat keeps priority and the last promoted model keeps serving.
+- Added a separate `Compile data and retrain model` action. It coalesces every topic with pending verified, weight-eligible evidence into the existing persistent serialized shadow-training queue. Chat keeps priority and the last promoted model keeps serving.
 - Kept controlled software self-improvement explicitly separate from both data curation and weight training. Learning controls never edit application source or promote repository changes.
 - Fixed a Debug resize crash caused by a dynamic `std::clamp` call whose computed maximum could fall below its minimum after Settings reduced the available client height. Child rectangles are now clamped to valid parent bounds, zero-sized layouts are skipped, and every dynamic storage split normalizes its bounds before clamping.
 
@@ -252,3 +252,23 @@ Verification for this correction: the Debug app target relinked successfully; De
 - Added a real temporary-Git regression proving successful branch-only promotion, unchanged source HEAD/files, dirty-source rejection, and stale-source rejection. Added source contracts forbidding hard-reset rollback and pre-approval trajectory learning.
 
 Final verification for this checkpoint: a fresh Visual Studio 2022 configure used bundled CMake 3.31.6, satisfying the CMake 3.30+ requirement. Debug and Release compiled with `/W4 /WX`; CTest passed 5/5 in both configurations, including the real Git isolation test, unified multimodal routing, persistent training recovery, atomic model promotion, native inference, curriculum guard, and base footprint. DPI-aware `SetWindowPos` + `PrintWindow` captures of Workspace and Memory & Learning at 1470×1020 and 2100×1250 stayed dark, aligned, and free of resize distortion or invalid-bounds termination. The final staged package contains two files totaling 5,579,776 bytes (5.32 MiB); the base excluding the optional compact-native helper is 5,293,568 bytes (5.05 MiB), below the 100 MiB limit. The current post-reset AppData is 3,616,528 bytes (3.45 MiB), and no EngCoder-owned process was left running.
+
+### Truthful foundation accounting, responsive resizing, and fresh-state handoff
+
+- Split the Training Library into bundled curriculum, held-out checks, automatic teacher attempts, and user approvals/rejections. The headline now reports each source separately and every record shows its origin, so 4,247 shipped curriculum records and 320 tests cannot be mistaken for user training or learned weights.
+- Labeled zero-weight serving as **Native foundation** / **Foundation ready** throughout Chat and Activity. The interface now explains that deterministic greetings and curated retrieval use 0 B neural weights, do not contact an AI server, and do not prove that a promoted neural model exists.
+- Renamed the explicit operation to **Compile data and retrain model** and replaced visible shadow-model jargon with a separate test-model explanation. Automatic idle example collection, explicit per-reply learning, neural retraining, and repository self-iteration remain separate mechanisms.
+- Reworked resize handling after automated visual QA exposed a mixed-parent deferred-window batch. Root/page geometry now commits first, leaf moves batch per parent with complete direct replay on failure, and resize paints are asynchronously coalesced without erase or synchronous update stalls.
+- Corrected native fixed-width tab DPI handling so Workspace, Settings, and Activity all remain visible at the 980x680 logical minimum on the 150% DPI display.
+- Renamed human-facing documentation and helper files to lowercase readable names, grouped historical repair/reset files under legacy folders, removed the duplicate source manifest, repaired every cross-link, and replaced the outdated training guide with the current EngCoder workflow.
+
+Final verification used CMake 4.4.2 with Visual Studio 2022 / MSVC 19.44. The clean Release build passed with /W4 /WX; CTest passed 5/5; the staged Release package passed the 100 MiB gate at 5,585,920 bytes (5.32 MiB). Real-window QA exercised repeated minimum/wide resizing, verified the UI remained responsive, and inspected a settled foreground 1470x1020 capture with all navigation, AI controls, status, transcript cards, and dark surfaces visible.
+
+After those gates passed, the exact resolved C:\Users\iammi\AppData\Local\ThreadSpire path was reset with no-follow traversal. A first attempt correctly reported a late QA-process recreation instead of claiming completion. After that process exited, the target was revalidated and the second manifest recorded 3,596,923 bytes and 12 files deleted with DeletionCompleted: true; the target remains absent so the next user launch is a genuine first start.
+Debug parity verification also passed: the Visual Studio 2022 Debug configuration built successfully and Debug CTest passed 5/5.
+
+### EngCoder storage identity
+
+After the legacy reset, the live application-data root was renamed to `C:\Users\iammi\AppData\Local\EngCoder`. The executable target, resource files, compact native host, capability-pack contract, exact-path reset guard, smoke tests, and current documentation now use EngCoder. The removed ThreadSpire root is not recreated. The `threadspire.*` C++23 module names and namespace remain only as the already-published internal module/ABI contract required by the native migration plan.
+
+The renamed target then received a fresh Visual Studio 2022 configure plus clean Release and Debug builds. Release CTest and Debug CTest each passed all five renamed `engcoder_*` tests. The exact resolved `C:\Users\iammi\AppData\Local\EngCoder` reset target was validated, the guarded reset wrote `C:\Users\iammi\AppData\Local\EngCoder-reset-20260826-230814-manifest.json`, and the manifest records `DeletionCompleted: true`. Both current and legacy data roots remain absent, no EngCoder-owned process remains, and the next launch is a genuine first start.

@@ -21,7 +21,7 @@ namespace {
 
 } // namespace
 
-ResetPathValidation validate_threadspire_reset_path(
+ResetPathValidation validate_engcoder_reset_path(
     const std::filesystem::path& candidate,
     const std::filesystem::path& local_app_data_root) noexcept {
     ResetPathValidation result;
@@ -31,12 +31,12 @@ ResetPathValidation validate_threadspire_reset_path(
             return result;
         }
         const auto app_data = std::filesystem::absolute(local_app_data_root).lexically_normal();
-        result.expected_target = (app_data / "ThreadSpire").lexically_normal();
+        result.expected_target = (app_data / "EngCoder").lexically_normal();
         result.resolved_target = std::filesystem::absolute(candidate).lexically_normal();
         if (normalized_key(result.resolved_target) != normalized_key(result.expected_target) ||
-            result.resolved_target.filename() != "ThreadSpire" ||
+            result.resolved_target.filename() != "EngCoder" ||
             normalized_key(result.resolved_target.parent_path()) != normalized_key(app_data)) {
-            result.error = "reset target must resolve to exactly LocalAppData/ThreadSpire";
+            result.error = "reset target must resolve to exactly LocalAppData/EngCoder";
             return result;
         }
         if (result.resolved_target == result.resolved_target.root_path() ||
@@ -56,7 +56,7 @@ ResetPathValidation validate_threadspire_reset_path(
         if (!error && std::filesystem::exists(target_status)) {
             if (std::filesystem::is_symlink(target_status) ||
                 !std::filesystem::is_directory(target_status)) {
-                result.error = "EngCoder legacy data root is not a real directory";
+                result.error = "EngCoder data root is not a real directory";
                 return result;
             }
             std::filesystem::recursive_directory_iterator iterator(
@@ -70,7 +70,7 @@ ResetPathValidation validate_threadspire_reset_path(
                     iterator.disable_recursion_pending();
                     const auto relative = iterator->path().lexically_relative(result.resolved_target);
                     if (relative.empty() || relative.is_absolute()) {
-                        result.error = "linked entry escaped the EngCoder legacy data root";
+                        result.error = "linked entry escaped the EngCoder data root";
                         return result;
                     }
                     result.linked_entries.push_back(relative);

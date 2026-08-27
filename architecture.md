@@ -4,7 +4,7 @@
 
 EngCoder's serving intelligence remains stable while learning occurs beside it.
 
-The internal model is not an adapter over an imported checkpoint. It is a custom decoder transformer whose active weights were initialized and trained locally. Imported local LLMs are optional tools for data generation, verification, routing experiments, and external LoRA workflows.
+EngCoder can serve from either its zero-weight native foundation or a promoted neural generation. The foundation is deterministic local retrieval: bundled curated responses plus approved user learning. It does not contact an AI server and it is not evidence that neural weights exist. A promoted neural generation is EngCoder's custom decoder transformer, initialized and trained locally rather than adapted from an imported checkpoint. Imported local LLMs remain optional tools for immediate answers, data generation, verification, routing experiments, and external LoRA workflows.
 
 ## 2. Native base and module topology
 
@@ -42,7 +42,7 @@ The active generation is never trained or stopped in place. Promotion starts a s
 
 ## 2.2 Data and English Gate v2
 
-Bootstrap targets are bounded at 24,000 steps for Micro, 36,000 for Standard, and 50,000 for Large. The gate reports useful cap diagnostics instead of continuing without a bound. Curated records retain provenance, normalized messages are deduplicated, anchors are deterministic and disjoint, and teacher output remains quarantined until an independent verifier admits it.
+Bootstrap targets are bounded at 24,000 steps for Small, 36,000 for Medium, and 50,000 for Large. The gate reports useful cap diagnostics instead of continuing without a bound. Curated records retain provenance, normalized messages are deduplicated, anchors are deterministic and disjoint, and teacher output remains quarantined until an independent verifier admits it.
 
 The learning admission boundary removes emoji and emoji formatting before deduplication and persistence. It also normalizes assistant self-branding to EngCoder while retaining the true provider/model ID only as audit metadata. The C++ service and both Python loaders enforce the same rule; chat transcripts are not modified.
 

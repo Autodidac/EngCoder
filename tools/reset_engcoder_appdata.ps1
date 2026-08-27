@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter()]
-    [string] $Target = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ThreadSpire'),
+    [string] $Target = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'EngCoder'),
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -38,15 +38,15 @@ function Assert-ExactResetTarget {
 
     $localRoot = Get-NormalizedPath -Path $LocalAppDataRoot
     $resolved = Get-NormalizedPath -Path $Candidate
-    $expected = Get-NormalizedPath -Path (Join-Path $localRoot 'ThreadSpire')
+    $expected = Get-NormalizedPath -Path (Join-Path $localRoot 'EngCoder')
     if (-not (Test-SamePath -Left $resolved -Right $expected)) {
         throw "Reset target must be exactly '$expected'; received '$resolved'."
     }
     if (-not (Test-SamePath -Left ([IO.Path]::GetDirectoryName($resolved)) -Right $localRoot)) {
         throw 'Reset target parent is not the exact LocalAppData directory.'
     }
-    if (-not [string]::Equals([IO.Path]::GetFileName($resolved), 'ThreadSpire', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Reset target leaf must be ThreadSpire.'
+    if (-not [string]::Equals([IO.Path]::GetFileName($resolved), 'EngCoder', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Reset target leaf must be EngCoder.'
     }
 
     $localItem = Get-Item -Force -LiteralPath $localRoot
@@ -56,7 +56,7 @@ function Assert-ExactResetTarget {
     if (Test-Path -LiteralPath $resolved) {
         $targetItem = Get-Item -Force -LiteralPath $resolved
         if (-not $targetItem.PSIsContainer -or (($targetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-            throw 'ThreadSpire reset target must be a real directory, not a link or reparse point.'
+            throw 'EngCoder reset target must be a real directory, not a link or reparse point.'
         }
     }
     return $resolved
@@ -101,7 +101,7 @@ function Get-TreeInventoryNoFollow {
     return [pscustomobject]@{ Bytes = $bytes; Files = $files; Links = @($links) }
 }
 
-function Stop-ThreadSpireOwnedProcesses {
+function Stop-EngCoderOwnedProcesses {
     param([Parameter(Mandatory)][string] $Root)
 
     $rootPrefix = (Get-NormalizedPath -Path $Root) + [IO.Path]::DirectorySeparatorChar
@@ -196,7 +196,7 @@ $resolvedTarget = Assert-ExactResetTarget -Candidate $Target -LocalAppDataRoot $
 $validation = [pscustomobject]@{
     Valid = $true
     Target = $resolvedTarget
-    ExpectedTarget = (Join-Path (Get-NormalizedPath -Path $localAppData) 'ThreadSpire')
+    ExpectedTarget = (Join-Path (Get-NormalizedPath -Path $localAppData) 'EngCoder')
     Exists = Test-Path -LiteralPath $resolvedTarget
 }
 if ($ValidateOnly) {
@@ -207,7 +207,7 @@ if (-not $PSCmdlet.ShouldProcess($resolvedTarget, 'Stop EngCoder processes, writ
     return
 }
 
-$stoppedProcesses = Stop-ThreadSpireOwnedProcesses -Root $resolvedTarget
+$stoppedProcesses = Stop-EngCoderOwnedProcesses -Root $resolvedTarget
 $resolvedTarget = Assert-ExactResetTarget -Candidate $resolvedTarget -LocalAppDataRoot $localAppData
 $inventory = Get-TreeInventoryNoFollow -Root $resolvedTarget
 $legacyVersion = $null
@@ -221,7 +221,7 @@ if (Test-Path -LiteralPath $legacyExecutable -PathType Leaf) {
 $stamp = [DateTimeOffset]::Now.ToString('yyyyMMdd-HHmmss')
 $manifestPath = Join-Path (Get-NormalizedPath -Path $localAppData) "EngCoder-reset-$stamp-manifest.json"
 $manifest = [ordered]@{
-    Schema = 'threadspire.safe-reset.v1'
+    Schema = 'engcoder.safe-reset.v1'
     Created = [DateTimeOffset]::Now.ToString('o')
     Target = $resolvedTarget
     ResolvedTarget = $resolvedTarget

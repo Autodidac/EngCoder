@@ -1,7 +1,7 @@
 # Upgrade from ThreadSpire 0.4.x
 
 1. Extract this package to a new `ThreadSpire` source directory.
-2. Run `BUILD_AND_RUN.cmd clean` once. The launcher closes an older running ThreadSpire instance, performs a strict Release build, runs the tests, and starts the replacement.
+2. Run `build-and-run.cmd clean` once. The launcher closes an older running ThreadSpire instance, performs a strict Release build, runs the tests, and starts the replacement.
 3. Do **not** delete `%LOCALAPPDATA%\ThreadSpire` and do not press the advanced setup buttons.
 
 The English-first migration quarantines legacy mixed/C++ internal generations and checkpoints once, preserving them under `%LOCALAPPDATA%\ThreadSpire\quarantine` for inspection without reusing them. It then creates a clean random generation and trains only the English foundation. Upgrading from 0.5.4 or 0.5.5 to 0.5.6 keeps the already-clean generation and resumes it from the exact current state. If a stale `training.paused`, `inference.*`, or dead `training.lock` marker blocked an older build, foreground bootstrap removes it automatically.

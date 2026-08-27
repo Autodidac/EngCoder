@@ -1475,9 +1475,9 @@ void test_windows_ui_source_contract() {
                 ui.find("backend::ExecutionProfile::coding_agent") != std::string::npos &&
                 ui.find("backend::ExecutionProfile::long_horizon") != std::string::npos &&
                 ui.find("backend::MediaTaskProvider") != std::string::npos &&
-                ui.find("CURRENT MODEL") != std::string::npos &&
-                ui.find("ALL MODELS") != std::string::npos &&
-                ui.find("ACCEPTED TRAINING DATA") != std::string::npos &&
+                ui.find("ACTIVE ANSWER ENGINE") != std::string::npos &&
+                ui.find("NEURAL MODEL HISTORY") != std::string::npos &&
+                ui.find("CURRICULUM + LEARNING DATA") != std::string::npos &&
                 ui.find("INSTALLED PACKS") != std::string::npos &&
                 ui.find("OUTPUTS / CACHE") != std::string::npos &&
                 ui.find("TOTAL USAGE") != std::string::npos &&
@@ -1485,7 +1485,7 @@ void test_windows_ui_source_contract() {
                 ui.find("LIVE RAM") != std::string::npos &&
                 ui.find("CreateToolhelp32Snapshot") != std::string::npos &&
                 ui.find("Other AI applications, including LM Studio, are not counted") != std::string::npos &&
-                ui.find("WHAT IS IN THE ACTIVE MODEL") != std::string::npos &&
+                ui.find("WHAT IS SERVING ANSWERS") != std::string::npos &&
                 ui.find("TRAINING ENGINE (SOFTWARE, NOT LEARNED KNOWLEDGE)") != std::string::npos &&
                 ui.find("Compiled CPU/GPU math libraries") != std::string::npos &&
                 ui.find("software separate from model weights") != std::string::npos &&
@@ -1554,7 +1554,7 @@ void test_windows_ui_source_contract() {
                 learning_service.find("contains_positive_prompt") != std::string::npos &&
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
             "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
-    require(ui.find("Compile data + train model") != std::string::npos &&
+    require(ui.find("Compile data and retrain model") != std::string::npos &&
                 ui.find("this is not a countdown") != std::string::npos &&
                 ui.find("Controlled software self-improvement: separate") != std::string::npos &&
                 ui.find("Create verified practice examples while the app is idle") != std::string::npos &&
@@ -1589,6 +1589,7 @@ void test_windows_ui_source_contract() {
                 ui.find("return \"ENGCODER — CONNECTED AI\";") != std::string::npos &&
                 ui.find("\"ENGCODER — CONNECTED AI — \" + model->display_name") != std::string::npos &&
                 ui.find("modernize_saved_transcript") != std::string::npos &&
+                ui.find("ENGCODER — NATIVE FOUNDATION") != std::string::npos &&
                 ui.find("Used: built-in AI — ") != std::string::npos,
             "Win32 labels and transcripts must preserve readable one-line labels and CRLF-separated turns");
     require(ui.find("MSFTEDIT_CLASS") != std::string::npos &&
@@ -1631,7 +1632,7 @@ void test_windows_ui_source_contract() {
                 ui.find("id::skills_overview_card") != std::string::npos &&
                 ui.find("compact_actions = conversation_width < scaled(550, dpi_)") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos &&
-                ui.find("tab_client.right - tab_client.left) - scaled(36, dpi_)") != std::string::npos &&
+                ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
                 ui.find("storage_available * 68 / 100") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&
@@ -1771,8 +1772,8 @@ void test_windows_ui_source_contract() {
                 ui.find("AI: best available") != std::string::npos &&
                 ui.find("EngCoder built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
-                ui.find("L\"READY — promoted model\"") != std::string::npos &&
-                ui.find("L\"READY — verified native foundation\"") != std::string::npos &&
+                ui.find("L\"TRAINED MODEL READY — promoted neural weights\"") != std::string::npos &&
+                ui.find("L\"FOUNDATION READY — bundled responses; 0 B neural weights\"") != std::string::npos &&
                 ui.find("const auto progress_active = progress.available") != std::string::npos &&
                 ui.find("progress_active && completed == 0U") != std::string::npos &&
                 ui.find("stream << L\"starting\"") != std::string::npos &&
@@ -1835,6 +1836,9 @@ void test_windows_ui_source_contract() {
                 ui.find("Held-out check") != std::string::npos &&
                 ui.find("Held out from training; used only to check the candidate") != std::string::npos &&
                 ui.find("No prompt or answer below is shortened") != std::string::npos &&
+                ui.find("Training Library • your learning:") != std::string::npos &&
+                ui.find("Record source: ") != std::string::npos &&
+                ui.find("Automatic teacher attempts") != std::string::npos &&
                 ui.find("id::learning_library_filter") != std::string::npos &&
                 ui.find("width >= scaled(760, dpi_)") != std::string::npos,
             "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");
@@ -1852,12 +1856,26 @@ void test_windows_ui_source_contract() {
                 ui.find("PBM_SETBKCOLOR") != std::string::npos &&
                 ui.find("draw_dark_control_item") != std::string::npos,
             "tabs, selectors, push buttons, storage cards, and progress surfaces must use one coherent dark palette rather than white native islands");
+    const auto page_host_layout = ui.find("for (std::size_t index = 0; index < page_windows_.size(); ++index)");
+    const auto leaf_layout_batch = ui.find("LayoutBatch layout_batch{192}");
     require(ui.find("SWP_NOCOPYBITS") != std::string::npos &&
+                ui.find("BeginDeferWindowPos") != std::string::npos &&
+                ui.find("DeferWindowPos") != std::string::npos &&
+                ui.find("moves_by_parent_") != std::string::npos &&
+                ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
+                ui.find("::MulDiv(tab_space / tab_count, 96") != std::string::npos &&
+                ui.find("parent's complete group directly") != std::string::npos &&
+                page_host_layout != std::string::npos &&
+                leaf_layout_batch != std::string::npos &&
+                leaf_layout_batch > page_host_layout &&
+                ui.find("case WM_SIZE:\n        layout_controls();") != std::string::npos &&
+                ui.find("RDW_INVALIDATE | RDW_ALLCHILDREN") != std::string::npos &&
+                ui.find("erase and immediate-update flags") != std::string::npos &&
                 ui.find("case WM_EXITSIZEMOVE") != std::string::npos &&
                 ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos,
-            "live resizing must repaint the complete dark child tree without stretching stale control pixels");
+            "live resizing must commit parent geometry first, batch leaf movement per parent, and repaint the complete dark tree once");
 
-    const auto launcher = read_text_file(source / "BUILD_AND_RUN.cmd");
+    const auto launcher = read_text_file(source / "build-and-run.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&
                 launcher.find("ctest") == std::string::npos &&
                 launcher.find(R"(start "EngCoder")") != std::string::npos &&
@@ -2054,7 +2072,7 @@ void test_worker_and_resource_contract() {
                 internal_model.find("_human_approval_counts") != std::string::npos,
             "nonsense and terse internal drafts must be withheld from the user, trigger route fallback, and only an independently probed generation may become ready");
 
-    const auto resources = read_text_file(source / "resources/ThreadSpire.rc.in");
+    const auto resources = read_text_file(source / "resources/engcoder.rc.in");
     const auto cmake = read_text_file(source / "CMakeLists.txt");
     const auto resource_ids = read_text_file(source / "resources/resource.h");
     const auto app_paths_header = read_text_file(

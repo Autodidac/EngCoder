@@ -16,7 +16,7 @@ struct ResetPathValidation final {
     std::string error;
 };
 
-[[nodiscard]] ResetPathValidation validate_threadspire_reset_path(
+[[nodiscard]] ResetPathValidation validate_engcoder_reset_path(
     const std::filesystem::path& candidate,
     const std::filesystem::path& local_app_data_root) noexcept;
 

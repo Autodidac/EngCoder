@@ -432,9 +432,9 @@ StorageSnapshot inspect_storage_with_growth(
         const auto outputs_files = category_files(snapshot, "outputs") +
             category_files(snapshot, "cache");
         snapshot.cards = {
-            {.key = "current-model", .label = "Current model", .bytes = snapshot.active_model_bytes, .files = snapshot.active_model_files},
-            {.key = "all-models", .label = "All models", .bytes = models_bytes, .files = category_files(snapshot, "models")},
-            {.key = "accepted-training-data", .label = "Accepted training data", .bytes = snapshot.training_data_bytes, .files = snapshot.training_data_files},
+            {.key = "current-model", .label = "Active neural model", .bytes = snapshot.active_model_bytes, .files = snapshot.active_model_files},
+            {.key = "all-models", .label = "Neural model history", .bytes = models_bytes, .files = category_files(snapshot, "models")},
+            {.key = "accepted-training-data", .label = "Curriculum and learning data", .bytes = snapshot.training_data_bytes, .files = snapshot.training_data_files},
             {.key = "installed-packs", .label = "Installed packs", .bytes = packs_bytes, .files = category_files(snapshot, "packs")},
             {.key = "outputs-cache", .label = "Outputs and cache", .bytes = outputs_bytes, .files = outputs_files},
             {.key = "total-usage", .label = "Total usage", .bytes = snapshot.total_bytes, .growth_bytes = snapshot.growth_bytes, .files = snapshot.files},

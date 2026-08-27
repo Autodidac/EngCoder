@@ -27,7 +27,7 @@ namespace {
 }
 
 [[nodiscard]] std::filesystem::path native_host_path(const app::AppPaths& paths) {
-    return paths.packs / "compact-native-inference" / "bin" / "threadspire-native-host.exe";
+    return paths.packs / "compact-native-inference" / "bin" / "engcoder-native-host.exe";
 }
 
 [[nodiscard]] std::filesystem::path native_host_source(const app::AppPaths& paths) {
@@ -68,7 +68,7 @@ namespace {
     const auto installed = native_host_path(paths);
     const auto source = native_host_source(paths);
     const auto source_ready = regular_file_no_follow(
-        source / "bin" / "threadspire-native-host.exe");
+        source / "bin" / "engcoder-native-host.exe");
     const auto catalog = CapabilityPackManager::catalog();
     const auto descriptor = std::ranges::find(
         catalog,
@@ -108,7 +108,7 @@ bool native_inference_files_present(const app::AppPaths& paths) noexcept {
 
 bool native_inference_source_available(const app::AppPaths& paths) noexcept {
     return native_inference_files_present(paths) ||
-        regular_file_no_follow(native_host_source(paths) / "bin" / "threadspire-native-host.exe");
+        regular_file_no_follow(native_host_source(paths) / "bin" / "engcoder-native-host.exe");
 }
 BackendServer::BackendServer(app::AppPaths paths)
     : paths_(std::move(paths)),

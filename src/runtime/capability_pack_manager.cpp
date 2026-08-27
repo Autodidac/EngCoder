@@ -245,7 +245,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
             .kind = CapabilityPackKind::compact_native_inference,
             .projected_download_bytes = 8U * mib,
             .projected_install_bytes = 16U * mib,
-            .required_files = {"bin/threadspire-native-host.exe"},
+            .required_files = {"bin/engcoder-native-host.exe"},
             .purpose = "Serves built-in text and code answers without Python or PyTorch.",
             .origin = "Verified EngCoder release payload.",
             .license = "MIT for EngCoder; bundled Microsoft runtime files keep their redistributable terms.",

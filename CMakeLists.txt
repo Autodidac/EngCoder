@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(
-    ThreadSpire
+    EngCoder
     VERSION 0.6.0
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
-option(THREADSPIRE_AI_BUILD_TESTS "Build ThreadSpire core tests" ON)
+option(THREADSPIRE_AI_BUILD_TESTS "Build EngCoder core tests" ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -132,21 +132,21 @@ if(WIN32)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/bootstrap_anchors.jsonl" THREADSPIRE_BOOTSTRAP_ANCHORS)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/custom_training_template.jsonl" THREADSPIRE_CUSTOM_TRAINING_TEMPLATE)
     configure_file(
-        resources/ThreadSpire.rc.in
-        "${CMAKE_CURRENT_BINARY_DIR}/generated/ThreadSpire.rc"
+        resources/engcoder.rc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/engcoder.rc"
         @ONLY)
 
     add_executable(
-        ThreadSpire
+        EngCoder
         WIN32
         src/app/winmain.cpp
         src/app/app_paths.cpp
         src/app/main_window.cpp
-        "${CMAKE_CURRENT_SOURCE_DIR}/resources/ThreadSpire.manifest"
-        "${CMAKE_CURRENT_BINARY_DIR}/generated/ThreadSpire.rc")
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/engcoder.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/engcoder.rc")
 
     target_sources(
-        ThreadSpire
+        EngCoder
         PRIVATE
             FILE_SET threadspire_ui_module
             TYPE CXX_MODULES
@@ -154,21 +154,21 @@ if(WIN32)
             FILES modules/threadspire/ui.ixx)
 
     target_include_directories(
-        ThreadSpire
+        EngCoder
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
             "${CMAKE_CURRENT_SOURCE_DIR}/resources"
             "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(
-        ThreadSpire
+        EngCoder
         PRIVATE
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
     target_compile_options(
-        ThreadSpire
+        EngCoder
         PRIVATE
             /W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus /Zc:preprocessor /Zc:inline /MP)
     target_link_libraries(
-        ThreadSpire
+        EngCoder
         PRIVATE
             threadspire::ai::core
             Comctl32
@@ -180,8 +180,8 @@ if(WIN32)
             Uuid
             UxTheme
             Winhttp)
-    set_target_properties(ThreadSpire PROPERTIES OUTPUT_NAME "EngCoder")
-    install(TARGETS ThreadSpire RUNTIME DESTINATION .)
+    set_target_properties(EngCoder PROPERTIES OUTPUT_NAME "EngCoder")
+    install(TARGETS EngCoder RUNTIME DESTINATION .)
 
     add_executable(EngCoderNativeHost src/native_host/main.cpp)
     target_link_libraries(
@@ -200,17 +200,17 @@ if(WIN32)
             /W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus /Zc:preprocessor /Zc:inline /MP)
     set_target_properties(
         EngCoderNativeHost
-        PROPERTIES OUTPUT_NAME "threadspire-native-host")
-    add_dependencies(ThreadSpire EngCoderNativeHost)
+        PROPERTIES OUTPUT_NAME "engcoder-native-host")
+    add_dependencies(EngCoder EngCoderNativeHost)
     add_custom_command(
-        TARGET ThreadSpire POST_BUILD
+        TARGET EngCoder POST_BUILD
         COMMAND
             "${CMAKE_COMMAND}" -E make_directory
-            "$<TARGET_FILE_DIR:ThreadSpire>/optional-packs/compact-native-inference/bin"
+            "$<TARGET_FILE_DIR:EngCoder>/optional-packs/compact-native-inference/bin"
         COMMAND
             "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_FILE:EngCoderNativeHost>"
-            "$<TARGET_FILE_DIR:ThreadSpire>/optional-packs/compact-native-inference/bin/threadspire-native-host.exe"
+            "$<TARGET_FILE_DIR:EngCoder>/optional-packs/compact-native-inference/bin/engcoder-native-host.exe"
         VERBATIM)
     install(
         TARGETS EngCoderNativeHost
@@ -220,56 +220,56 @@ endif()
 if(THREADSPIRE_AI_BUILD_TESTS)
     include(CTest)
     enable_testing()
-    add_executable(threadspire_ai_tests tests/core_tests.cpp)
-    target_link_libraries(threadspire_ai_tests PRIVATE threadspire::ai::core)
+    add_executable(engcoder_core_tests tests/core_tests.cpp)
+    target_link_libraries(engcoder_core_tests PRIVATE threadspire::ai::core)
     target_compile_definitions(
-        threadspire_ai_tests
+        engcoder_core_tests
         PRIVATE
             THREADSPIRE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(MSVC)
         target_compile_options(
-            threadspire_ai_tests
+            engcoder_core_tests
             PRIVATE /W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus /Zc:preprocessor)
     else()
         target_compile_options(
-            threadspire_ai_tests
+            engcoder_core_tests
             PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
     endif()
-    add_test(NAME threadspire_ai_tests COMMAND threadspire_ai_tests)
+    add_test(NAME engcoder_core_tests COMMAND engcoder_core_tests)
 
-    add_executable(threadspire_workbench_tests tests/workbench_tests.cpp)
-    target_link_libraries(threadspire_workbench_tests PRIVATE threadspire::ai::core)
+    add_executable(engcoder_workbench_tests tests/workbench_tests.cpp)
+    target_link_libraries(engcoder_workbench_tests PRIVATE threadspire::ai::core)
     target_compile_definitions(
-        threadspire_workbench_tests
+        engcoder_workbench_tests
         PRIVATE
             THREADSPIRE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(MSVC)
         target_compile_options(
-            threadspire_workbench_tests
+            engcoder_workbench_tests
             PRIVATE /W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus /Zc:preprocessor)
     else()
         target_compile_options(
-            threadspire_workbench_tests
+            engcoder_workbench_tests
             PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
     endif()
-    add_test(NAME threadspire_workbench_tests COMMAND threadspire_workbench_tests)
+    add_test(NAME engcoder_workbench_tests COMMAND engcoder_workbench_tests)
 
     if(WIN32)
         add_test(
-            NAME threadspire_native_inference_contract
+            NAME engcoder_native_inference_contract
             COMMAND "$<TARGET_FILE:EngCoderNativeHost>" --engine-contract-self-test)
         add_test(
-            NAME threadspire_base_footprint
+            NAME engcoder_base_footprint
             COMMAND
                 "${CMAKE_COMMAND}"
-                "-DTHREADSPIRE_BASE_EXECUTABLE=$<TARGET_FILE:ThreadSpire>"
+                "-DTHREADSPIRE_BASE_EXECUTABLE=$<TARGET_FILE:EngCoder>"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_base_footprint.cmake")
     endif()
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(
-            NAME threadspire_curriculum_guard_smoke
+            NAME engcoder_curriculum_guard_smoke
             COMMAND
                 "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/curriculum_guard_smoke.py"

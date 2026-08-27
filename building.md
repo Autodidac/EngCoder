@@ -33,7 +33,7 @@ cmake --install out\build\windows-vs2022 --config Release --prefix out\install\w
 cmake -DTHREADSPIRE_BASE_ROOT=out\install\windows-vs2022 -P tools\check_base_footprint.cmake
 ```
 
-The `%LOCALAPPDATA%\ThreadSpire` directory name is retained only for existing-data compatibility.
+EngCoder stores live application data under `%LOCALAPPDATA%\EngCoder`. The obsolete `%LOCALAPPDATA%\ThreadSpire` directory is not recreated.
 
 Models and optional packs are excluded from the base budget. The installed base currently contains only `EngCoder.exe`; it does not materialize Python scripts or install a private runtime.
 
@@ -83,18 +83,18 @@ python tests\internal_model_smoke.py --source-root .
 
 The internal-model smoke test requires a compatible PyTorch environment and uses temporary state; it does not modify the selected application model.
 
-## Guarded legacy-state reset
+## Guarded application-state reset
 
 A release reset is permitted only after the replacement release build, CTest, smoke tests, and footprint check all pass. Validate first:
 
 ```powershell
-.\tools\reset_threadspire_appdata.ps1 `
+.\tools\reset_engcoder_appdata.ps1 `
   -Target "$env:LOCALAPPDATA\EngCoder" `
   -ReplacementVersion 0.6.0 `
   -ValidateOnly
 ```
 
-The destructive invocation accepts only the exact resolved `%LOCALAPPDATA%\ThreadSpire` directory, rejects reparse roots and escaped links, stops only EngCoder-owned processes, writes a dated size/version/deletion manifest beside the directory, and performs a no-follow deletion. It must never be pointed at a source checkout.
+The destructive invocation accepts only the exact resolved `%LOCALAPPDATA%\EngCoder` directory, rejects reparse roots and escaped links, stops only EngCoder-owned processes, writes a dated size/version/deletion manifest beside the directory, and performs a no-follow deletion. It must never be pointed at a source checkout.
 
 ## Linux core validation
 

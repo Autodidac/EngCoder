@@ -31,7 +31,7 @@ The active model, checkpoints, curriculum state, and quarantine are stored under
 %LOCALAPPDATA%\ThreadSpire
 ```
 
-Run `SHOW_MODEL_STORAGE.cmd` to open the directory and print the lineage report.
+Run `show-model-storage.cmd` to open the directory and print the lineage report.
 
 ## Corrective design
 

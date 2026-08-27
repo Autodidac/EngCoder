@@ -53,7 +53,7 @@ They cover English, exact instruction following, multilingual-to-English reading
 
 After bootstrap, the automatic continual-learning target starts on `english-foundation`. The initial bootstrap corpus still contains both language and coding material, but C++ specialization is no longer silently selected as the first continual target. The Learning page keeps target selection, automatic example generation, evidence source, and candidate queueing independent.
 
-Built-in seed records are filtered to the selected target. Cursors are stored per target and dataset, so switching targets does not consume another skill's sequence. Trusted custom JSONL can be imported without a teacher, but it still goes through shadow training, evaluation, promotion, and rollback. See `CUSTOM_TRAINING.md`.
+Built-in seed records are filtered to the selected target. Cursors are stored per target and dataset, so switching targets does not consume another skill's sequence. Trusted custom JSONL can be imported without a teacher, but it still goes through shadow training, evaluation, promotion, and rollback. See [EngCoder Learning and Retraining](../custom-training.md).
 
 ## Full-weight internal candidate
 
@@ -84,7 +84,7 @@ A foreground inference marker causes a checkpoint and exit code `75`. The C++ co
 
 Automatic idle learning is a persistent lightweight pipeline, not a timed session. When enabled, it curates approved evidence, asks available local teacher models for bounded variations, independently verifies the results, deduplicates them, and admits only eligible records. It always yields to Chat and other foreground work. Disabling it stops new automatic teacher passes; it does not erase accepted evidence or corrupt queued checkpoints.
 
-`Compile data + train model` is a separate explicit action. It gathers every topic with pending verified weight-eligible evidence, serializes one coalesced shadow update per topic, and lets the existing persistent worker train, evaluate, and promote or reject each candidate. The last promoted model continues serving throughout. This action is not automatic software self-improvement and does not edit application source.
+`Compile data and retrain model` is a separate explicit action. It gathers every topic with pending verified weight-eligible evidence, serializes one coalesced shadow update per topic, and lets the existing persistent worker train, evaluate, and promote or reject each candidate. The last promoted model continues serving throughout. This action is not automatic software self-improvement and does not edit application source.
 
 The 12-hour requirement is a compute ceiling for a complete bounded compile, training, evaluation, and promotion cycle on the target RTX 5080 / Ryzen 9 9900X / 64 GiB system. It is enforced through bounded model size, curated replay, capped steps, checkpointing, and serialized candidates—not through a wall-clock countdown in the interface. The cycle ends when the finite work completes. Foreground inference still requests a safe checkpoint and recovery code `75`; the same candidate resumes afterward.
 

@@ -596,6 +596,8 @@ void style_chat_transcript(
         if (line == L"YOU" || line.starts_with(L"YOU —")) {
             color = transcript_user_color;
         } else if (line.starts_with(L"ENGCODER — BUILT-IN") ||
+                   line.starts_with(L"ENGCODER — NATIVE FOUNDATION") ||
+                   line.starts_with(L"ENGCODER — TRAINED MODEL") ||
                    line.starts_with(L"ENGCODER — VERIFIED") ||
                    line.starts_with(L"ENGCODER — MEMORY") ||
                    line.starts_with(L"ENGCODER — PERMANENT MEMORY") ||
@@ -742,7 +744,7 @@ void redraw_control(const HWND handle) noexcept {
         handle,
         nullptr,
         nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW));
+        RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW));
 }
 
 void fill_solid_rect(
@@ -1347,6 +1349,91 @@ void write_text(const std::filesystem::path& path, const std::string_view text) 
     return text;
 }
 
+struct PendingLayoutMove final {
+    HWND control{nullptr};
+    int x{0};
+    int y{0};
+    int width{1};
+    int height{1};
+    UINT flags{0};
+};
+
+class LayoutBatch;
+LayoutBatch* active_layout_batch = nullptr;
+
+class LayoutBatch final {
+public:
+    explicit LayoutBatch(const int expected_windows) noexcept
+        : expected_per_parent_(std::max(4, expected_windows / 8)) {
+        if (active_layout_batch == nullptr) {
+            active_layout_batch = this;
+            owns_batch_ = true;
+        }
+    }
+
+    ~LayoutBatch() {
+        if (!owns_batch_) {
+            return;
+        }
+        active_layout_batch = nullptr;
+        for (auto& [parent, moves] : moves_by_parent_) {
+            static_cast<void>(parent);
+            auto batch = ::BeginDeferWindowPos(
+                std::max(expected_per_parent_, static_cast<int>(moves.size())));
+            for (const auto& move : moves) {
+                if (batch == nullptr) {
+                    break;
+                }
+                batch = ::DeferWindowPos(
+                    batch,
+                    move.control,
+                    nullptr,
+                    move.x,
+                    move.y,
+                    move.width,
+                    move.height,
+                    move.flags);
+            }
+            if (batch != nullptr) {
+                static_cast<void>(::EndDeferWindowPos(batch));
+                continue;
+            }
+            // A failed deferred group is abandoned by Win32. Replay that
+            // parent's complete group directly so no controls retain stale bounds.
+            for (const auto& move : moves) {
+                static_cast<void>(::SetWindowPos(
+                    move.control,
+                    nullptr,
+                    move.x,
+                    move.y,
+                    move.width,
+                    move.height,
+                    move.flags));
+            }
+        }
+    }
+
+    void queue(
+        const HWND control,
+        const HWND parent,
+        const int x,
+        const int y,
+        const int width,
+        const int height,
+        const UINT flags) {
+        moves_by_parent_[parent].push_back(
+            PendingLayoutMove{control, x, y, width, height, flags});
+    }
+
+    LayoutBatch(const LayoutBatch&) = delete;
+    LayoutBatch& operator=(const LayoutBatch&) = delete;
+
+private:
+    std::map<HWND, std::vector<PendingLayoutMove>> moves_by_parent_;
+    int expected_per_parent_{4};
+    bool owns_batch_{false};
+};
+
 void move_control(
     const HWND control,
     const int x,
@@ -1379,6 +1466,19 @@ void move_control(
         safe_height = std::clamp(safe_height, 1, parent_height - safe_y);
     }
 
+    constexpr auto flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS;
+    if (active_layout_batch != nullptr) {
+        active_layout_batch->queue(
+            control,
+            parent,
+            safe_x,
+            safe_y,
+            safe_width,
+            safe_height,
+            flags);
+        return;
+    }
+
     static_cast<void>(::SetWindowPos(
         control,
         nullptr,
@@ -1386,7 +1486,7 @@ void move_control(
         safe_y,
         safe_width,
         safe_height,
-        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS));
+        flags));
 }
 
 void draw_workspace_card(
@@ -1656,6 +1756,14 @@ LRESULT CALLBACK page_host_subclass(
 }
 
 struct TrainingLibraryRecord final {
+    enum class Origin {
+        bundled_curriculum,
+        user_review,
+        automatic_teacher,
+        held_out_check,
+    };
+
+    Origin origin{Origin::bundled_curriculum};
     std::string category;
     std::string identifier;
     std::string topic;
@@ -1889,6 +1997,13 @@ void append_training_library_file(
         }
 
         TrainingLibraryRecord record;
+        record.origin = held_out
+            ? TrainingLibraryRecord::Origin::held_out_check
+            : (teacher_attempt
+                ? TrainingLibraryRecord::Origin::automatic_teacher
+                : (category == "Review record"
+                    ? TrainingLibraryRecord::Origin::user_review
+                    : TrainingLibraryRecord::Origin::bundled_curriculum));
         record.category = review_record
             ? (hard_correction ? "Approved correction" :
                 (review_rejected ? "Rejected result" : "Approved result"))
@@ -2034,17 +2149,33 @@ void append_training_library_file(
     }
 
     std::map<std::string, std::size_t, std::less<>> duplicate_counts;
-    std::size_t training_count = 0;
-    std::size_t approved_count = 0;
-    std::size_t rejected_count = 0;
+    std::size_t bundled_count = 0;
+    std::size_t user_approved_count = 0;
+    std::size_t user_rejected_count = 0;
+    std::size_t automatic_approved_count = 0;
+    std::size_t automatic_rejected_count = 0;
     std::size_t held_out_count = 0;
     for (const auto& record : records) {
         ++duplicate_counts[record.fingerprint];
-        training_count += record.category == "Training example" ? 1U : 0U;
-        approved_count += (record.category == "Approved result" ||
-                           record.category == "Approved correction") ? 1U : 0U;
-        rejected_count += record.category == "Rejected result" ? 1U : 0U;
-        held_out_count += record.category == "Held-out check" ? 1U : 0U;
+        const auto approved = record.category == "Approved result" ||
+            record.category == "Approved correction";
+        const auto rejected = record.category == "Rejected result";
+        switch (record.origin) {
+        case TrainingLibraryRecord::Origin::bundled_curriculum:
+            ++bundled_count;
+            break;
+        case TrainingLibraryRecord::Origin::user_review:
+            user_approved_count += approved ? 1U : 0U;
+            user_rejected_count += rejected ? 1U : 0U;
+            break;
+        case TrainingLibraryRecord::Origin::automatic_teacher:
+            automatic_approved_count += approved ? 1U : 0U;
+            automatic_rejected_count += rejected ? 1U : 0U;
+            break;
+        case TrainingLibraryRecord::Origin::held_out_check:
+            ++held_out_count;
+            break;
+        }
     }
 
     const auto query = lower_ascii(std::string(search_text));
@@ -2052,11 +2183,19 @@ void append_training_library_file(
     visible.reserve(records.size());
     for (const auto& record : records) {
         const auto source_matches = source_filter <= 0 ||
-            (source_filter == 1 && record.category == "Training example") ||
-            (source_filter == 2 && (record.category == "Approved result" ||
-                                    record.category == "Approved correction")) ||
-            (source_filter == 3 && record.category == "Rejected result") ||
-            (source_filter == 4 && record.category == "Held-out check");
+            (source_filter == 1 &&
+             record.origin == TrainingLibraryRecord::Origin::bundled_curriculum) ||
+            (source_filter == 2 &&
+             record.origin == TrainingLibraryRecord::Origin::user_review &&
+             (record.category == "Approved result" ||
+              record.category == "Approved correction")) ||
+            (source_filter == 3 &&
+             record.origin == TrainingLibraryRecord::Origin::user_review &&
+             record.category == "Rejected result") ||
+            (source_filter == 4 &&
+             record.origin == TrainingLibraryRecord::Origin::automatic_teacher) ||
+            (source_filter == 5 &&
+             record.origin == TrainingLibraryRecord::Origin::held_out_check);
         if (!source_matches) {
             continue;
         }
@@ -2073,20 +2212,29 @@ void append_training_library_file(
     }
 
     std::wostringstream summary_stream;
-    summary_stream << L"Training Library • " << records.size() << L" total";
+    summary_stream << L"Training Library • your learning: "
+                   << user_approved_count << L" approved, "
+                   << user_rejected_count << L" rejected, "
+                   << superseded_count << L" superseded"
+                   << L" • automatic attempts: "
+                   << (automatic_approved_count + automatic_rejected_count)
+                   << L" (" << automatic_approved_count << L" accepted, "
+                   << automatic_rejected_count << L" rejected)"
+                   << L" • bundled curriculum: " << bundled_count
+                   << L" • held-out checks: " << held_out_count
+                   << L" • " << records.size() << L" audit records";
     if (visible.size() != records.size()) {
         summary_stream << L" • " << visible.size() << L" shown";
     }
-    summary_stream << L" • " << approved_count << L" approved • "
-                   << rejected_count << L" rejected • "
-                   << superseded_count << L" superseded";
     if (unreadable_records > 0U) {
         summary_stream << L" • " << unreadable_records << L" unreadable";
     }
     summary = summary_stream.str();
 
     std::wostringstream output;
-    output << L"WHAT ENGCODER LEARNS FROM\r\n"
+    output << L"WHAT ENGCODER CAN TRAIN ON\r\n"
+           << L"Bundled curriculum is shipped with the app; it is not your learning history. "
+           << L"Your reviews and automatic teacher attempts are counted separately above. "
            << L"Approved results say whether they are memory-only or eligible for a future weight update. "
            << L"Rejected results are negative evidence and never positive training. Held-out checks never "
            << L"train the model; they only decide whether a candidate is safe to use. Superseded results are "
@@ -2099,7 +2247,17 @@ void append_training_library_file(
     for (const auto* record : visible) {
         ++index;
         const auto duplicates = duplicate_counts[record->fingerprint];
+        const auto origin = [&]() -> std::wstring_view {
+            switch (record->origin) {
+            case TrainingLibraryRecord::Origin::bundled_curriculum: return L"Bundled curriculum";
+            case TrainingLibraryRecord::Origin::user_review: return L"Your review";
+            case TrainingLibraryRecord::Origin::automatic_teacher: return L"Automatic teacher attempt";
+            case TrainingLibraryRecord::Origin::held_out_check: return L"Held-out check";
+            }
+            return L"Unknown";
+        }();
         output << L"[" << index << L"] " << widen(record->category) << L"\r\n"
+               << L"Record source: " << origin << L"\r\n"
                << L"Name: " << widen(record->identifier) << L"\r\n"
                << L"Topic: " << widen(record->topic) << L"\r\n";
         if (!record->tags.empty()) {
@@ -2434,18 +2592,20 @@ LRESULT MainWindow::handle_message(
     }
     case WM_SIZE:
         layout_controls();
+        // Invalidate asynchronously so repeated drag events coalesce. Avoid
+        // erase and immediate-update flags that caused white flashes and stalls.
         static_cast<void>(::RedrawWindow(
             window_,
             nullptr,
             nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN));
+            RDW_INVALIDATE | RDW_ALLCHILDREN));
         return 0;
     case WM_EXITSIZEMOVE:
         static_cast<void>(::RedrawWindow(
             window_,
             nullptr,
             nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+            RDW_INVALIDATE | RDW_FRAME |
                 RDW_ALLCHILDREN | RDW_UPDATENOW));
         return 0;
     case WM_DPICHANGED: {
@@ -2515,7 +2675,7 @@ LRESULT MainWindow::handle_message(
                     window_,
                     nullptr,
                     nullptr,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+                    RDW_INVALIDATE | RDW_FRAME |
                         RDW_ALLCHILDREN | RDW_UPDATENOW));
             }
         }
@@ -3244,14 +3404,14 @@ void MainWindow::create_learning_page() {
         L"STATIC", L"Automatic idle learning is checking for verified work",
         WS_CHILD | WS_VISIBLE, 0, id::learning_session_status, parent);
     create_control(
-        L"STATIC", L"Full weight training",
+        L"STATIC", L"Neural weight retraining",
         WS_CHILD | WS_VISIBLE, 0, id::learning_session_label, parent);
     create_control(
         L"STATIC",
-        L"Compile all pending verified data, train a shadow model, test it, then promote only if it is better.",
+        L"Compile every pending verified example, retrain a separate test copy, check it, and replace the working model only if it is better.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::learning_session_budget, parent);
     create_control(
-        L"BUTTON", L"Compile data + train model",
+        L"BUTTON", L"Compile data and retrain model",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::learning_session_start, parent);
     create_control(
@@ -3330,7 +3490,7 @@ void MainWindow::create_learning_page() {
         L"STATIC",
         L"HOW LEARNING WORKS\r\n"
         L"1. Automatic idle learning gathers only approved or independently verified examples.\r\n"
-        L"2. Compile data + train model turns pending evidence into a separate shadow weight candidate.\r\n"
+        L"2. Compile data and retrain model turns approved learning into a separate test model.\r\n"
         L"3. Chat always keeps using the last working AI while the candidate trains and is checked.\r\n"
         L"4. The bounded model and dataset are designed for a complete cycle within 12 hours; there is no countdown session.\r\n"
         L"5. Controlled software self-improvement is separate and requires its own evidence and approval.",
@@ -3388,9 +3548,10 @@ void MainWindow::create_learning_page() {
         0, id::learning_library_source, parent);
     for (const auto* option : {
              L"Everything",
-             L"Training examples",
-             L"Approved results",
-             L"Rejected results",
+             L"Bundled curriculum",
+             L"Your approved learning",
+             L"Your rejected evidence",
+             L"Automatic teacher attempts",
              L"Held-out checks"}) {
         static_cast<void>(::SendMessageW(
             library_source,
@@ -3561,11 +3722,11 @@ void MainWindow::create_logs_page() {
         L"STATIC", L"Live application-data footprint (refreshes every 5 seconds)",
         WS_CHILD | WS_VISIBLE, 0, id::logs_storage_header, parent);
     create_control(
-        L"STATIC", L"TRAINING DATA\r\nMeasuring…",
+        L"STATIC", L"CURRICULUM + LEARNING DATA\r\nMeasuring…",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, id::chat_training_data_size, parent);
     create_control(
-        L"STATIC", L"ACTIVE MODEL\r\nMeasuring…",
+        L"STATIC", L"ACTIVE ANSWER ENGINE\r\nMeasuring…",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, id::chat_active_model_size, parent);
     create_control(
@@ -3585,7 +3746,7 @@ void MainWindow::create_logs_page() {
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, id::chat_free_disk_size, parent);
     create_control(
-        L"STATIC", L"ALL MODELS\r\nMeasuring…",
+        L"STATIC", L"NEURAL MODEL HISTORY\r\nMeasuring…",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
         0, id::chat_all_models_size, parent);
     create_control(
@@ -3643,12 +3804,12 @@ void MainWindow::layout_controls() {
         client_height - status_height - margin * 2);
     const auto tab_count = TabCtrl_GetItemCount(tabs);
     if (tab_count > 0) {
-        RECT tab_client{};
-        static_cast<void>(::GetClientRect(tabs, &tab_client));
         const auto tab_space = std::max(
             1,
-            static_cast<int>(tab_client.right - tab_client.left) - scaled(36, dpi_));
-        const auto tab_width = std::max(1, tab_space / tab_count);
+            client_width - margin * 2 - scaled(36, dpi_));
+        const auto tab_width = std::max(
+            1,
+            ::MulDiv(tab_space / tab_count, 96, static_cast<int>(dpi_)));
         static_cast<void>(::SendMessageW(
             tabs,
             TCM_SETITEMSIZE,
@@ -3699,7 +3860,10 @@ void MainWindow::layout_controls() {
         if (settings_tab_count > 0) {
             const auto settings_tab_width = std::max(
                 1,
-                (width - scaled(36, dpi_)) / settings_tab_count);
+                ::MulDiv(
+                    (width - scaled(36, dpi_)) / settings_tab_count,
+                    96,
+                    static_cast<int>(dpi_)));
             static_cast<void>(::SendMessageW(
                 settings_tabs,
                 TCM_SETITEMSIZE,
@@ -3770,6 +3934,10 @@ void MainWindow::layout_controls() {
     const auto gap = scaled(10, dpi_);
     const auto row = scaled(40, dpi_);
     const auto button = scaled(144, dpi_);
+
+    // The root shell and every page host now have their final bounds. Queue
+    // leaf controls by parent so Win32 never abandons a mixed-parent batch.
+    LayoutBatch layout_batch{192};
 
     // Primary workspace: connection, model, conversation, coding mode, and learning state
     // are intentionally visible without requiring another tab.
@@ -4926,7 +5094,7 @@ void MainWindow::select_page_tab(const Page page) {
                     tabs,
                     nullptr,
                     nullptr,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW));
+                    RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW));
                 return;
             }
         }
@@ -5138,7 +5306,7 @@ void MainWindow::handle_command(const int identifier) {
         }
         learning_service_->request_skill_update(skill);
         set_status(widen(
-            "Queued shadow weight candidate for " + skill + " from " +
+            "Queued a separate test-model retraining job for " + skill + " from " +
             std::to_string(evidence) + " verified example(s)"));
         update_learning_report();
         break;
@@ -6150,8 +6318,8 @@ std::wstring MainWindow::runtime_summary(
     std::wstring built_in_status;
     if (custom_host_running) {
         built_in_status = internal_state.bootstrap_complete
-            ? L"READY — promoted model"
-            : L"READY — verified native foundation";
+            ? L"TRAINED MODEL READY — promoted neural weights"
+            : L"FOUNDATION READY — bundled responses; 0 B neural weights";
     } else if (setup_running) {
         const auto completed = progress.total_steps > 0U
             ? progress.total_steps
@@ -6258,7 +6426,10 @@ std::string MainWindow::actual_runtime_heading(const std::string_view model_id) 
         return requested_runtime_heading();
     }
     if (models::is_internal_model(*model)) {
-        return "ENGCODER — BUILT-IN — " + model->display_name;
+        const auto state = runtime::inspect_internal_model_state(paths_);
+        return state.bootstrap_complete
+            ? "ENGCODER — TRAINED MODEL — " + model->display_name
+            : "ENGCODER — NATIVE FOUNDATION — " + model->display_name;
     }
     return "ENGCODER — CONNECTED AI — " + model->display_name;
 }
@@ -7872,7 +8043,7 @@ void MainWindow::accept_last_response() {
     if (corrections > 0U) {
         set_status(L"Saved once • wrong built-in reply queued as one bounded correction");
     } else if (preview.eligible_for_weight_training) {
-        set_status(L"Saved once to approved memory and the shadow weight-training pool; duplicates cannot add weight");
+        set_status(L"Saved once to approved learning and ready for future retraining; duplicates add nothing");
     } else {
         set_status(L"Saved once to approved memory; weight learning waits for four diverse approved lessons");
     }
@@ -8202,7 +8373,7 @@ void MainWindow::compile_and_train_model() {
         std::wostringstream status;
         status << L"Queued " << queued << L" verified topic"
                << (queued == 1U ? L"" : L"s")
-               << L" for serialized shadow-model training; Chat keeps priority";
+               << L" for safe one-at-a-time model retraining; Chat keeps priority and the working AI remains online";
         set_status(status.str());
     }
     update_learning_report();
@@ -9332,7 +9503,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     set_control_text(
         id::models_internal_status,
         backend_server_.running() && !state.bootstrap_complete
-            ? L"Built-in EngCoder is ready now with its verified native foundation. Promoted neural weights will replace it only after every quality check passes."
+            ? L"Built-in EngCoder is serving its bundled native foundation with 0 B of neural weights. This is deterministic local retrieval, not model training and not an AI-server call. A trained model replaces it only after every quality check passes."
             : internal_model_status_text(paths_));
 
     double percent = 0.0;
@@ -9416,7 +9587,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     } else if (state.bootstrap_complete && backend_server_.running()) {
         detail << L"Built-in AI is ready and running. EngCoder will keep it available automatically.";
     } else if (backend_server_.running()) {
-        detail << L"Built-in EngCoder is ready with 4,247 verified local examples. Approved replies are learned immediately; optional neural weight training never blocks Chat.";
+        detail << L"Built-in EngCoder is serving the bundled 4,247-example native curriculum with 0 B of neural weights. Your approved learning, automatic teacher attempts, and trained weights are counted separately.";
     } else if (automatic_learning_limit_reached(paths_, state)) {
         detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
     } else if (!setup_files_ready && setup_source_ready) {
@@ -9964,7 +10135,7 @@ void MainWindow::update_skill_report() {
     if (backend_server_.running()) {
         built_in << (internal.bootstrap_complete
             ? L"Ready — promoted model is serving; verified memory stays available"
-            : L"Ready — native foundation with 4,247 verified English and C++ examples");
+            : L"Foundation ready — bundled deterministic English and C++ answers; 0 B neural weights");
     } else if (backend_operation_.running()) {
         built_in << L"Starting automatically — Chat can use connected AI meanwhile";
     } else if (runtime::native_inference_source_available(paths_)) {
@@ -10004,7 +10175,7 @@ void MainWindow::update_skill_report() {
     std::wostringstream report;
     report << L"WHAT ENGCODER CAN DO NOW\r\n\r\n"
            << L"Conversation and English\r\n"
-           << L"  Verified built-in foundation: "
+           << L"  Bundled native foundation: "
            << (backend_server_.running() ? L"ready" : L"starting") << L"\r\n"
            << L"  Exact approved replies: available immediately and never silently duplicated\r\n\r\n"
            << L"Coding and files\r\n"
@@ -10583,7 +10754,7 @@ void MainWindow::update_learning_report() {
         learning_summary << L"Automatic idle learning is on and waiting for idle resources";
     }
     set_control_text(id::learning_session_status, learning_summary.str());
-    set_control_text(id::learning_session_start, L"Compile data + train model");
+    set_control_text(id::learning_session_start, L"Compile data and retrain model");
 
     runtime::CapabilityPackManager pack_manager(paths_.packs);
     const auto internal_training_installed = pack_manager.installed("internal-pytorch-training");
@@ -10595,7 +10766,7 @@ void MainWindow::update_learning_report() {
     report << L"VERIFIED LEARNING PIPELINE\r\n"
            << L"  Status: " << learning_summary.str() << L"\r\n"
            << L"  Automatic idle learning: " << (automatic_teacher ? L"enabled" : L"disabled") << L"\r\n"
-           << L"  Full weight training: explicit Compile data + train model action\r\n"
+           << L"  Neural weight retraining: explicit Compile data and retrain model action\r\n"
            << L"  Compute ceiling: the bounded model, curated replay set, checkpoints, evaluation, and promotion are designed to complete within 12 hours on the target hardware; this is not a countdown\r\n"
            << L"  Controlled software self-improvement: separate, evidence-gated, and never started by learning controls\r\n"
            << L"  Retained verified examples for the selected topic: " << selected_evidence
@@ -10603,7 +10774,7 @@ void MainWindow::update_learning_report() {
            << L"WHAT CAN CHANGE\r\n"
            << L"  Verified memory: active immediately; no weight update required\r\n"
            << L"  Built-in weight trainer: "
-           << (internal_training_installed ? L"installed; trains isolated shadow weights from verified batches" :
+           << (internal_training_installed ? L"installed; retrains an isolated test model from approved batches" :
                L"not installed; verified memory and automatic curation still work") << L"\r\n"
            << L"  Transformers/PEFT fine-tuning: "
            << (peft_installed ? L"installed but used only for an explicitly compatible external base" :
@@ -10634,7 +10805,7 @@ void MainWindow::update_learning_report() {
            << std::max<std::size_t>(1U, settings.policy.lora_microbatch)
            << L" independently accepted training episode"
            << (settings.policy.lora_microbatch == 1U ? L"" : L"s")
-           << L"\r\nExplicit full training may compile any smaller pending verified batch.\r\n\r\n";
+           << L"\r\nPressing the retrain button can compile any smaller pending verified batch.\r\n\r\n";
 
     if (automatic_teacher && teacher_available && !piggyback_operation_.running()) {
         if (now >= next_piggyback_at_) {
@@ -10850,7 +11021,6 @@ void MainWindow::update_storage_report(const bool force) {
             return value.str();
         };
 
-        const auto* current_model = find_card("current-model");
         const auto* all_models = find_card("all-models");
         const auto* accepted_data = find_card("accepted-training-data");
         const auto* installed_packs = find_card("installed-packs");
@@ -10886,22 +11056,27 @@ void MainWindow::update_storage_report(const bool force) {
         }
 
         std::wostringstream model_card;
-        model_card << L"CURRENT MODEL";
-        if (!snapshot->active_generation.empty()) {
-            model_card << L" — " << widen(snapshot->active_generation);
-        }
-        const auto displayed_weights = snapshot->active_weights_bytes > 0U
-            ? snapshot->active_weights_bytes
-            : (current_model == nullptr ? snapshot->active_model_bytes : current_model->bytes);
-        model_card << L"\r\n" << format_bytes_compact(displayed_weights) << L" weights";
-        if (snapshot->active_parameter_count > 0U) {
-            model_card << L" • " << compact_count(snapshot->active_parameter_count)
-                       << L" parameters";
+        const auto promoted_neural_model = !snapshot->active_generation.empty() &&
+            snapshot->active_weights_bytes > 0U;
+        if (promoted_neural_model) {
+            model_card << L"ACTIVE TRAINED MODEL — " << widen(snapshot->active_generation)
+                       << L"\r\n" << format_bytes_compact(snapshot->active_weights_bytes)
+                       << L" neural weights";
+            if (snapshot->active_parameter_count > 0U) {
+                model_card << L" • " << compact_count(snapshot->active_parameter_count)
+                           << L" parameters";
+            }
+        } else if (backend_server_.running()) {
+            model_card << L"ACTIVE ANSWER ENGINE — NATIVE FOUNDATION\r\n"
+                       << L"0 B neural weights • bundled deterministic answers";
+        } else {
+            model_card << L"BUILT-IN ANSWER ENGINE — STOPPED\r\n"
+                       << L"0 B neural weights • no built-in reply is running";
         }
         set_control_text(id::chat_active_model_size, model_card.str());
 
         std::wostringstream all_models_card;
-        all_models_card << L"ALL MODEL HISTORY\r\n"
+        all_models_card << L"NEURAL MODEL HISTORY\r\n"
                         << format_bytes_compact(models_bytes)
                         << L" • " << snapshot->generation_weight_copies
                         << L" full weight cop"
@@ -10911,7 +11086,7 @@ void MainWindow::update_storage_report(const bool force) {
         set_control_text(id::chat_all_models_size, all_models_card.str());
 
         std::wostringstream training_card;
-        training_card << L"ACCEPTED TRAINING DATA\r\n"
+        training_card << L"CURRICULUM + LEARNING DATA\r\n"
                       << format_bytes_compact(
                           accepted_data == nullptr
                               ? snapshot->training_data_bytes
@@ -10954,9 +11129,18 @@ void MainWindow::update_storage_report(const bool force) {
         }
 
         std::wostringstream report;
-        report << L"WHAT IS IN THE ACTIVE MODEL\r\n";
-        if (snapshot->active_generation.empty()) {
-            report << L"  No promoted built-in model is active.\r\n";
+        report << L"WHAT IS SERVING ANSWERS\r\n";
+        if (snapshot->active_generation.empty() || snapshot->active_weights_bytes == 0U) {
+            report << L"  Native foundation: "
+                   << (backend_server_.running() ? L"active" : L"stopped") << L"\r\n"
+                   << L"  Neural weights: 0 B; no promoted trained model exists\r\n";
+            if (backend_server_.running()) {
+                report << L"  Answer source: bundled deterministic greeting/routing rules, curated curriculum retrieval, and exact user-approved memory\r\n"
+                       << L"  AI server contacted: no\r\n"
+                       << L"  This can answer known prompts such as hi or hello, but it is not claiming free-form neural intelligence.\r\n";
+            } else {
+                report << L"  Built-in answers: unavailable until the native foundation starts\r\n";
+            }
         } else {
             report << L"  Version: " << widen(snapshot->active_generation) << L"\r\n"
                    << L"  Learned numeric weights: " << format_bytes(snapshot->active_weights_bytes)

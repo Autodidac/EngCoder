@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Separated bundled curriculum, held-out checks, automatic teacher attempts, and user approvals/rejections in the Training Library so totals describe their actual purpose.
+- Identified the zero-weight native foundation explicitly in Chat, Activity, and documentation; a 0 B neural-model history no longer implies hidden model training or server use.
+- Reworded the explicit control as **Compile data and retrain model** and replaced internal training jargon with plain descriptions of the isolated test model.
+- Batched Win32 child-window moves during resizing and removed full-tree redraws from every size event to prevent sluggish resizing, white flashes, and distorted intermediate frames.
+- Renamed human-facing documentation and helper files to readable lowercase names, moved legacy material into dedicated folders, and refreshed cross-links and learning documentation.
+- Changed the live product identity from the obsolete ThreadSpire application-data and build paths to EngCoder, including the executable target, compact native host, reset guard, capability-pack file contract, and current documentation. Legacy ThreadSpire names remain only where required by the published C++ module/ABI contract or historical migration records.
+- Revalidated a true fresh start after the rename: clean Release and Debug builds passed all five `engcoder_*` tests, the exact EngCoder data root passed the no-follow reset guard, and both current and legacy application-data roots remain absent for first launch.
+
 ## 0.6.0
 
 - Converted the native library, Win32 application, and tests to eleven named C++23 modules built with CMake `FILE_SET CXX_MODULES`.
@@ -10,7 +20,7 @@
 - Enforced a 100 MiB installed-base ceiling excluding models and packs, and added guarded exact-path AppData reset validation with a pre-deletion manifest.
 - Added module, unified routing, multimodal, rollback, selection isolation, resumable training, failed-host promotion, storage, footprint, and reset regression coverage.
 - Replaced the permissive three-canary English gate with six deterministic fluency, exact-instruction, grammar, definition, and conversational-context checks; old v1-ready manifests now resume bootstrap instead of serving corrupt prose.
-- Extended the Micro/Standard/Large English bootstrap targets to 24k/36k/50k cumulative steps and added curriculum weighting plus grounded conversational examples without materially increasing disk usage.
+- Extended the Small/Medium/Large English bootstrap targets to 24k/36k/50k cumulative steps and added curriculum weighting plus grounded conversational examples without materially increasing disk usage.
 - Reworked the Task-page storage surface into six live cards for current model, accepted data, installed packs, outputs/cache, total growth, and free disk.
 - Strengthened local teacher and independent-verifier prompts to require complete grammatical English and reject invented fragments.
 
@@ -87,7 +97,7 @@
 ## 0.5.0
 
 - Replaced the manual install/verify/create/bootstrap/start sequence with an automatic persistent lifecycle controller enabled by default.
-- Added `BUILD_AND_RUN.cmd` so the replacement can be built, validated, and launched in one command without locating a preset-specific executable.
+- Added `build-and-run.cmd` so the replacement can be built, validated, and launched in one command without locating a preset-specific executable.
 - Added automatic private-runtime repair, dependency verification, model initialization, exact bootstrap resume, promotion, host startup, unexpected-host restart, and indefinite bounded-backoff recovery.
 - Fixed foreground bootstrap waiting forever behind stale `training.paused`, `inference.*`, or dead `training.lock` state. Foreground bootstrap now clears cooperative stale blockers and has a five-minute training-slot timeout with the blocking reason.
 - Added atomic `internal-model-progress.json` heartbeats containing phase, step, overall target, verified tokens, loss, elapsed time, measured ETA, process ID, resumability, and exact errors.

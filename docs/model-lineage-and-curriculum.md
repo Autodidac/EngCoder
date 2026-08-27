@@ -1,11 +1,11 @@
 # English Foundation lineage policy
 
-Internal learned state is stored under `%LOCALAPPDATA%\ThreadSpire`, not in the source folder.
-Run `SHOW_MODEL_STORAGE.cmd` to print the active report and open that directory.
+Internal learned state is stored under `%LOCALAPPDATA%\EngCoder`, not in the source folder.
+Run `show-model-storage.cmd` to print the active report and open that directory.
 
 On the first 0.5.4-or-later build or run, prior internal weights, checkpoints, optimizer/resume state,
 pending candidates, and old curriculum progress are moved to
-`%LOCALAPPDATA%\ThreadSpire\quarantine\legacy-mixed-<timestamp>`.
+`%LOCALAPPDATA%\EngCoder\quarantine\legacy-mixed-<timestamp>`.
 They are preserved for inspection but are **not reused**. The next startup creates fresh random
 weights and bootstrap-trains only `english-foundation`.
 

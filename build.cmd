@@ -1,5 +1,5 @@
 @echo off
-call "%~dp0tools\APPLY_ENGLISH_FOUNDATION_MIGRATION.cmd"
+call "%~dp0tools\apply-english-foundation-migration.cmd"
 if errorlevel 1 exit /b %errorlevel%
 setlocal EnableExtensions
 pushd "%~dp0"

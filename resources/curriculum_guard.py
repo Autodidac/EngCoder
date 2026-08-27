@@ -57,13 +57,13 @@ _installed = False
 
 
 def root() -> Path:
-    explicit = os.environ.get("THREADSPIRE_DATA_ROOT")
+    explicit = os.environ.get("ENGCODER_DATA_ROOT") or os.environ.get("THREADSPIRE_DATA_ROOT")
     if explicit:
         return Path(explicit).expanduser().resolve()
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        return (Path(local) / "ThreadSpire").resolve()
-    return (Path.home() / ".local" / "share" / "ThreadSpire").resolve()
+        return (Path(local) / "EngCoder").resolve()
+    return (Path.home() / ".local" / "share" / "EngCoder").resolve()
 
 
 def read_json(path: Path) -> Any:
@@ -380,8 +380,8 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
                 purpose="anchors",
                 required=False,
             )
-        os.environ["THREADSPIRE_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
-        os.environ["THREADSPIRE_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
+        os.environ["ENGCODER_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
+        os.environ["ENGCODER_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
 
     effective = _serializable_namespace(namespace)
     write_status(data_root, requested, effective, ready)

@@ -679,17 +679,17 @@ void test_storage_cards_growth_projections_quotas_and_cleanup() {
 }
 
 void test_safe_reset_path_validation() {
-    using threadspire::ai::platform::validate_threadspire_reset_path;
+    using threadspire::ai::platform::validate_engcoder_reset_path;
     const auto root = temporary_root();
     const auto local = root / "AppData" / "Local";
-    const auto exact = local / "ThreadSpire";
+    const auto exact = local / "EngCoder";
     std::filesystem::create_directories(exact);
-    const auto valid = validate_threadspire_reset_path(exact, local);
+    const auto valid = validate_engcoder_reset_path(exact, local);
     require(valid.valid && valid.resolved_target == valid.expected_target,
-            "reset validation must accept only the exact LocalAppData/ThreadSpire directory");
-    require(!validate_threadspire_reset_path(local, local).valid &&
-                !validate_threadspire_reset_path(local / "ThreadSpire-old", local).valid &&
-                !validate_threadspire_reset_path(root, local).valid,
+            "reset validation must accept only the exact LocalAppData/EngCoder directory");
+    require(!validate_engcoder_reset_path(local, local).valid &&
+                !validate_engcoder_reset_path(local / "EngCoder-old", local).valid &&
+                !validate_engcoder_reset_path(root, local).valid,
             "reset validation must reject broad, sibling, and unrelated paths");
     std::filesystem::remove_all(root);
 }
@@ -820,7 +820,7 @@ void test_named_module_and_native_base_contract() {
         require(contents.find("export module " + name) != std::string::npos,
                 "missing named module: " + name);
     }
-    const auto resources = read_text(source / "resources" / "ThreadSpire.rc.in");
+    const auto resources = read_text(source / "resources" / "engcoder.rc.in");
     const auto resource_ids = read_text(source / "resources" / "resource.h");
     const auto app_paths = read_text(source / "src" / "app" / "app_paths.cpp");
     const auto backend = read_text(source / "src" / "runtime" / "backend_manager.cpp");
@@ -837,7 +837,7 @@ void test_named_module_and_native_base_contract() {
             "the base executable must not install Python, PyTorch, or private runtimes automatically");
     require(cmake.find("add_executable(EngCoderNativeHost") != std::string::npos &&
                 cmake.find("optional-packs/compact-native-inference/bin") != std::string::npos &&
-                cmake.find("threadspire_native_inference_contract") != std::string::npos &&
+                cmake.find("engcoder_native_inference_contract") != std::string::npos &&
                 backend_server.find(".executable = host") != std::string::npos &&
                 backend_server.find(".executable = python") == std::string::npos &&
                 backend_server.find("install_transactional") != std::string::npos &&
@@ -862,7 +862,7 @@ void test_named_module_and_native_base_contract() {
                 std::filesystem::file_size(source / "resources" / "engcoder-eagle.png") > 0U,
             "EngCoder must ship its American-eagle icon as a real native application resource");
     const auto reset_script = read_text(
-        source / "tools" / "reset_threadspire_appdata.ps1");
+        source / "tools" / "reset_engcoder_appdata.ps1");
     require(reset_script.find("Assert-ExactResetTarget") != std::string::npos &&
                 reset_script.find("[IO.FileAttributes]::ReparsePoint") != std::string::npos &&
                 reset_script.find("Get-TreeInventoryNoFollow") != std::string::npos &&

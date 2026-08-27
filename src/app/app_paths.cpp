@@ -86,7 +86,7 @@ void write_resource(
 AppPaths make_app_paths() {
     AppPaths paths;
     paths.executable = executable_path();
-    paths.root = local_app_data() / "ThreadSpire";
+    paths.root = local_app_data() / "EngCoder";
     paths.packs = paths.root / "packs";
     paths.outputs = paths.root / "outputs";
     paths.cache = paths.root / "cache";

@@ -13,7 +13,7 @@ for %%P in (EngCoder.exe ThreadSpire.exe) do (
     )
 )
 
-call "%~dp0tools\APPLY_ENGLISH_FOUNDATION_MIGRATION.cmd"
+call "%~dp0tools\apply-english-foundation-migration.cmd"
 if errorlevel 1 goto :failed
 
 call build.cmd %BUILD_ARGUMENT%
