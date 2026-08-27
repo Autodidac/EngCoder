@@ -228,3 +228,15 @@ Verification for this checkpoint: Visual Studio 2022 Release build passed with `
 - Added a transactional synthetic-pack regression covering exact file counts, weight-byte accounting, dependency version/origin/license attribution, RECORD ownership, byte-confirmed duplication, and the zero-content uninstalled case.
 - Repeated autonomous DPI-aware visual QA at 150% through minimum → wide → minimum resizing. Both tab rows remained dark and labeled, rounded cards retained shape, add-on controls remained visible, and no stale/stretch pixels or overlap appeared.
 Verification for this checkpoint: clean Visual Studio 2022 Release and Debug builds passed; Release and Debug CTest each passed 5/5; the 100 MiB base-footprint test passed in both configurations; minimum → wide → minimum visual QA passed; and no optional dependency or model pack was installed.
+
+### Correction: independent idle learning and explicit weight training
+
+The earlier timed improvement-session checkpoint above was superseded after the product requirement was clarified. Twelve hours is a hardware compute ceiling for a complete small-model training cycle, not a countdown, a session lifetime, or a gate on learning.
+
+- Removed the improvement-session state file, countdown, duration selector, Pause, End, and every worker/teacher dependency on that state.
+- Restored automatic idle learning as an independent continuous curator of verified practice examples. Disabling it stops only new automatic examples; it does not discard queued evidence or pause explicit weight work.
+- Added a separate `Compile data + train model` action. It coalesces every topic with pending verified, weight-eligible evidence into the existing persistent serialized shadow-training queue. Chat keeps priority and the last promoted model keeps serving.
+- Kept controlled software self-improvement explicitly separate from both data curation and weight training. Learning controls never edit application source or promote repository changes.
+- Fixed a Debug resize crash caused by a dynamic `std::clamp` call whose computed maximum could fall below its minimum after Settings reduced the available client height. Child rectangles are now clamped to valid parent bounds, zero-sized layouts are skipped, and every dynamic storage split normalizes its bounds before clamping.
+
+Verification for this correction: the Debug app target relinked successfully; Debug CTest passed 5/5; and the DPI-aware real executable survived Settings > Memory & Learning at 1470×1020 and 2100×1250 with the explicit training button visible, no timer controls, no white surface, and no invalid-bounds termination.

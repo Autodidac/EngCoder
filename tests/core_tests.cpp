@@ -457,84 +457,68 @@ void test_interactive_priority_uses_nested_leases() {
     std::filesystem::remove_all(root);
 }
 
-void test_improvement_session_is_bounded_persistent_and_recoverable() {
+void test_explicit_weight_training_queues_all_pending_verified_topics() {
     const auto root = temporary_root();
-    {
-        threadspire::ai::learning::LearningSettings settings;
-        settings.python_executable = root / "missing-python.exe";
-        settings.worker_script = root / "missing-worker.py";
-        settings.state_root = root;
-        settings.base_model = "threadspire://coder";
-        settings.maximum_improvement_session = std::chrono::hours(12);
-        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
-        const auto automatic = service.improvement_session_snapshot();
-        require(automatic.phase == threadspire::ai::learning::ImprovementSessionPhase::running &&
-                    automatic.budget == std::chrono::hours(12) && automatic.remaining.count() > 0,
-                "a fresh install must start one automatic improvement session with a hard 12-hour cap");
-        service.pause(true);
-        const auto paused = service.improvement_session_snapshot();
-        require(paused.phase == threadspire::ai::learning::ImprovementSessionPhase::paused &&
-                    paused.remaining.count() > 0 && service.paused(),
-                "pausing must retain the unused session time and stop new background work");
-        service.request_stop();
-    }
-    require(std::filesystem::is_regular_file(root / "state" / "improvement-session.ini"),
-            "bounded improvement-session state must be persisted atomically");
-    {
-        threadspire::ai::learning::LearningSettings settings;
-        settings.python_executable = root / "missing-python.exe";
-        settings.worker_script = root / "missing-worker.py";
-        settings.state_root = root;
-        settings.base_model = "threadspire://coder";
-        settings.maximum_improvement_session = std::chrono::hours(12);
-        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
-        require(service.improvement_session_snapshot().phase ==
-                    threadspire::ai::learning::ImprovementSessionPhase::paused,
-                "a paused improvement session must remain paused after restart");
-        require(service.resume_improvement_session() && !service.paused(),
-                "a paused session must resume with its saved time rather than resetting its budget");
-        service.start_improvement_session(std::chrono::hours(24));
-        require(service.improvement_session_snapshot().budget == std::chrono::hours(12),
-                "even a larger request must be clamped to the hard 12-hour limit");
-        service.cancel_improvement_session();
-        require(service.improvement_session_snapshot().phase ==
-                    threadspire::ai::learning::ImprovementSessionPhase::ended && service.paused(),
-                "ending a session must stop new work while retaining durable evidence and checkpoints");
-        service.request_stop();
-    }
-    {
-        threadspire::ai::learning::LearningSettings settings;
-        settings.python_executable = root / "missing-python.exe";
-        settings.worker_script = root / "missing-worker.py";
-        settings.state_root = root;
-        settings.base_model = "threadspire://coder";
-        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
-        require(service.improvement_session_snapshot().phase ==
-                    threadspire::ai::learning::ImprovementSessionPhase::ended,
-                "an ended session must not silently restart after process restart");
-        service.request_stop();
-    }
-    {
-        std::ofstream corrupt(root / "state" / "improvement-session.ini", std::ios::trunc);
-        corrupt << "phase=running\nbudget_ms=not-a-number\n";
-    }
-    {
-        threadspire::ai::learning::LearningSettings settings;
-        settings.python_executable = root / "missing-python.exe";
-        settings.worker_script = root / "missing-worker.py";
-        settings.state_root = root;
-        settings.base_model = "threadspire://coder";
-        settings.maximum_improvement_session = std::chrono::hours(12);
-        threadspire::ai::learning::ContinualLearningService service(std::move(settings));
-        const auto recovered = service.improvement_session_snapshot();
-        require(recovered.phase == threadspire::ai::learning::ImprovementSessionPhase::running &&
-                    recovered.budget == std::chrono::hours(12) && recovered.remaining.count() > 0,
-                "a malformed improvement-session file must recover to one bounded default session");
-        service.request_stop();
-    }
+    threadspire::ai::learning::LearningSettings settings;
+    settings.python_executable = root / "missing-python.exe";
+    settings.worker_script = root / "missing-worker.py";
+    settings.state_root = root;
+    settings.base_model = "threadspire://coder";
+    settings.policy.lora_microbatch = 100U;
+    settings.initial_interactive_priority = true;
+    threadspire::ai::learning::ContinualLearningService service(std::move(settings));
+
+    const auto submit_verified = [&service](
+                                     std::string skill,
+                                     std::string prompt,
+                                     std::string response) {
+        return service.submit(threadspire::ai::memory::Episode{
+            .id = {},
+            .skill = std::move(skill),
+            .prompt = std::move(prompt),
+            .response = std::move(response),
+            .model_id = "compiler-tested-fixture",
+            .score = 1.0,
+            .compiler_passed = true,
+            .tests_passed = true,
+            .human_accepted = false,
+            .human_rejected = false,
+            .deterministic_verified = true,
+            .reference_verified = false,
+            .self_generated = true,
+            .eligible_for_training = true,
+            .verifier_model_id = "compiler+tests",
+            .verification_notes = "fixture evidence passed",
+            .provenance = "compiler-and-test-verified-fixture",
+            .knowledge_destination = "full-weight-training",
+            .content_hash = {},
+            .correction = {},
+            .tool_trace_hash = {},
+            .created_unix_ms = 0,
+        });
+    };
+
+    require(submit_verified(
+                "cpp23-core",
+                "Write a checked C++23 scope guard.",
+                "Use a move-only callable owner and invoke it exactly once."),
+            "first verified topic should enter the durable learning store");
+    require(submit_verified(
+                "cpp23-debugging",
+                "Repair an iterator invalidation defect.",
+                "Reacquire the iterator after any operation that can reallocate."),
+            "second verified topic should enter the durable learning store");
+    require(service.pipeline_snapshot().queued_updates == 0U,
+            "automatic microbatching must not queue an undersized batch early");
+    require(service.request_pending_updates() == 2U,
+            "explicit full training must compile every pending verified topic");
+    require(service.pipeline_snapshot().queued_updates == 2U,
+            "explicit full training must serialize one coalesced shadow update per topic");
+    require(!std::filesystem::exists(root / "state" / "improvement-session.ini"),
+            "weight learning must not be controlled by a countdown-session file");
+    service.request_stop();
     std::filesystem::remove_all(root);
 }
-
 void test_episode_dedup_and_negative_evidence() {
     const auto root = temporary_root();
     threadspire::ai::memory::EpisodeStore store(root / "episodes.jsonl");
@@ -1557,16 +1541,23 @@ void test_windows_ui_source_contract() {
                 learning_service.find("contains_positive_prompt") != std::string::npos &&
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
             "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
-    require(ui.find("Session time limit") != std::string::npos &&
-                ui.find("12 hours — maximum") != std::string::npos &&
-                ui.find("Resume saved session") != std::string::npos &&
+    require(ui.find("Compile data + train model") != std::string::npos &&
+                ui.find("this is not a countdown") != std::string::npos &&
+                ui.find("Controlled software self-improvement: separate") != std::string::npos &&
+                ui.find("Create verified practice examples while the app is idle") != std::string::npos &&
                 ui.find("Show backup example controls") != std::string::npos &&
-                ui.find("At pause, foreground use, or the limit") != std::string::npos &&
-                ui.find("WHAT CAN CHANGE") != std::string::npos &&
-                learning_service.find("improvement-session.ini") != std::string::npos &&
-                learning_service.find("std::clamp(budget, std::chrono::minutes(1), maximum)") != std::string::npos &&
-                learning_service.find("return !queue_.empty() && !paused() && !interactive_busy()") != std::string::npos,
-            "automatic improvement must expose and enforce a persistent 12-hour-capped session with plain pause, resume, end, engine-boundary, and foreground-priority status");
+                learning_service.find("request_pending_updates") != std::string::npos &&
+                learning_service.find("return !queue_.empty() && !interactive_busy()") != std::string::npos &&
+                learning_service.find("improvement-session.ini") == std::string::npos &&
+                ui.find("Session time limit") == std::string::npos,
+            "automatic idle learning, explicit full weight training, and gated software self-improvement must remain separate without a countdown gate");
+    require(ui.find("::IsWindow(control) == FALSE") != std::string::npos &&
+                ui.find("parent_width == 0 || parent_height == 0") != std::string::npos &&
+                ui.find("safe_width = std::clamp") != std::string::npos &&
+                ui.find("client_width <= 0 || client_height <= 0") != std::string::npos &&
+                ui.find("storage_maximum_height = std::max") != std::string::npos &&
+                ui.find("storage_minimum_height,\n        storage_maximum_height") != std::string::npos,
+            "responsive layout must reject invalid client bounds, normalize dynamic clamp bounds, and clamp every child rectangle to its parent");
 
     const auto foundry = read_text_file(source / "src/learning/piggyback_foundry.cpp");
     require(foundry.find("std::launch::async") != std::string::npos &&
@@ -1815,7 +1806,7 @@ void test_windows_ui_source_contract() {
             "the native Windows UI must default to a real dark surface and dark title bar");
     require(ui.find("English foundation — recommended first") != std::string::npos &&
                 ui.find("training-target.txt") != std::string::npos &&
-                ui.find("Automatic mode never changes the selected target") != std::string::npos &&
+                ui.find("Automatic idle learning never changes the selected target") != std::string::npos &&
                 ui.find("Add verified file") != std::string::npos &&
                 ui.find("choose_training_dataset") != std::string::npos,
             "the training interface must default to English, persist target selection, and expose understandable custom JSONL import");
@@ -2129,7 +2120,7 @@ int main() {
         test_expert_lifecycle_thresholds();
         test_learning_service_stores_before_training();
         test_interactive_priority_uses_nested_leases();
-        test_improvement_session_is_bounded_persistent_and_recoverable();
+        test_explicit_weight_training_queues_all_pending_verified_topics();
         test_episode_dedup_and_negative_evidence();
         test_learning_preview_blocks_errors_and_repetition();
         test_episode_index_recovers_after_restart();

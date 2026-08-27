@@ -42,7 +42,6 @@ struct LearningSettings final {
     bool require_cuda{true};
     bool automatic_consolidation{true};
     bool resume_interrupted_candidates{true};
-    std::chrono::minutes maximum_improvement_session{std::chrono::hours(12)};
     resource::ResourcePolicy resource_policy{};
 };
 
@@ -76,20 +75,6 @@ struct LearningPipelineSnapshot final {
     std::optional<LearningJobStatus> active_job;
 };
 
-enum class ImprovementSessionPhase {
-    running,
-    paused,
-    ended,
-    time_limit_reached,
-};
-
-struct ImprovementSessionSnapshot final {
-    ImprovementSessionPhase phase{ImprovementSessionPhase::running};
-    std::chrono::milliseconds budget{0};
-    std::chrono::milliseconds remaining{0};
-    std::int64_t started_unix_ms{0};
-    std::int64_t deadline_unix_ms{0};
-};
 struct LearningSubmissionPreview final {
     bool would_store{false};
     bool duplicate{false};
@@ -116,18 +101,13 @@ public:
     [[nodiscard]] LearningSubmissionPreview preview(memory::Episode episode) const;
     [[nodiscard]] bool submit(memory::Episode episode);
     void request_skill_update(std::string skill);
-    void pause(bool value);
-    void start_improvement_session(std::chrono::minutes budget);
-    [[nodiscard]] bool resume_improvement_session();
-    void cancel_improvement_session();
-    [[nodiscard]] ImprovementSessionSnapshot improvement_session_snapshot();
+    [[nodiscard]] std::size_t request_pending_updates();
     void set_interactive_busy(bool value);
     void request_stop();
     void set_python_executable(std::filesystem::path path);
     void set_base_model(std::string model);
     [[nodiscard]] bool rollback_skill(std::string_view skill);
 
-    [[nodiscard]] bool paused() const noexcept;
     [[nodiscard]] bool interactive_busy() const noexcept;
     [[nodiscard]] std::vector<LearningJobStatus> statuses() const;
     [[nodiscard]] LearningPipelineSnapshot pipeline_snapshot() const;
@@ -170,8 +150,6 @@ private:
     void commit_module(const ExpertModule& module);
     void commit_candidate(const CandidateRecord& candidate);
     void publish_control_files() const;
-    void load_improvement_session();
-    void persist_improvement_session() const;
 
     LearningSettings settings_;
     memory::EpisodeStore memory_store_;
@@ -184,17 +162,10 @@ private:
     std::condition_variable_any condition_;
     std::deque<LearningRequest> queue_;
     std::vector<LearningJobStatus> statuses_;
-    std::atomic_bool paused_{false};
-    std::atomic<ImprovementSessionPhase> improvement_session_phase_{ImprovementSessionPhase::running};
-    std::atomic_int64_t improvement_session_budget_ms_{0};
-    std::atomic_int64_t improvement_session_remaining_ms_{0};
-    std::atomic_int64_t improvement_session_started_unix_ms_{0};
-    std::atomic_int64_t improvement_session_deadline_unix_ms_{0};
     std::atomic_uint32_t interactive_leases_{0};
     std::jthread worker_;
 };
 
 [[nodiscard]] std::string_view to_string(LearningJobState state) noexcept;
-[[nodiscard]] std::string_view to_string(ImprovementSessionPhase phase) noexcept;
 
 } // namespace threadspire::ai::learning

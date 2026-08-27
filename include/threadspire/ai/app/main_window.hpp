@@ -180,7 +180,7 @@ private:
     void handle_training_target_change();
     void browse_custom_training_data();
     void import_custom_training_data();
-    void stop_training_pass();
+    void compile_and_train_model();
     void create_internal_model(bool bootstrap, bool automatic = false);
     void install_backend(bool automatic = false);
     void verify_backend(bool automatic = false);

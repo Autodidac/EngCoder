@@ -80,16 +80,15 @@ At configured intervals and before cooperative preemption, the worker saves:
 - Python, CPU PyTorch, and CUDA RNG states.
 
 A foreground inference marker causes a checkpoint and exit code `75`. The C++ coordinator marks the candidate interrupted and requeues it. The next worker resumes the same candidate state.
-## Bounded automatic-improvement sessions
+## Automatic idle learning and explicit weight training
 
-A fresh application state begins one automatic-improvement session with a 12-hour budget. The user may start a shorter 1, 4, or 8-hour session, pause it, resume the exact saved remainder, or end it. Requests above 12 hours are clamped rather than accepted silently.
+Automatic idle learning is a persistent lightweight pipeline, not a timed session. When enabled, it curates approved evidence, asks available local teacher models for bounded variations, independently verifies the results, deduplicates them, and admits only eligible records. It always yields to Chat and other foreground work. Disabling it stops new automatic teacher passes; it does not erase accepted evidence or corrupt queued checkpoints.
 
-The session is persisted atomically in `state/improvement-session.ini`. Restarting while paused remains paused; restarting after End remains ended; reaching the deadline remains time-limited until the user starts another bounded session. A restart never resets elapsed time or silently creates an unlimited worker.
+`Compile data + train model` is a separate explicit action. It gathers every topic with pending verified weight-eligible evidence, serializes one coalesced shadow update per topic, and lets the existing persistent worker train, evaluate, and promote or reject each candidate. The last promoted model continues serving throughout. This action is not automatic software self-improvement and does not edit application source.
 
-The session gate is checked by the serialized queue and by active worker cancellation. Foreground Chat always has priority. Pause, foreground use, End, and the deadline stop work at the established checkpoint boundary, preserve admitted evidence and resumable candidate state, and keep the last promoted model serving. Ending a session does not delete evidence or alter the selected AI.
+The 12-hour requirement is a compute ceiling for a complete bounded compile, training, evaluation, and promotion cycle on the target RTX 5080 / Ryzen 9 9900X / 64 GiB system. It is enforced through bounded model size, curated replay, capped steps, checkpointing, and serialized candidates—not through a wall-clock countdown in the interface. The cycle ends when the finite work completes. Foreground inference still requests a safe checkpoint and recovery code `75`; the same candidate resumes afterward.
 
-The visible report deliberately separates what can change: permanent verified memory is immediately retrievable but never weights; internal weights require the optional PyTorch trainer; Transformers/PEFT applies only to an explicitly compatible external base; image and audio engines are separate optional packs and are not trained by this session. Selecting or installing any pack remains isolated from the training queue.
-
+The visible report separates what can change: permanent verified memory is immediately retrievable but never weights; internal weights require the optional PyTorch trainer; Transformers/PEFT applies only to an explicitly compatible external base; image and audio engines are separate optional packs and are not trained by the text-weight workflow. Selecting or installing any pack remains isolated from both automatic learning and explicit training.
 ## Evaluation and promotion
 
 The worker evaluates the active parent and shadow candidate on held-out anchors. Bootstrap may promote the first finite trained child of an untrained parent. Later candidates must not worsen the held-out loss under the current initial policy.
@@ -105,7 +104,7 @@ Immediate memory is the fastest learning path and remains active even when backg
 Conversational `remember`, `forget`, memory-list, `teach`, and `correct` controls are intercepted before provider routing. They print exact receipts and never contact a model. Permanent user facts remain in the editable user-memory file and are never weight data. Taught replies and corrections enter the same admission service used by the per-reply controls. A correction supersedes every earlier positive answer for that normalized prompt in exact and semantic retrieval; historical drafts remain negative audit evidence only. Both optional Python loaders independently keep only the newest hard correction and exclude stale positives before batching.
 The visible Training Library applies the same rule: it presents the correction as the approved expected answer, shows the replaced draft as excluded audit material, and labels older approvals for the prompt as superseded.
 
-Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off background learning stops candidate training but does not erase context or memory.
+Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off automatic idle learning stops new teacher-generated examples; already queued verified candidates and explicit full training remain independent, and no context or memory is erased.
 
 ## Conversation, coding, and self-iteration
 
