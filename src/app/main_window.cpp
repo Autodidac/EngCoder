@@ -5680,6 +5680,16 @@ void MainWindow::persist_current_chat() {
                 {"review", static_cast<double>(static_cast<int>(turn.review))},
                 {"learning_weight_eligible", turn.learning_weight_eligible},
                 {"learning_destination", turn.learning_destination},
+                {"repository_source", turn.repository_source.generic_string()},
+                {"repository_staging", turn.repository_staging.generic_string()},
+                {"repository_manifest", turn.repository_manifest.generic_string()},
+                {"repository_source_head", turn.repository_source_head},
+                {"repository_candidate_commit", turn.repository_candidate_commit},
+                {"repository_promoted_branch", turn.repository_promoted_branch},
+                {"repository_build_command", turn.repository_build_command},
+                {"repository_test_command", turn.repository_test_command},
+                {"repository_compiler_passed", turn.repository_compiler_passed},
+                {"repository_tests_passed", turn.repository_tests_passed},
             });
         }
 
@@ -5795,6 +5805,23 @@ void MainWindow::load_chat_session(const std::string_view id_value) {
                 core::json::bool_or(entry.find("learning_weight_eligible"), false);
             turn.learning_destination =
                 core::json::string_or(entry.find("learning_destination"));
+            turn.repository_source = core::json::string_or(entry.find("repository_source"));
+            turn.repository_staging = core::json::string_or(entry.find("repository_staging"));
+            turn.repository_manifest = core::json::string_or(entry.find("repository_manifest"));
+            turn.repository_source_head =
+                core::json::string_or(entry.find("repository_source_head"));
+            turn.repository_candidate_commit =
+                core::json::string_or(entry.find("repository_candidate_commit"));
+            turn.repository_promoted_branch =
+                core::json::string_or(entry.find("repository_promoted_branch"));
+            turn.repository_build_command =
+                core::json::string_or(entry.find("repository_build_command"));
+            turn.repository_test_command =
+                core::json::string_or(entry.find("repository_test_command"));
+            turn.repository_compiler_passed =
+                core::json::bool_or(entry.find("repository_compiler_passed"), false);
+            turn.repository_tests_passed =
+                core::json::bool_or(entry.find("repository_tests_passed"), false);
             turn.analysis = analyzer.analyze(turn.prompt);
             response_turns_.push_back(std::move(turn));
         }
@@ -7327,7 +7354,15 @@ void MainWindow::update_response_turn_controls() {
                     turn.learning_destination == "local-correction-known") {
                     return L"already known • no copy added";
                 }
-                if (local_control) {
+                if (turn.learning_destination == "repository-candidate") {
+                    return L"verified change • awaiting promotion";
+                }
+                if (turn.learning_destination.starts_with("repository-promoted")) {
+                    return L"promoted to review branch";
+                }
+                if (turn.learning_destination == "repository-rejected") {
+                    return L"change rejected • source unchanged";
+                }                if (local_control) {
                     return L"no change";
                 }
                 switch (turn.review) {
@@ -7367,11 +7402,20 @@ void MainWindow::update_response_turn_controls() {
         selected->learning_destination != "request-error";
     const auto reviewed = has_reply &&
         selected->review != ResponseReview::unreviewed;
+    const auto repository_candidate = has_reply &&
+        selected->learning_destination == "repository-candidate";
+    set_control_text(
+        id::chat_accept,
+        repository_candidate ? L"Promote verified change" : L"Accept + learn");
+    set_control_text(
+        id::chat_learning_preview,
+        repository_candidate ? L"Review change" : L"Learn?");
     ::EnableWindow(control(id::chat_copy), has_reply ? TRUE : FALSE);
     ::EnableWindow(control(id::chat_edit), has_reply ? TRUE : FALSE);
     ::EnableWindow(control(id::chat_retry), has_reply && !local_control ? TRUE : FALSE);
     ::EnableWindow(control(id::chat_learning_preview), learnable ? TRUE : FALSE);
-    ::EnableWindow(control(id::chat_include_context), has_reply && !local_control ? TRUE : FALSE);
+    ::EnableWindow(control(id::chat_include_context),
+        has_reply && !local_control && !repository_candidate ? TRUE : FALSE);
     ::EnableWindow(control(id::chat_accept), learnable && !reviewed ? TRUE : FALSE);
     ::EnableWindow(control(id::chat_reject), learnable && !reviewed ? TRUE : FALSE);
 }
@@ -7402,22 +7446,33 @@ memory::Episode MainWindow::learning_episode_for(
         .response = turn.response,
         .model_id = turn.model_id,
         .score = accepted ? 0.92 : 0.0,
-        .compiler_passed = false,
-        .tests_passed = false,
+        .compiler_passed = turn.repository_compiler_passed,
+        .tests_passed = turn.repository_tests_passed,
         .human_accepted = accepted,
         .human_rejected = !accepted,
-        .deterministic_verified = false,
+        .deterministic_verified =
+            turn.repository_compiler_passed && turn.repository_tests_passed,
         .reference_verified = false,
         .self_generated = true,
         .eligible_for_training = false,
-        .verifier_model_id = {},
-        .verification_notes = accepted
-            ? "Explicitly approved from the per-reply control"
-            : "Explicitly rejected from the per-reply control",
-        .provenance = is_coding_surface(turn.surface)
-            ? (accepted ? "coding-agent-accept" : "coding-agent-reject")
-            : (accepted ? "interactive-accept" : "interactive-reject"),
-        .knowledge_destination = "episodic-memory",
+        .verifier_model_id = turn.repository_compiler_passed && turn.repository_tests_passed
+            ? "compiler+tests"
+            : std::string{},
+        .verification_notes = turn.repository_compiler_passed && turn.repository_tests_passed
+            ? (accepted
+                ? "Human approved after isolated repository build and tests passed"
+                : "Human rejected despite isolated repository build and tests passing")
+            : (accepted
+                ? "Explicitly approved from the per-reply control"
+                : "Explicitly rejected from the per-reply control"),
+        .provenance = turn.learning_destination.starts_with("repository-")
+            ? (accepted ? "repository-candidate-promoted" : "repository-candidate-rejected")
+            : (is_coding_surface(turn.surface)
+                ? (accepted ? "coding-agent-accept" : "coding-agent-reject")
+                : (accepted ? "interactive-accept" : "interactive-reject")),
+        .knowledge_destination = turn.learning_destination.starts_with("repository-")
+            ? "verified-repository-trajectory"
+            : "episodic-memory",
         .content_hash = {},
         .correction = {},
         .tool_trace_hash = join_tool_events(turn.tool_events),
@@ -7477,7 +7532,8 @@ void MainWindow::reconcile_response_reviews_from_memory() {
     auto changed = false;
     for (std::size_t index = 0; index < response_turns_.size(); ++index) {
         auto& turn = response_turns_[index];
-        if (turn.review != ResponseReview::unreviewed) {
+        if (turn.review != ResponseReview::unreviewed ||
+            turn.learning_destination.starts_with("repository-")) {
             continue;
         }
         const auto inspection = learning_service_->preview(learning_episode_for(turn, true));
@@ -7499,6 +7555,32 @@ void MainWindow::reconcile_response_reviews_from_memory() {
 }
 
 std::wstring MainWindow::learning_preview_text(const ResponseTurn& turn) const {
+    if (turn.learning_destination.starts_with("repository-")) {
+        std::wostringstream candidate;
+        candidate << L"VERIFIED REPOSITORY CHANGE\n\n"
+                  << L"User request\n" << widen(turn.prompt) << L"\n\n"
+                  << L"Selected repository\n" << turn.repository_source.wstring() << L"\n"
+                  << L"Selected repository changed: NO\n"
+                  << L"Private candidate\n" << turn.repository_staging.wstring() << L"\n"
+                  << L"Starting revision\n" << widen(turn.repository_source_head) << L"\n"
+                  << L"Candidate commit\n" << widen(turn.repository_candidate_commit) << L"\n\n"
+                  << L"Build passed: " << (turn.repository_compiler_passed ? L"YES" : L"NO") << L"\n"
+                  << L"Tests passed: " << (turn.repository_tests_passed ? L"YES" : L"NO") << L"\n"
+                  << L"Current branch and working files will remain unchanged: YES\n\n";
+        if (!turn.repository_promoted_branch.empty()) {
+            candidate << L"Promoted review branch\n"
+                      << widen(turn.repository_promoted_branch) << L"\n";
+        } else if (turn.learning_destination == "repository-rejected") {
+            candidate << L"REJECTED\nNo branch was created. The selected repository remains unchanged.\n";
+        } else {
+            candidate << L"PROMOTE VERIFIED CHANGE\n"
+                      << L"Creates one review branch pointing at the exact tested commit. "
+                         L"It does not switch branches, merge, or overwrite files. If the source revision or files changed, promotion is blocked.\n";
+        }
+        candidate << L"\nVERIFIED DIFF (EXACT)\n" << widen(turn.response);
+        return candidate.str();
+    }
+
     const auto episode = learning_episode_for(turn, true);
     const auto preview = learning_service_->preview(episode);
 
@@ -7588,6 +7670,19 @@ void MainWindow::retry_selected_response() {
         set_status(L"Select a completed reply first");
         return;
     }
+    if (turn->surface == RequestSurface::workspace_coding &&
+        !turn->repository_source.empty()) {
+        set_control_text(id::chat_repository, turn->repository_source.wstring());
+        set_control_text(id::chat_prompt, widen(turn->prompt));
+        set_control_text(id::horizon_repository, turn->repository_source.wstring());
+        set_control_text(id::horizon_task, widen(turn->prompt));
+        if (!turn->repository_build_command.empty()) {
+            set_control_text(id::horizon_build, widen(turn->repository_build_command));
+        }
+        set_control_text(id::horizon_test, widen(turn->repository_test_command));
+        run_coding_agent();
+        return;
+    }
     set_control_text(id::chat_prompt, widen(turn->prompt));
     attached_files_ = turn->input_files;
     update_attachment_controls();
@@ -7635,9 +7730,15 @@ void MainWindow::show_selected_learning_preview() {
         set_status(L"Select a completed reply first");
         return;
     }
-    set_control_text(id::chat_plan_label, L"What Accept + learn uses");
+    const auto repository_candidate =
+        turn->learning_destination == "repository-candidate";
+    set_control_text(
+        id::chat_plan_label,
+        repository_candidate ? L"Review verified change" : L"What Accept + learn uses");
     set_control_text(id::chat_plan, learning_preview_text(*turn));
-    set_status(L"Showing the exact selected learning record and safety decision");
+    set_status(repository_candidate
+        ? L"Showing the exact isolated candidate, checks, and promotion behavior"
+        : L"Showing the exact selected learning record and safety decision");
 }
 
 void MainWindow::accept_last_response() {
@@ -7664,6 +7765,54 @@ void MainWindow::accept_last_response() {
         } catch (...) {
         }
     };
+    if (turn->learning_destination == "repository-candidate") {
+        const auto run_directory = !turn->repository_manifest.empty()
+            ? turn->repository_manifest.parent_path()
+            : turn->repository_staging.parent_path();
+        const auto promotion = long_horizon::promote_verified_candidate(
+            long_horizon::Result{
+                .operation = {},
+                .completed = true,
+                .compiler_passed = turn->repository_compiler_passed,
+                .tests_passed = turn->repository_tests_passed,
+                .iterations = 0,
+                .run_directory = run_directory,
+                .trajectory_path = run_directory / "trajectory.jsonl",
+                .final_diff_path = run_directory / "final.diff",
+                .source_repository = turn->repository_source,
+                .staged_repository = turn->repository_staging,
+                .candidate_manifest_path = turn->repository_manifest,
+                .source_head = turn->repository_source_head,
+                .candidate_commit = turn->repository_candidate_commit,
+                .final_diff = turn->response,
+                .events = {},
+            });
+        if (promotion.operation.state != util::OperationState::succeeded) {
+            set_control_text(id::chat_plan_label, L"Promotion blocked safely");
+            set_control_text(id::chat_plan, widen(promotion.operation.message));
+            set_status(widen(promotion.operation.message));
+            return;
+        }
+
+        turn->repository_promoted_branch = promotion.branch_name;
+        turn->learning_destination = "repository-promoted:" + promotion.branch_name;
+        turn->review = ResponseReview::accepted;
+        const auto episode = learning_episode_for(*turn, true);
+        const auto preview = learning_service_->preview(episode);
+        const auto stored = preview.would_store && learning_service_->submit(episode);
+        turn->learning_weight_eligible = stored && preview.eligible_for_weight_training;
+        record_positive_feedback();
+        update_response_turn_controls();
+        set_control_text(id::chat_plan_label, L"Verified change promoted");
+        set_control_text(id::chat_plan, learning_preview_text(*turn));
+        set_status(widen(
+            promotion.operation.message + ". Review branch: " + promotion.branch_name));
+        update_skill_report();
+        update_learning_report();
+        update_training_library();
+        persist_current_chat();
+        return;
+    }
     const auto mark_already_known = [&]() {
         turn->review = ResponseReview::already_known;
         turn->learning_weight_eligible = false;
@@ -7744,6 +7893,30 @@ void MainWindow::reject_last_response() {
         return;
     }
 
+    if (turn->learning_destination == "repository-candidate") {
+        turn->learning_destination = "repository-rejected";
+        turn->learning_weight_eligible = false;
+        turn->review = ResponseReview::rejected;
+        {
+            auto models_used = turn->models_used;
+            std::ranges::sort(models_used);
+            models_used.erase(std::ranges::unique(models_used).begin(), models_used.end());
+            std::lock_guard lock(model_mutex_);
+            for (const auto& model_id : models_used) {
+                model_registry_.record_feedback(model_id, false);
+            }
+            try {
+                model_registry_.save(paths_.model_registry);
+            } catch (...) {
+            }
+        }
+        update_response_turn_controls();
+        set_control_text(id::chat_plan_label, L"Verified change rejected");
+        set_control_text(id::chat_plan, learning_preview_text(*turn));
+        set_status(L"Candidate rejected • no branch created • selected repository unchanged • no weight training");
+        persist_current_chat();
+        return;
+    }
     const auto episode = learning_episode_for(*turn, false);
     const auto preview = learning_service_->preview(episode);
     const auto stored = preview.would_store && learning_service_->submit(episode);
@@ -8797,7 +8970,7 @@ void MainWindow::start_long_horizon() {
     set_status(L"Repository task started; background weight learning is yielding");
     learning_service_->set_interactive_busy(true);
     static_cast<void>(long_horizon_operation_.start(
-        [this, request, task, model_id = repair_model->id](const std::stop_token token) mutable {
+        [this, request](const std::stop_token token) mutable {
             struct BusyReset final {
                 learning::ContinualLearningService* service;
                 ~BusyReset() { service->set_interactive_busy(false); }
@@ -8843,6 +9016,11 @@ void MainWindow::start_long_horizon() {
                 .tests_passed = unified.tests_passed,
                 .iterations = unified.iterations,
                 .run_directory = std::move(unified.run_directory),
+                .source_repository = std::move(unified.source_repository),
+                .staged_repository = std::move(unified.staged_repository),
+                .candidate_manifest_path = std::move(unified.candidate_manifest_path),
+                .source_head = std::move(unified.source_head),
+                .candidate_commit = std::move(unified.candidate_commit),
                 .final_diff = std::move(unified.content),
             };
             for (const auto& artifact : unified.artifacts) {
@@ -8857,36 +9035,6 @@ void MainWindow::start_long_horizon() {
                     .phase = event,
                     .exit_code = unified.succeeded ? 0 : 1,
                 });
-            }
-            if (result.completed && result.compiler_passed && result.tests_passed) {
-                auto verified_response = result.final_diff;
-                if (verified_response.empty()) {
-                    verified_response = "The requested repository task completed with no staged source diff.";
-                }
-                static_cast<void>(learning_service_->submit(memory::Episode{
-                    .id = {},
-                    .skill = "cpp23-repository",
-                    .prompt = task,
-                    .response = std::move(verified_response),
-                    .model_id = model_id,
-                    .score = 0.98,
-                    .compiler_passed = true,
-                    .tests_passed = true,
-                    .human_accepted = false,
-                    .human_rejected = false,
-                    .deterministic_verified = true,
-                    .reference_verified = false,
-                    .self_generated = true,
-                    .eligible_for_training = false,
-                    .verifier_model_id = "compiler+tests",
-                    .verification_notes = "Repository build and tests passed.",
-                    .provenance = "compiler-and-test-verified-trajectory",
-                    .knowledge_destination = "lora-incubation",
-                    .content_hash = {},
-                    .correction = {},
-                    .tool_trace_hash = result.trajectory_path.generic_string(),
-                    .created_unix_ms = 0,
-                }));
             }
             const auto operation = result.operation;
             {
@@ -8904,7 +9052,7 @@ void MainWindow::cancel_long_horizon() {
         return;
     }
     long_horizon_operation_.cancel();
-    set_status(L"Cancellation requested; rollback will occur at the next safe boundary");
+    set_status(L"Cancellation requested; the private candidate will stop at a safe boundary and the selected repository remains unchanged");
 }
 
 void MainWindow::update_long_horizon_result() {
@@ -8926,20 +9074,37 @@ void MainWindow::update_long_horizon_result() {
            << L"\r\nIterations: " << result->iterations
            << L"\r\nCompiler passed: " << (result->compiler_passed ? L"yes" : L"no")
            << L"\r\nTests passed: " << (result->tests_passed ? L"yes" : L"no")
-           << L"\r\nRun directory: " << result->run_directory.wstring()
-           << L"\r\n\r\nTrajectory\r\n";
+           << L"\r\nSelected repository: " << result->source_repository.wstring()
+           << L"\r\nSelected repository changed: NO"
+           << L"\r\nPrivate candidate: " << result->staged_repository.wstring()
+           << L"\r\nCandidate commit: " << widen(result->candidate_commit)
+           << L"\r\nAudit folder: " << result->run_directory.wstring()
+           << L"\r\n\r\nEvidence\r\n";
     for (const auto& event : result->events) {
         report << L"  [" << event.iteration << L"] " << widen(event.phase)
                << L"  exit=" << event.exit_code
                << L"  " << event.duration.count() << L" ms\r\n";
     }
     if (!result->final_diff.empty()) {
-        report << L"\r\nVerified staged diff\r\n" << widen(result->final_diff);
+        report << L"\r\nVerified candidate diff\r\n" << widen(result->final_diff);
     }
     const auto report_text = report.str();
     set_control_text(id::horizon_report, report_text);
     if (long_horizon_from_coding_) {
-        workspace_transcript_ += "\r\nREPOSITORY RUN RESULT\r\n\r\n" + narrow(report_text) + "\r\n";
+        const auto verified = result->completed &&
+            result->compiler_passed && result->tests_passed;
+        std::ostringstream card;
+        card << (verified
+            ? "ENGCODER — VERIFIED REPOSITORY CANDIDATE\r\n\r\n"
+            : "ERROR — REPOSITORY CANDIDATE FAILED\r\n\r\n")
+             << result->operation.message << "\r\n"
+             << "Build: " << (result->compiler_passed ? "passed" : "failed")
+             << " • Tests: " << (result->tests_passed ? "passed" : "failed") << "\r\n"
+             << "Your selected repository was not changed."
+             << (verified
+                 ? " Select this result and choose Promote verified change to publish a review branch.\r\n"
+                 : " Retry after reviewing the evidence at right.\r\n");
+        workspace_transcript_ += "\r\n" + card.str();
         set_control_text(id::chat_response, widen(workspace_transcript_));
         last_response_surface_ = RequestSurface::workspace_coding;
         last_response_ = result->final_diff.empty()
@@ -8949,16 +9114,50 @@ void MainWindow::update_long_horizon_result() {
         last_model_id_ = coding_model.has_value() ? coding_model->id : "coding-agent";
         routing::TaskAnalyzer analyzer;
         last_analysis_ = analyzer.analyze(last_prompt_ + " repository implementation");
+        last_models_used_ = {last_model_id_};
+        last_tool_events_.clear();
+        for (const auto& event : result->events) {
+            last_tool_events_.push_back(
+                event.phase + ": exit " + std::to_string(event.exit_code));
+        }
+        response_turns_.push_back(ResponseTurn{
+            .prompt = last_prompt_,
+            .response = last_response_,
+            .earlier_context = {},
+            .analysis = last_analysis_,
+            .model_id = last_model_id_,
+            .models_used = last_models_used_,
+            .tool_events = last_tool_events_,
+            .input_files = {},
+            .surface = RequestSurface::workspace_coding,
+            .learning_weight_eligible = false,
+            .learning_destination = verified ? "repository-candidate" : "request-error",
+            .repository_source = result->source_repository,
+            .repository_staging = result->staged_repository,
+            .repository_manifest = result->candidate_manifest_path,
+            .repository_source_head = result->source_head,
+            .repository_candidate_commit = result->candidate_commit,
+            .repository_promoted_branch = {},
+            .repository_build_command = narrow(control_text(id::horizon_build)),
+            .repository_test_command = narrow(control_text(id::horizon_test)),
+            .repository_compiler_passed = result->compiler_passed,
+            .repository_tests_passed = result->tests_passed,
+            .review = ResponseReview::unreviewed,
+        });
+        selected_response_turn_index_ = response_turns_.size() - 1U;
+        update_response_turn_controls();
+        persist_current_chat();
     }
     long_horizon_from_coding_ = false;
     if (!result->trajectory_path.empty()) {
         set_active_log(result->trajectory_path);
     }
+    set_control_text(id::chat_plan_label, L"Repository evidence");
+    set_control_text(id::chat_plan, report_text);
     set_status(widen(result->operation.message));
     update_skill_report();
     update_learning_report();
 }
-
 void MainWindow::schedule_lifecycle_retry(std::string message) {
     lifecycle_last_error_ = std::move(message);
     if (!automatic_lifecycle_enabled_) {

@@ -19,6 +19,7 @@ import threadspire.platform;
 import threadspire.providers;
 import threadspire.scheduler;
 import threadspire.storage;
+import threadspire.tasks;
 
 namespace {
 
@@ -693,6 +694,114 @@ void test_safe_reset_path_validation() {
     std::filesystem::remove_all(root);
 }
 
+void test_repository_candidate_promotion_isolated_and_stale_safe() {
+    namespace lh = threadspire::ai::long_horizon;
+    namespace platform = threadspire::ai::platform;
+    const auto root = temporary_root();
+    const auto source = root / "source";
+    const auto run_directory = root / "state" / "trajectories" / "run-isolation-test";
+    const auto staged = run_directory / "staged-repository";
+    std::filesystem::create_directories(source);
+    std::filesystem::create_directories(run_directory);
+
+#ifdef _WIN32
+    const std::filesystem::path git = "git.exe";
+#else
+    const std::filesystem::path git = "git";
+#endif
+    std::size_t command_serial = 0U;
+    const auto run_git = [&](
+        const std::filesystem::path& working_directory,
+        std::vector<std::string> arguments) {
+        const auto log = root / ("git-" + std::to_string(++command_serial) + ".log");
+        const auto result = platform::run_process({
+            .executable = git,
+            .arguments = std::move(arguments),
+            .working_directory = working_directory,
+            .log_file = log,
+            .append_log = false,
+        });
+        require(result.launched && result.exit_code == 0,
+            "Git fixture command failed; see " + log.string());
+        return log;
+    };
+    const auto output = [](const std::filesystem::path& log) {
+        auto value = read_text(log);
+        while (!value.empty() &&
+               (value.back() == '\r' || value.back() == '\n' || value.back() == ' ')) {
+            value.pop_back();
+        }
+        return value;
+    };
+
+    static_cast<void>(run_git(source, {"init", "--quiet"}));
+    static_cast<void>(run_git(source, {"config", "user.name", "EngCoder Test"}));
+    static_cast<void>(run_git(source, {"config", "user.email", "engcoder-test@local.invalid"}));
+    write_text(source / "answer.txt", "base\n");
+    static_cast<void>(run_git(source, {"add", "answer.txt"}));
+    static_cast<void>(run_git(source, {"commit", "--quiet", "-m", "base"}));
+    const auto source_head = output(run_git(source, {"rev-parse", "HEAD"}));
+
+    static_cast<void>(run_git(
+        run_directory,
+        {"clone", "--no-hardlinks", "--quiet", source.string(), staged.string()}));
+    static_cast<void>(run_git(staged, {"config", "user.name", "EngCoder Test"}));
+    static_cast<void>(run_git(staged, {"config", "user.email", "engcoder-test@local.invalid"}));
+    write_text(staged / "answer.txt", "verified candidate\n");
+    static_cast<void>(run_git(staged, {"add", "answer.txt"}));
+    static_cast<void>(run_git(staged, {"commit", "--quiet", "-m", "candidate"}));
+    const auto candidate_commit = output(run_git(staged, {"rev-parse", "HEAD"}));
+    const auto final_diff = run_directory / "final.diff";
+    const auto diff_log = run_git(staged, {"diff", "--binary", source_head, candidate_commit, "--"});
+    write_text(final_diff, read_text(diff_log));
+    const auto manifest = run_directory / "candidate.json";
+    write_text(manifest, "{\"status\":\"verified-awaiting-approval\"}\n");
+
+    const lh::Result candidate{
+        .operation = {},
+        .completed = true,
+        .compiler_passed = true,
+        .tests_passed = true,
+        .iterations = 1,
+        .run_directory = run_directory,
+        .trajectory_path = run_directory / "trajectory.jsonl",
+        .final_diff_path = final_diff,
+        .source_repository = source,
+        .staged_repository = staged,
+        .candidate_manifest_path = manifest,
+        .source_head = source_head,
+        .candidate_commit = candidate_commit,
+        .final_diff = read_text(final_diff),
+        .events = {},
+    };
+
+    const auto promoted = lh::promote_verified_candidate(candidate);
+    require(promoted.operation.state == threadspire::ai::util::OperationState::succeeded &&
+                promoted.branch_name.starts_with("engcoder/candidate-") &&
+                read_text(source / "answer.txt") == "base\n" &&
+                output(run_git(source, {"rev-parse", "HEAD"})) == source_head &&
+                output(run_git(source, {"rev-parse", "refs/heads/" + promoted.branch_name})) ==
+                    candidate_commit,
+            "promotion must atomically publish only a review branch and never change the current branch or files");
+
+    write_text(source / "untracked.txt", "dirty\n");
+    const auto dirty = lh::promote_verified_candidate(candidate);
+    require(dirty.operation.state == threadspire::ai::util::OperationState::failed &&
+                dirty.operation.message.find("uncommitted") != std::string::npos,
+            "promotion must block when the source working tree changes");
+    std::filesystem::remove(source / "untracked.txt");
+
+    write_text(source / "source-only.txt", "new head\n");
+    static_cast<void>(run_git(source, {"add", "source-only.txt"}));
+    static_cast<void>(run_git(source, {"commit", "--quiet", "-m", "source moved"}));
+    const auto stale = lh::promote_verified_candidate(candidate);
+    require(stale.operation.state == threadspire::ai::util::OperationState::failed &&
+                stale.operation.message.find("moved") != std::string::npos &&
+                read_text(source / "answer.txt") == "base\n",
+            "promotion must reject a candidate tested against a stale source revision");
+
+    std::filesystem::remove_all(root);
+}
 void test_named_module_and_native_base_contract() {
     const auto source = std::filesystem::path(THREADSPIRE_SOURCE_DIR);
     const auto cmake = read_text(source / "CMakeLists.txt");
@@ -777,6 +886,7 @@ int main() {
         test_atomic_promotion_keeps_working_host_until_candidate_passes();
         test_storage_cards_growth_projections_quotas_and_cleanup();
         test_safe_reset_path_validation();
+        test_repository_candidate_promotion_isolated_and_stale_safe();
         test_named_module_and_native_base_contract();
         std::cout << "All EngCoder unified workbench tests passed.\n";
         return 0;

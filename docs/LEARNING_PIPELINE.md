@@ -113,9 +113,9 @@ EngCoder keeps these concerns separate without exposing sampler jargon in the in
 - ordinary conversation uses modest response variation while retaining the structural corruption gate;
 - coding and tool execution use low-variance generation, exact memory, and compiler/test evidence;
 - the persistent verified-memory store is the small shared starter cache used before any provider route;
-- self-iteration is a repository transaction: propose a patch, validate it, build, test, and either retain the verified result or roll back.
+- self-iteration is a separate repository transaction: pin the selected revision, clone it privately, propose and apply patches only in that clone, build, test, and seal a passing candidate commit.
 
-A successful repository trajectory is admitted as deterministic coding evidence and may queue a scoped shadow update. It does not grant the model permission to rewrite or replace the running executable. Source and model promotion remain separate atomic operations with independent rollback.
+The selected repository is never the build/repair workspace and is never hard-reset. A passing trajectory remains quarantined until its conversation result is explicitly approved. Approval rechecks the candidate commit, original source revision, and clean source status, then publishes only an `engcoder/candidate-…` review branch; it does not switch, merge, or change working files. Rejection publishes nothing. Compiler/test evidence can enter scoped shadow learning only after this human approval, so source promotion and model-weight promotion remain separate atomic operations.
 
 ## Automatic teacher generation and immediate updates
 

@@ -1426,6 +1426,19 @@ void test_windows_ui_source_contract() {
     require(autonomous_runner.find("You are EngCoder's autonomous C++23 repository worker") != std::string::npos &&
                 autonomous_runner.find("You are Epoch's autonomous C++23 repository worker") == std::string::npos,
             "autonomous coding prompts must preserve the EngCoder identity");
+    require(autonomous_runner.find("\"clone\", \"--no-hardlinks\"") != std::string::npos &&
+                autonomous_runner.find("result.staged_repository") != std::string::npos &&
+                autonomous_runner.find("build-isolated-candidate") != std::string::npos &&
+                autonomous_runner.find("test-isolated-candidate") != std::string::npos &&
+                autonomous_runner.find("promote_verified_candidate") != std::string::npos &&
+                autonomous_runner.find("refs/heads/") != std::string::npos &&
+                autonomous_runner.find("\"reset\", \"--hard\"") == std::string::npos,
+            "repository self-coding must build/test only in a private clone and publish an atomic review branch without hard-reset rollback");
+    require(ui.find("Promote verified change") != std::string::npos &&
+                ui.find("Selected repository changed: NO") != std::string::npos &&
+                ui.find("compiler-and-test-verified-trajectory") == std::string::npos &&
+                ui.find("long_horizon::promote_verified_candidate") != std::string::npos,
+            "repository changes must enter per-result review and cannot be learned or promoted before explicit approval");
     require(ui.find("widen(preview.stored_prompt)") != std::string::npos &&
                 ui.find("widen(preview.stored_response)") != std::string::npos &&
                 ui.find("emoji or underlying AI identity removed") != std::string::npos,

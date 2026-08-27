@@ -106,6 +106,16 @@ private:
         RequestSurface surface{RequestSurface::assistant};
         bool learning_weight_eligible{false};
         std::string learning_destination;
+        std::filesystem::path repository_source;
+        std::filesystem::path repository_staging;
+        std::filesystem::path repository_manifest;
+        std::string repository_source_head;
+        std::string repository_candidate_commit;
+        std::string repository_promoted_branch;
+        std::string repository_build_command;
+        std::string repository_test_command;
+        bool repository_compiler_passed{false};
+        bool repository_tests_passed{false};
         ResponseReview review{ResponseReview::unreviewed};
     };
 

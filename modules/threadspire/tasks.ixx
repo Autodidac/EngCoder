@@ -146,11 +146,25 @@ struct Result final {
     std::filesystem::path run_directory;
     std::filesystem::path trajectory_path;
     std::filesystem::path final_diff_path;
+    std::filesystem::path source_repository;
+    std::filesystem::path staged_repository;
+    std::filesystem::path candidate_manifest_path;
+    std::string source_head;
+    std::string candidate_commit;
     std::string final_diff;
     std::vector<Event> events;
 };
 
+struct PromotionResult final {
+    util::OperationResult operation;
+    std::string branch_name;
+    std::string candidate_commit;
+};
+
 [[nodiscard]] Result run(const Request& request, std::stop_token stop_token);
+[[nodiscard]] PromotionResult promote_verified_candidate(
+    const Result& candidate,
+    std::stop_token stop_token = {});
 
 } // namespace threadspire::ai::long_horizon
 }

@@ -240,6 +240,11 @@ UnifiedTaskResult RepositoryTaskProvider::execute(
     result.tests_passed = repository.tests_passed;
     result.iterations = repository.iterations;
     result.run_directory = repository.run_directory;
+    result.source_repository = repository.source_repository;
+    result.staged_repository = repository.staged_repository;
+    result.candidate_manifest_path = repository.candidate_manifest_path;
+    result.source_head = repository.source_head;
+    result.candidate_commit = repository.candidate_commit;
     result.content = repository.final_diff;
     if (!result.succeeded) {
         result.error = repository.operation.message;

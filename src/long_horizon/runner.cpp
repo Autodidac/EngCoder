@@ -205,6 +205,131 @@ void append_event(
     return result.launched && !result.cancelled && result.exit_code == 0;
 }
 
+[[nodiscard]] std::string trim_ascii_whitespace(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1U);
+}
+
+[[nodiscard]] bool path_is_within(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& root) noexcept {
+    std::error_code error;
+    const auto resolved_candidate = std::filesystem::weakly_canonical(candidate, error);
+    if (error) {
+        return false;
+    }
+    const auto resolved_root = std::filesystem::weakly_canonical(root, error);
+    if (error) {
+        return false;
+    }
+    const auto relative = resolved_candidate.lexically_relative(resolved_root);
+    return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
+}
+
+[[nodiscard]] bool publish_new_file(
+    const std::filesystem::path& destination,
+    const std::string_view contents) {
+    auto temporary = destination;
+    temporary += ".tmp";
+    write_text(temporary, contents);
+    std::error_code error;
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] std::string candidate_manifest(const Result& result) {
+    std::ostringstream stream;
+    stream << "{\n"
+           << "  \"version\": 1,\n"
+           << "  \"status\": \"verified-awaiting-approval\",\n"
+           << "  \"source_repository\": \"" << json_escape(result.source_repository.generic_string()) << "\",\n"
+           << "  \"source_head\": \"" << json_escape(result.source_head) << "\",\n"
+           << "  \"staged_repository\": \"" << json_escape(result.staged_repository.generic_string()) << "\",\n"
+           << "  \"candidate_commit\": \"" << json_escape(result.candidate_commit) << "\",\n"
+           << "  \"patch\": \"" << json_escape(result.final_diff_path.generic_string()) << "\",\n"
+           << "  \"compiler_passed\": " << (result.compiler_passed ? "true" : "false") << ",\n"
+           << "  \"tests_passed\": " << (result.tests_passed ? "true" : "false") << "\n"
+           << "}\n";
+    return stream.str();
+}
+
+[[nodiscard]] bool prepare_isolated_repository(
+    const Request& request,
+    Result& result,
+    const std::stop_token stop_token) {
+    std::error_code error;
+    result.source_repository = std::filesystem::weakly_canonical(request.repository, error);
+    if (error) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = -1,
+            .message = "The selected repository path could not be resolved safely",
+        };
+        return false;
+    }
+
+    const auto head_log = result.run_directory / "source-head.txt";
+    const auto head = run_git(
+        result.source_repository,
+        {"rev-parse", "--verify", "HEAD"},
+        head_log,
+        false,
+        stop_token);
+    append_event(result, 0, "capture-source-head", head, head_log);
+    result.source_head = trim_ascii_whitespace(read_text(head_log));
+    if (!process_succeeded(head) || result.source_head.empty()) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = head.exit_code,
+            .message = "The selected repository has no verifiable Git HEAD",
+        };
+        return false;
+    }
+
+    result.staged_repository = result.run_directory / "staged-repository";
+    const auto clone_log = result.run_directory / "stage-clone.log";
+    const auto clone = run_git(
+        result.run_directory,
+        {"clone", "--no-hardlinks", "--quiet", result.source_repository.string(), result.staged_repository.string()},
+        clone_log,
+        false,
+        stop_token);
+    append_event(result, 0, "create-isolated-candidate", clone, clone_log);
+    if (!process_succeeded(clone) ||
+        !path_is_within(result.staged_repository, result.run_directory)) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = clone.exit_code,
+            .message = "EngCoder could not create a private staged repository",
+        };
+        return false;
+    }
+
+    const auto checkout = run_git(
+        result.staged_repository,
+        {"checkout", "--detach", "--quiet", result.source_head},
+        clone_log,
+        true,
+        stop_token);
+    append_event(result, 0, "pin-isolated-candidate", checkout, clone_log);
+    if (!process_succeeded(checkout)) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = checkout.exit_code,
+            .message = "The private candidate could not be pinned to the selected source revision",
+        };
+        return false;
+    }
+    return true;
+}
 [[nodiscard]] bool clean_worktree(
     const Request& request,
     Result& result,
@@ -221,12 +346,28 @@ void append_event(
         result.operation = {
             .state = util::OperationState::failed,
             .exit_code = inside.exit_code,
-            .message = "Autonomous coding requires a Git worktree so patches can be validated and rolled back",
+            .message = "Repository work requires Git so EngCoder can pin the source revision and validate a private candidate",
         };
         return false;
     }
     if (!request.require_clean_worktree) {
         return true;
+    }
+    const auto status_log = result.run_directory / "source-status.txt";
+    const auto status = run_git(
+        request.repository,
+        {"status", "--porcelain=v1", "--untracked-files=normal"},
+        status_log,
+        false,
+        stop_token);
+    append_event(result, 0, "git-clean-status", status, status_log);
+    if (!process_succeeded(status) || !trim_ascii_whitespace(read_text(status_log)).empty()) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = status.exit_code,
+            .message = "Repository has uncommitted or untracked files. Commit or stash them before an autonomous run",
+        };
+        return false;
     }
     const auto unstaged = run_git(
         request.repository,
@@ -500,19 +641,18 @@ void append_event(
 }
 
 void rollback(const Request& request, Result& result) {
-    if (!request.rollback_on_failure || !request.require_clean_worktree) {
+    if (!request.rollback_on_failure) {
         return;
     }
     const auto log = result.run_directory / "rollback.log";
-    const auto reset = run_git(
-        request.repository,
-        {"reset", "--hard", "HEAD"},
+    write_text(
         log,
-        false,
-        std::stop_token{});
-    append_event(result, result.iterations, "rollback", reset, log);
+        "No selected-repository files were changed. The private candidate is retained for audit and safe cleanup.\n");
+    platform::ProcessResult isolated;
+    isolated.launched = true;
+    isolated.exit_code = 0;
+    append_event(result, result.iterations, "selected-repository-unchanged", isolated, log);
 }
-
 [[nodiscard]] Result cancelled(Result result, const Request& request) {
     result.operation = {
         .state = util::OperationState::cancelled,
@@ -559,9 +699,14 @@ Result run(const Request& request, const std::stop_token stop_token) {
     result.trajectory_path = result.run_directory / "trajectory.jsonl";
     std::ofstream(result.trajectory_path, std::ios::trunc).close();
 
-    if (!clean_worktree(request, result, stop_token)) {
+    if (!clean_worktree(request, result, stop_token) ||
+        !prepare_isolated_repository(request, result, stop_token)) {
         return result;
     }
+
+    auto staged_request = request;
+    staged_request.repository = result.staged_repository;
+    staged_request.require_clean_worktree = true;
 
     const auto task_file = result.run_directory / "task.txt";
     write_text(task_file, request.task);
@@ -570,7 +715,7 @@ Result run(const Request& request, const std::stop_token stop_token) {
     const auto initial_patch = result.run_directory / "initial-implementation.diff";
     const auto initial_log = result.run_directory / "initial-implementation.log";
     const auto initial = generate_repair(
-        request,
+        staged_request,
         result,
         task_file,
         initial_diagnostics,
@@ -581,11 +726,11 @@ Result run(const Request& request, const std::stop_token stop_token) {
         stop_token);
     append_event(result, 0, "implementation", initial, initial_log);
     if (initial.cancelled || stop_token.stop_requested()) {
-        return cancelled(std::move(result), request);
+        return cancelled(std::move(result), staged_request);
     }
     if (!process_succeeded(initial) ||
-        !check_and_apply_patch(request, result, 0, initial_patch, initial_log, stop_token)) {
-        rollback(request, result);
+        !check_and_apply_patch(staged_request, result, 0, initial_patch, initial_log, stop_token)) {
+        rollback(staged_request, result);
         if (result.operation.message.empty()) {
             result.operation = {
                 .state = util::OperationState::failed,
@@ -602,28 +747,28 @@ Result run(const Request& request, const std::stop_token stop_token) {
     for (std::size_t iteration = 1; iteration <= maximum_iterations; ++iteration) {
         result.iterations = iteration;
         if (stop_token.stop_requested()) {
-            return cancelled(std::move(result), request);
+            return cancelled(std::move(result), staged_request);
         }
 
         const auto iteration_directory = result.run_directory / ("iteration-" + std::to_string(iteration));
         std::filesystem::create_directories(iteration_directory);
         const auto build_log = iteration_directory / "build.log";
         const auto build = run_shell(
-            request.repository,
+            result.staged_repository,
             request.build_command,
             build_log,
             false,
             stop_token);
-        append_event(result, iteration, "build", build, build_log);
+        append_event(result, iteration, "build-isolated-candidate", build, build_log);
         if (build.cancelled || stop_token.stop_requested()) {
-            return cancelled(std::move(result), request);
+            return cancelled(std::move(result), staged_request);
         }
         result.compiler_passed = process_succeeded(build);
         if (!result.compiler_passed) {
             const auto patch = iteration_directory / "compile-repair.diff";
             const auto repair_log = iteration_directory / "compile-repair.log";
             const auto repair = generate_repair(
-                request,
+                staged_request,
                 result,
                 task_file,
                 build_log,
@@ -634,17 +779,17 @@ Result run(const Request& request, const std::stop_token stop_token) {
                 stop_token);
             append_event(result, iteration, "compile-repair", repair, repair_log);
             if (repair.cancelled || stop_token.stop_requested()) {
-                return cancelled(std::move(result), request);
+                return cancelled(std::move(result), staged_request);
             }
             if (!process_succeeded(repair) ||
-                !check_and_apply_patch(request, result, iteration, patch, repair_log, stop_token)) {
-                rollback(request, result);
+                !check_and_apply_patch(staged_request, result, iteration, patch, repair_log, stop_token)) {
+                rollback(staged_request, result);
                 if (result.operation.message.empty()) {
                     result.operation = {
                         .state = util::OperationState::failed,
                         .exit_code = repair.exit_code,
                         .message = repair.error.empty()
-                            ? "Build failed and no safe repair could be applied"
+                            ? "Build failed and no safe repair could be applied in the private candidate"
                             : repair.error,
                     };
                 }
@@ -658,21 +803,21 @@ Result run(const Request& request, const std::stop_token stop_token) {
         } else {
             const auto test_log = iteration_directory / "tests.log";
             const auto tests = run_shell(
-                request.repository,
+                result.staged_repository,
                 request.test_command,
                 test_log,
                 false,
                 stop_token);
-            append_event(result, iteration, "tests", tests, test_log);
+            append_event(result, iteration, "test-isolated-candidate", tests, test_log);
             if (tests.cancelled || stop_token.stop_requested()) {
-                return cancelled(std::move(result), request);
+                return cancelled(std::move(result), staged_request);
             }
             result.tests_passed = process_succeeded(tests);
             if (!result.tests_passed) {
                 const auto patch = iteration_directory / "test-repair.diff";
                 const auto repair_log = iteration_directory / "test-repair.log";
                 const auto repair = generate_repair(
-                    request,
+                    staged_request,
                     result,
                     task_file,
                     test_log,
@@ -683,17 +828,17 @@ Result run(const Request& request, const std::stop_token stop_token) {
                     stop_token);
                 append_event(result, iteration, "test-repair", repair, repair_log);
                 if (repair.cancelled || stop_token.stop_requested()) {
-                    return cancelled(std::move(result), request);
+                    return cancelled(std::move(result), staged_request);
                 }
                 if (!process_succeeded(repair) ||
-                    !check_and_apply_patch(request, result, iteration, patch, repair_log, stop_token)) {
-                    rollback(request, result);
+                    !check_and_apply_patch(staged_request, result, iteration, patch, repair_log, stop_token)) {
+                    rollback(staged_request, result);
                     if (result.operation.message.empty()) {
                         result.operation = {
                             .state = util::OperationState::failed,
                             .exit_code = repair.exit_code,
                             .message = repair.error.empty()
-                                ? "Tests failed and no safe repair could be applied"
+                                ? "Tests failed and no safe repair could be applied in the private candidate"
                                 : repair.error,
                         };
                     }
@@ -703,21 +848,75 @@ Result run(const Request& request, const std::stop_token stop_token) {
             }
         }
 
-        const auto diff_log = result.run_directory / "final.diff";
+        result.final_diff_path = result.run_directory / "final.diff";
         const auto diff = run_git(
-            request.repository,
+            result.staged_repository,
             {"diff", "--cached", "--no-ext-diff", "--binary", "--"},
-            diff_log,
+            result.final_diff_path,
             false,
             stop_token);
-        append_event(result, iteration, "capture-final-diff", diff, diff_log);
-        result.final_diff_path = diff_log;
-        result.final_diff = read_text(diff_log);
+        append_event(result, iteration, "capture-verified-candidate-diff", diff, result.final_diff_path);
+        result.final_diff = read_text(result.final_diff_path);
+        if (!process_succeeded(diff) || result.final_diff.empty()) {
+            result.operation = {
+                .state = util::OperationState::failed,
+                .exit_code = diff.exit_code,
+                .message = "Build and tests passed, but the candidate contained no source change",
+            };
+            return result;
+        }
+
+        const auto commit_log = result.run_directory / "candidate-commit.log";
+        const auto commit = run_git(
+            result.staged_repository,
+            {"-c", "user.name=EngCoder", "-c", "user.email=engcoder@local.invalid",
+             "commit", "--quiet", "-m", "EngCoder verified repository candidate"},
+            commit_log,
+            false,
+            stop_token);
+        append_event(result, iteration, "seal-verified-candidate", commit, commit_log);
+        if (!process_succeeded(commit)) {
+            result.operation = {
+                .state = util::OperationState::failed,
+                .exit_code = commit.exit_code,
+                .message = "The verified staged change could not be sealed as an immutable candidate",
+            };
+            return result;
+        }
+
+        const auto candidate_head_log = result.run_directory / "candidate-head.txt";
+        const auto candidate_head = run_git(
+            result.staged_repository,
+            {"rev-parse", "--verify", "HEAD"},
+            candidate_head_log,
+            false,
+            stop_token);
+        append_event(result, iteration, "capture-candidate-commit", candidate_head, candidate_head_log);
+        result.candidate_commit = trim_ascii_whitespace(read_text(candidate_head_log));
+        if (!process_succeeded(candidate_head) || result.candidate_commit.empty()) {
+            result.operation = {
+                .state = util::OperationState::failed,
+                .exit_code = candidate_head.exit_code,
+                .message = "The sealed candidate commit could not be verified",
+            };
+            return result;
+        }
+
+        result.candidate_manifest_path = result.run_directory / "candidate.json";
+        if (!publish_new_file(result.candidate_manifest_path, candidate_manifest(result))) {
+            result.operation = {
+                .state = util::OperationState::failed,
+                .exit_code = -1,
+                .message = "The candidate manifest could not be published atomically",
+            };
+            return result;
+        }
+
         result.completed = true;
         result.operation = {
             .state = util::OperationState::succeeded,
             .exit_code = 0,
-            .message = "Build and tests passed; generated changes remain staged for review",
+            .message = "Build and tests passed in a private candidate. Review it before promotion; the selected repository is unchanged",
         };
         return result;
     }
@@ -725,9 +924,195 @@ Result run(const Request& request, const std::stop_token stop_token) {
     result.operation = {
         .state = util::OperationState::failed,
         .exit_code = -1,
-        .message = "Maximum long-horizon iterations reached",
+        .message = "Maximum repository repair loops reached; the selected repository is unchanged",
     };
-    rollback(request, result);
+    rollback(staged_request, result);
+    return result;
+}
+
+PromotionResult promote_verified_candidate(
+    const Result& candidate,
+    const std::stop_token stop_token) {
+    PromotionResult result;
+    result.candidate_commit = candidate.candidate_commit;
+    if (!candidate.completed || !candidate.compiler_passed || !candidate.tests_passed ||
+        candidate.source_repository.empty() || candidate.staged_repository.empty() ||
+        candidate.source_head.empty() || candidate.candidate_commit.empty() ||
+        !std::filesystem::is_regular_file(candidate.candidate_manifest_path) ||
+        !path_is_within(candidate.staged_repository, candidate.run_directory)) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = -1,
+            .message = "This repository candidate is incomplete or did not pass every required check",
+        };
+        return result;
+    }
+
+    auto branch_suffix = candidate.run_directory.filename().string();
+    std::ranges::transform(branch_suffix, branch_suffix.begin(), [](const unsigned char character) {
+        return std::isalnum(character) || character == '-' ? static_cast<char>(character) : '-';
+    });
+    result.branch_name = "engcoder/candidate-" + branch_suffix;
+    const auto promotion_log = candidate.run_directory / "promotion.log";
+
+    const auto candidate_head = run_git(
+        candidate.staged_repository,
+        {"rev-parse", "--verify", candidate.candidate_commit + "^{commit}"},
+        promotion_log,
+        false,
+        stop_token);
+    if (!process_succeeded(candidate_head) ||
+        trim_ascii_whitespace(read_text(promotion_log)) != candidate.candidate_commit) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = candidate_head.exit_code,
+            .message = "The staged candidate commit no longer matches its verified record",
+        };
+        return result;
+    }
+
+    const auto candidate_parent_log = candidate.run_directory / "promotion-candidate-parent.txt";
+    const auto candidate_parent = run_git(
+        candidate.staged_repository,
+        {"rev-parse", "--verify", candidate.candidate_commit + "^"},
+        candidate_parent_log,
+        false,
+        stop_token);
+    if (!process_succeeded(candidate_parent) ||
+        trim_ascii_whitespace(read_text(candidate_parent_log)) != candidate.source_head) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = candidate_parent.exit_code,
+            .message = "The candidate is not a direct child of the exact source revision that was tested",
+        };
+        return result;
+    }
+    const auto source_head_log = candidate.run_directory / "promotion-source-head.txt";
+    const auto source_head = run_git(
+        candidate.source_repository,
+        {"rev-parse", "--verify", "HEAD"},
+        source_head_log,
+        false,
+        stop_token);
+    if (!process_succeeded(source_head) ||
+        trim_ascii_whitespace(read_text(source_head_log)) != candidate.source_head) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = source_head.exit_code,
+            .message = "The repository moved since this candidate was tested. Run the task again against the current revision",
+        };
+        return result;
+    }
+
+    const auto status_log = candidate.run_directory / "promotion-source-status.txt";
+    const auto status = run_git(
+        candidate.source_repository,
+        {"status", "--porcelain=v1", "--untracked-files=normal"},
+        status_log,
+        false,
+        stop_token);
+    if (!process_succeeded(status) || !trim_ascii_whitespace(read_text(status_log)).empty()) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = status.exit_code,
+            .message = "The repository has uncommitted files. Promotion was blocked without changing anything",
+        };
+        return result;
+    }
+
+    const auto reference = "refs/heads/" + result.branch_name;
+    const auto existing_log = candidate.run_directory / "promotion-existing-ref.txt";
+    const auto existing = run_git(
+        candidate.source_repository,
+        {"rev-parse", "--verify", reference},
+        existing_log,
+        false,
+        stop_token);
+    if (process_succeeded(existing)) {
+        if (trim_ascii_whitespace(read_text(existing_log)) == candidate.candidate_commit) {
+            result.operation = {
+                .state = util::OperationState::succeeded,
+                .exit_code = 0,
+                .message = "This verified candidate branch was already promoted; the current branch remains unchanged",
+            };
+            return result;
+        }
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = existing.exit_code,
+            .message = "The candidate branch name is already in use by different content",
+        };
+        return result;
+    }
+
+    const auto fetch = run_git(
+        candidate.source_repository,
+        {"fetch", "--no-tags", candidate.staged_repository.string(),
+         candidate.candidate_commit + ":" + reference},
+        promotion_log,
+        false,
+        stop_token);
+    if (!process_succeeded(fetch)) {
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = fetch.exit_code,
+            .message = "The verified candidate could not be published as a review branch",
+        };
+        return result;
+    }
+
+    const auto verify_log = candidate.run_directory / "promotion-verified-ref.txt";
+    const auto verify = run_git(
+        candidate.source_repository,
+        {"rev-parse", "--verify", reference},
+        verify_log,
+        false,
+        stop_token);
+    if (!process_succeeded(verify) ||
+        trim_ascii_whitespace(read_text(verify_log)) != candidate.candidate_commit) {
+        static_cast<void>(run_git(
+            candidate.source_repository,
+            {"update-ref", "-d", reference, candidate.candidate_commit},
+            promotion_log,
+            true,
+            std::stop_token{}));
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = verify.exit_code,
+            .message = "Candidate publication could not be verified and was rolled back",
+        };
+        return result;
+    }
+
+    std::ostringstream receipt;
+    receipt << "{\n"
+            << "  \"version\": 1,\n"
+            << "  \"status\": \"promoted-for-review\",\n"
+            << "  \"branch\": \"" << json_escape(result.branch_name) << "\",\n"
+            << "  \"candidate_commit\": \"" << json_escape(candidate.candidate_commit) << "\",\n"
+            << "  \"source_head_unchanged\": \"" << json_escape(candidate.source_head) << "\"\n"
+            << "}\n";
+    const auto receipt_path = candidate.run_directory / "promotion.json";
+    if (!std::filesystem::exists(receipt_path) && !publish_new_file(receipt_path, receipt.str())) {
+        static_cast<void>(run_git(
+            candidate.source_repository,
+            {"update-ref", "-d", reference, candidate.candidate_commit},
+            promotion_log,
+            true,
+            std::stop_token{}));
+        result.operation = {
+            .state = util::OperationState::failed,
+            .exit_code = -1,
+            .message = "The promotion receipt could not be published; the candidate branch was rolled back",
+        };
+        return result;
+    }
+
+    result.operation = {
+        .state = util::OperationState::succeeded,
+        .exit_code = 0,
+        .message = "Verified candidate promoted to a review branch. The current branch and working files remain unchanged",
+    };
     return result;
 }
 

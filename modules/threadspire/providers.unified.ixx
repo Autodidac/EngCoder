@@ -111,6 +111,11 @@ struct UnifiedTaskResult final {
     bool tests_passed{false};
     std::size_t iterations{0};
     std::filesystem::path run_directory;
+    std::filesystem::path source_repository;
+    std::filesystem::path staged_repository;
+    std::filesystem::path candidate_manifest_path;
+    std::string source_head;
+    std::string candidate_commit;
     std::string task_id;
     std::string provider_id;
     std::string content;
