@@ -2966,7 +2966,8 @@ void MainWindow::create_chat_page() {
              id::chat_composer_card,
              id::chat_activity_card}) {
         create_control(
-            L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+            L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW,
             0, identifier, parent);
     }
 

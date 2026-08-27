@@ -1012,6 +1012,44 @@ void test_json_and_stream_protocols() {
     require(events.size() == 2U && events.front().find("token") != std::string::npos &&
                 events.back() == "[DONE]",
             "SSE events must be framed without losing split tokens");
+
+    threadspire::ai::models::ModelProfile provider_model;
+    provider_model.model_name = "qwen/qwen3.8-27b";
+    threadspire::ai::backend::CompletionRequest provider_request;
+    provider_request.messages = {
+        {.role = "system", .content = "Answer directly."},
+        {.role = "system", .content = "Use the supplied context only when relevant."},
+        {.role = "user", .content = "How are you?"},
+    };
+    const auto provider_payload = threadspire::ai::backend::openai_chat_payload(
+        provider_model,
+        provider_request);
+    const auto provider_document = threadspire::ai::core::json::try_parse(
+        provider_payload,
+        error);
+    require(provider_document.has_value(),
+            "OpenAI-compatible provider payload must be valid JSON");
+    const auto* provider_messages = provider_document->find("messages");
+    require(provider_messages != nullptr && provider_messages->is_array(),
+            "provider payload must contain a message array");
+    const auto* provider_message_array = provider_messages->as_array();
+    require(provider_message_array != nullptr && provider_message_array->size() == 2U,
+            "provider payload must merge all system instructions into one leading message");
+    const auto* provider_system = provider_message_array->front().find("content");
+    require(threadspire::ai::core::json::string_or(
+                provider_message_array->front().find("role")) == "system" &&
+                threadspire::ai::core::json::string_or(provider_system).find(
+                    "Your public identity is EngCoder") != std::string::npos &&
+                threadspire::ai::core::json::string_or(provider_system).find(
+                    "Answer directly.") != std::string::npos &&
+                threadspire::ai::core::json::string_or(provider_system).find(
+                    "Use the supplied context") != std::string::npos,
+            "the single system message must preserve identity and every execution instruction");
+    require(threadspire::ai::core::json::string_or(
+                provider_message_array->back().find("role")) == "user" &&
+                threadspire::ai::core::json::string_or(
+                    provider_message_array->back().find("content")) == "How are you?",
+            "the current user message must remain separate and unchanged");
 }
 
 void test_mcp_tool_schema_conversion() {
@@ -1419,8 +1457,11 @@ void test_windows_ui_source_contract() {
     const auto completion_client = read_text_file(
         source / "src/backend/completion_client.cpp");
     require(completion_client.find("Your public identity is EngCoder") != std::string::npos &&
-                completion_client.find("Never identify yourself as the underlying") != std::string::npos,
-            "every connected provider request must enforce the EngCoder public identity");
+                completion_client.find("Never identify yourself as the underlying") != std::string::npos &&
+                completion_client.find("if (message.role == \"system\")") != std::string::npos &&
+                completion_client.find("merge_system_prompt(message.content)") != std::string::npos &&
+                completion_client.find("one canonical leading system message") != std::string::npos,
+            "every connected provider request must enforce the EngCoder identity through one provider-compatible leading system message");
     const auto autonomous_runner = read_text_file(
         source / "src/long_horizon/runner.cpp");
     require(autonomous_runner.find("You are EngCoder's autonomous C++23 repository worker") != std::string::npos &&
@@ -1626,6 +1667,7 @@ void test_windows_ui_source_contract() {
                 ui.find("scaled(600, dpi_)") != std::string::npos &&
                 ui.find("id::chat_setup_card") != std::string::npos &&
                 ui.find("SS_OWNERDRAW") != std::string::npos &&
+                ui.find("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW") != std::string::npos &&
                 ui.find("RoundRect") != std::string::npos &&
                 ui.find("header_brush") == std::string::npos &&
                 ui.find("accent_rule") == std::string::npos &&
@@ -1634,7 +1676,7 @@ void test_windows_ui_source_contract() {
                 ui.find("compact_bottom_actions") != std::string::npos &&
                 ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
                 ui.find("storage_available * 68 / 100") != std::string::npos,
-            "the GUI must use a readable high-DPI type scale, native card surfaces, and independently wrapping reply and composer controls");
+            "the GUI must use a readable high-DPI type scale, non-overpainting native card surfaces, and independently wrapping reply and composer controls");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&
                 ui.find("failed • retry available") != std::string::npos &&
                 ui.find(".learning_destination = \"request-error\"") != std::string::npos &&

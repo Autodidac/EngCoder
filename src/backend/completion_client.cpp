@@ -70,15 +70,28 @@ void append_tool_calls(
 
 [[nodiscard]] core::json::Value::Array build_messages(const CompletionRequest& request) {
     core::json::Value::Array messages;
-    messages.emplace_back(core::json::Value::Object{
-        {"role", "system"},
-        {"content",
-         "Your public identity is EngCoder. Never identify yourself as the underlying "
-         "model, model family, vendor, server, or provider. Never expose an internal "
-         "model name as your own name. Answer as EngCoder."},
-    });
+    std::string system_prompt =
+        "Your public identity is EngCoder. Never identify yourself as the underlying "
+        "model, model family, vendor, server, or provider. Never expose an internal "
+        "model name as your own name. Answer as EngCoder.";
+    const auto merge_system_prompt = [&system_prompt](const std::string_view addition) {
+        if (addition.empty()) {
+            return;
+        }
+        system_prompt += "\n\n";
+        system_prompt += addition;
+    };
     if (!request.messages.empty()) {
+        core::json::Value::Array conversation;
         for (const auto& message : request.messages) {
+            // Several OpenAI-compatible chat templates, including Qwen through
+            // LM Studio, accept exactly one system message and reject a second
+            // one even when both precede the conversation. Preserve every
+            // instruction while emitting one canonical leading system message.
+            if (message.role == "system") {
+                merge_system_prompt(message.content);
+                continue;
+            }
             core::json::Value::Object item;
             item.emplace("role", message.role);
             item.emplace("content", message.content);
@@ -96,16 +109,22 @@ void append_tool_calls(
                 }
                 item.emplace("tool_calls", std::move(*calls));
             }
-            messages.emplace_back(std::move(item));
+            conversation.emplace_back(std::move(item));
+        }
+        messages.emplace_back(core::json::Value::Object{
+            {"role", "system"},
+            {"content", std::move(system_prompt)},
+        });
+        for (auto& message : conversation) {
+            messages.emplace_back(std::move(message));
         }
         return messages;
     }
-    if (!request.system_prompt.empty()) {
-        messages.emplace_back(core::json::Value::Object{
-            {"role", "system"},
-            {"content", request.system_prompt},
-        });
-    }
+    merge_system_prompt(request.system_prompt);
+    messages.emplace_back(core::json::Value::Object{
+        {"role", "system"},
+        {"content", std::move(system_prompt)},
+    });
     messages.emplace_back(core::json::Value::Object{
         {"role", "user"},
         {"content", request.prompt},
@@ -410,6 +429,12 @@ std::string json_escape(const std::string_view value) {
     return core::json::escape(value);
 }
 
+std::string openai_chat_payload(
+    const models::ModelProfile& model,
+    const CompletionRequest& request) {
+    return build_openai_payload(model, request);
+}
+
 bool OpenAiSseDecoder::feed(
     const std::string_view chunk,
     const EventCallback& callback) {
@@ -478,7 +503,7 @@ CompletionResult CompletionClient::complete(
     try {
         payload = model.protocol == "ollama"
             ? build_ollama_payload(model, request)
-            : build_openai_payload(model, request);
+            : openai_chat_payload(model, request);
     } catch (const std::exception& exception) {
         result.error = exception.what();
         return result;

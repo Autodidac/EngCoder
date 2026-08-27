@@ -85,6 +85,9 @@ private:
 };
 
 [[nodiscard]] std::string json_escape(std::string_view value);
+[[nodiscard]] std::string openai_chat_payload(
+    const models::ModelProfile& model,
+    const CompletionRequest& request);
 
 } // namespace threadspire::ai::backend
 
