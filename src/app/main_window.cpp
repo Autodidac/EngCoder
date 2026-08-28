@@ -132,6 +132,7 @@ constexpr int status = 101;
 constexpr int settings_tabs = 102;
 constexpr int primary_tab_tail = 103;
 constexpr int settings_tab_tail = 104;
+constexpr int activity_strip = 105;
 
 constexpr int page_chat = 200;
 constexpr int page_coding = 201;
@@ -816,6 +817,8 @@ void draw_workspace_card(
     int radius,
     COLORREF accent) noexcept;
 
+void draw_page_background(HWND page, HDC device_context) noexcept;
+
 [[nodiscard]] bool draw_dark_control_item(
     const DRAWITEMSTRUCT& item) {
     const auto control_font = reinterpret_cast<HFONT>(
@@ -845,24 +848,47 @@ void draw_workspace_card(
         fill_solid_rect(item.hDC, item.rcItem, window_color);
         return true;
     }
-    if (item.CtlType == ODT_STATIC &&
-        (item.CtlID == id::chat_setup_card ||
-         item.CtlID == id::chat_conversation_card ||
-         item.CtlID == id::chat_composer_card ||
-         item.CtlID == id::chat_activity_card ||
-         item.CtlID == id::skills_overview_card ||
-         item.CtlID == id::skills_learning_card ||
-         item.CtlID == id::skills_addons_card)) {
-        const auto accent = item.CtlID == id::chat_conversation_card
-            ? transcript_internal_color
-            : (item.CtlID == id::chat_activity_card
-                ? transcript_connected_color
-                : accent_color);
+    if (item.CtlType == ODT_STATIC && item.CtlID == id::activity_strip) {
+        auto rectangle = item.rcItem;
         draw_workspace_card(
             item.hDC,
-            item.rcItem,
+            rectangle,
             scaled(12, ::GetDpiForWindow(item.hwndItem)),
-            accent);
+            transcript_internal_color);
+        ::InflateRect(&rectangle, -scaled(18, ::GetDpiForWindow(item.hwndItem)), -4);
+
+        const auto text = window_text(item.hwndItem);
+        const auto separator = text.find_first_of(L"\r\n");
+        const auto title = text.substr(0, separator);
+        auto detail = separator == std::wstring::npos
+            ? std::wstring{}
+            : text.substr(separator + 1U);
+        while (!detail.empty() && (detail.front() == L'\r' || detail.front() == L'\n')) {
+            detail.erase(detail.begin());
+        }
+
+        const auto middle = rectangle.top + (rectangle.bottom - rectangle.top) * 45 / 100;
+        auto title_rectangle = rectangle;
+        title_rectangle.bottom = middle;
+        auto detail_rectangle = rectangle;
+        detail_rectangle.top = middle;
+        const auto title_color = title.starts_with(L"ATTENTION")
+            ? transcript_error_color
+            : (title.starts_with(L"WORKING")
+                ? transcript_connected_color
+                : transcript_internal_color);
+        draw_dark_text(
+            item.hDC,
+            title_rectangle,
+            title,
+            title_color,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        draw_dark_text(
+            item.hDC,
+            detail_rectangle,
+            detail,
+            muted_text_color,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         return true;
     }
     if (item.CtlType == ODT_STATIC &&
@@ -1494,7 +1520,6 @@ void draw_workspace_card(
     const RECT& rectangle,
     const int radius,
     const COLORREF accent) noexcept {
-    static_cast<void>(accent);
     if (::IsRectEmpty(&rectangle) != FALSE) {
         return;
     }
@@ -1524,6 +1549,72 @@ void draw_workspace_card(
     static_cast<void>(::SelectObject(device_context, previous_pen));
     static_cast<void>(::DeleteObject(brush));
     static_cast<void>(::DeleteObject(pen));
+
+    auto accent_rectangle = rectangle;
+    accent_rectangle.left += 1;
+    accent_rectangle.right = std::min(
+        accent_rectangle.right,
+        accent_rectangle.left + std::max(2, radius / 4));
+    accent_rectangle.top += std::max(2, radius / 2);
+    accent_rectangle.bottom -= std::max(2, radius / 2);
+    if (::IsRectEmpty(&accent_rectangle) == FALSE) {
+        fill_solid_rect(device_context, accent_rectangle, accent);
+    }
+}
+
+void draw_page_background(
+    const HWND page,
+    const HDC device_context) noexcept {
+    RECT client{};
+    static_cast<void>(::GetClientRect(page, &client));
+    fill_solid_rect(device_context, client, window_color);
+
+    const auto draw_marker = [&](const int identifier, const COLORREF accent) {
+        const auto marker = ::GetDlgItem(page, identifier);
+        if (marker == nullptr) {
+            return;
+        }
+        RECT screen_rectangle{};
+        if (::GetWindowRect(marker, &screen_rectangle) == FALSE) {
+            return;
+        }
+        std::array points{
+            POINT{screen_rectangle.left, screen_rectangle.top},
+            POINT{screen_rectangle.right, screen_rectangle.bottom},
+        };
+        static_cast<void>(::MapWindowPoints(
+            HWND_DESKTOP,
+            page,
+            points.data(),
+            static_cast<UINT>(points.size())));
+        const RECT local_rectangle{
+            points[0].x,
+            points[0].y,
+            points[1].x,
+            points[1].y,
+        };
+        draw_workspace_card(
+            device_context,
+            local_rectangle,
+            scaled(12, ::GetDpiForWindow(page)),
+            accent);
+    };
+
+    switch (::GetDlgCtrlID(page)) {
+    case id::page_chat:
+        draw_marker(id::chat_setup_card, accent_color);
+        draw_marker(id::chat_conversation_card, transcript_internal_color);
+        draw_marker(id::chat_composer_card, accent_color);
+        draw_marker(id::chat_activity_card, transcript_connected_color);
+        break;
+    case id::page_skills:
+        draw_marker(id::skills_overview_card, accent_color);
+        draw_marker(id::skills_learning_card, transcript_internal_color);
+        draw_marker(id::skills_addons_card, transcript_connected_color);
+        break;
+    default:
+        break;
+    }
 }
 LRESULT CALLBACK prompt_edit_subclass(
     const HWND edit,
@@ -1563,6 +1654,13 @@ LRESULT CALLBACK page_host_subclass(
     const DWORD_PTR reference_data) {
     const auto root = reinterpret_cast<HWND>(reference_data);
     switch (message) {
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        const auto device_context = ::BeginPaint(page, &paint);
+        draw_page_background(page, device_context);
+        ::EndPaint(page, &paint);
+        return 0;
+    }
     case WM_COMMAND:
     case WM_NOTIFY:
     case WM_HSCROLL:
@@ -2899,6 +2997,13 @@ void MainWindow::create_controls() {
         L"STATIC", L"", WS_CHILD | SS_OWNERDRAW,
         0, id::settings_tab_tail, window_);
     create_control(
+        L"STATIC",
+        L"READY — EngCoder is standing by\r\nNo foreground or background work is running.",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        0,
+        id::activity_strip,
+        window_);
+    create_control(
         L"STATIC", L"Discovering local AI…",
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
         0, id::status, window_);
@@ -2967,7 +3072,7 @@ void MainWindow::create_chat_page() {
              id::chat_activity_card}) {
         create_control(
             L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW,
+            WS_CHILD,
             0, identifier, parent);
     }
 
@@ -3405,11 +3510,11 @@ void MainWindow::create_learning_page() {
         L"STATIC", L"Automatic idle learning is checking for verified work",
         WS_CHILD | WS_VISIBLE, 0, id::learning_session_status, parent);
     create_control(
-        L"STATIC", L"Neural weight retraining",
+        L"STATIC", L"Train neural weights",
         WS_CHILD | WS_VISIBLE, 0, id::learning_session_label, parent);
     create_control(
         L"STATIC",
-        L"Compile every pending verified example, retrain a separate test copy, check it, and replace the working model only if it is better.",
+        L"Use all pending verified examples to retrain an isolated copy. The working model changes only when that copy passes every check.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::learning_session_budget, parent);
     create_control(
         L"BUTTON", L"Compile data and retrain model",
@@ -3593,7 +3698,7 @@ void MainWindow::create_skills_page() {
              id::skills_learning_card,
              id::skills_addons_card}) {
         create_control(
-            L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+            L"STATIC", L"", WS_CHILD,
             0, identifier, parent);
     }
 
@@ -3794,15 +3899,26 @@ void MainWindow::layout_controls() {
         return;
     }
     const auto margin = scaled(14, dpi_);
-    const auto status_height = scaled(30, dpi_);
+    const auto status_height = scaled(26, dpi_);
+    const auto global_activity_height = scaled(56, dpi_);
+    const auto activity_gap = scaled(8, dpi_);
+    const auto global_activity_y = std::max(
+        margin,
+        client_height - status_height - global_activity_height);
     move_control(control(id::status), 0, client_height - status_height, client_width, status_height);
+    move_control(
+        control(id::activity_strip),
+        margin,
+        global_activity_y,
+        std::max(1, client_width - margin * 2),
+        global_activity_height);
     const auto tabs = control(id::tabs);
     move_control(
         tabs,
         margin,
         margin,
         client_width - margin * 2,
-        client_height - status_height - margin * 2);
+        std::max(1, global_activity_y - activity_gap - margin));
     const auto tab_count = TabCtrl_GetItemCount(tabs);
     if (tab_count > 0) {
         const auto tab_space = std::max(
@@ -3935,31 +4051,40 @@ void MainWindow::layout_controls() {
     const auto gap = scaled(10, dpi_);
     const auto row = scaled(40, dpi_);
     const auto button = scaled(144, dpi_);
+    const auto surface_padding = scaled(12, dpi_);
 
     // The root shell and every page host now have their final bounds. Queue
     // leaf controls by parent so Win32 never abandons a mixed-parent batch.
+    {
     LayoutBatch layout_batch{192};
 
     // Primary workspace: connection, model, conversation, coding mode, and learning state
     // are intentionally visible without requiring another tab.
-    move_control(control(id::chat_session_label), 0, 0, scaled(40, dpi_), row);
+    move_control(
+        control(id::chat_session_label),
+        surface_padding,
+        surface_padding,
+        scaled(40, dpi_),
+        row);
     const auto chat_delete_width = scaled(108, dpi_);
     move_control(
         control(id::chat_session),
-        scaled(44, dpi_),
-        0,
-        std::max(scaled(220, dpi_), width - scaled(44, dpi_) - chat_delete_width - gap),
+        surface_padding + scaled(44, dpi_),
+        surface_padding,
+        std::max(
+            scaled(220, dpi_),
+            width - surface_padding * 2 - scaled(44, dpi_) - chat_delete_width - gap),
         row + scaled(220, dpi_));
     move_control(
         control(id::chat_delete_session),
-        width - chat_delete_width,
-        0,
+        width - surface_padding - chat_delete_width,
+        surface_padding,
         chat_delete_width,
         row);
 
-    const auto workspace_top = row + gap;
+    const auto workspace_top = surface_padding + row + gap;
     ::ShowWindow(control(id::chat_mode_label), SW_HIDE);
-    auto workspace_x = 0;
+    auto workspace_x = surface_padding;
     move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(75, dpi_), row);
     workspace_x += scaled(79, dpi_);
     move_control(control(id::chat_source), workspace_x, workspace_top, scaled(220, dpi_), row + scaled(120, dpi_));
@@ -3969,7 +4094,9 @@ void MainWindow::layout_controls() {
 
     const auto workspace_button_width = scaled(108, dpi_);
     const auto workspace_settings_width = scaled(142, dpi_);
-    const auto model_width = std::max(scaled(180, dpi_), width - workspace_x);
+    const auto model_width = std::max(
+        scaled(180, dpi_),
+        width - workspace_x - surface_padding);
     move_control(control(id::chat_model), workspace_x, workspace_top, model_width, row + scaled(220, dpi_));
 
     const auto workspace_status_y = workspace_top + row + gap;
@@ -3977,19 +4104,19 @@ void MainWindow::layout_controls() {
         workspace_button_width + workspace_settings_width + gap;
     move_control(
         control(id::chat_backend),
-        0,
+        surface_padding,
         workspace_status_y,
-        std::max(1, width - workspace_buttons_width - gap),
+        std::max(1, width - surface_padding * 2 - workspace_buttons_width - gap),
         row);
     move_control(
         control(id::chat_discover),
-        width - workspace_buttons_width,
+        width - surface_padding - workspace_buttons_width,
         workspace_status_y,
         workspace_button_width,
         row);
     move_control(
         control(id::chat_open_models),
-        width - workspace_settings_width,
+        width - surface_padding - workspace_settings_width,
         workspace_status_y,
         workspace_settings_width,
         row);
@@ -4004,46 +4131,57 @@ void MainWindow::layout_controls() {
     }
     move_control(
         control(id::chat_repository_label),
-        0,
+        surface_padding,
         workspace_repository_y,
         scaled(82, dpi_),
         row);
     move_control(
         control(id::chat_repository),
-        scaled(86, dpi_),
+        surface_padding + scaled(86, dpi_),
         workspace_repository_y,
-        width - scaled(206, dpi_) - gap,
+        width - surface_padding * 2 - scaled(206, dpi_) - gap,
         row);
     move_control(
         control(id::chat_repository_browse),
-        width - scaled(112, dpi_),
+        width - surface_padding - scaled(112, dpi_),
         workspace_repository_y,
         scaled(112, dpi_),
         row);
 
     const auto workspace_content_top = show_workspace_repository
-        ? workspace_repository_y + row + gap
-        : workspace_repository_y;
+        ? workspace_repository_y + row + gap + surface_padding
+        : workspace_repository_y + surface_padding;
     const auto sidebar_width = std::clamp(
         width * 30 / 100,
         scaled(330, dpi_),
         scaled(600, dpi_));
     const auto conversation_width = width - sidebar_width - gap;
     const auto sidebar_x = conversation_width + gap;
-    const auto compact_actions = conversation_width < scaled(550, dpi_);
-    const auto compact_bottom_actions = conversation_width < scaled(850, dpi_);
+    const auto conversation_inner_x = surface_padding;
+    const auto conversation_inner_width = std::max(
+        1,
+        conversation_width - surface_padding * 2);
+    const auto sidebar_inner_x = sidebar_x + surface_padding;
+    const auto sidebar_inner_width = std::max(
+        1,
+        sidebar_width - surface_padding * 2);
+    const auto compact_actions = conversation_inner_width < scaled(550, dpi_);
+    const auto compact_bottom_actions = conversation_inner_width < scaled(850, dpi_);
     const auto compact_vertical = height < scaled(760, dpi_);
     const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
-    const auto action_y = height - action_block_height;
+    const auto action_y = height - surface_padding - action_block_height;
     const auto prompt_height = std::clamp(
         height * 18 / 100,
         scaled(compact_vertical ? 75 : 95, dpi_),
         scaled(compact_vertical ? 120 : 165, dpi_));
     const auto prompt_y = action_y - gap - prompt_height;
     const auto prompt_label_y = prompt_y - row;
-    const auto conversation_y = workspace_content_top + row;
+    const auto composer_top = prompt_label_y - surface_padding;
+    const auto conversation_label_y = workspace_content_top + surface_padding;
+    const auto conversation_y = conversation_label_y + row;
     const auto review_block_height = compact_actions ? row * 2 + gap : row;
-    const auto review_y = prompt_label_y - gap - review_block_height;
+    const auto review_y =
+        composer_top - gap - surface_padding - review_block_height;
     const auto conversation_height = std::max(
         scaled(compact_vertical ? 80 : 120, dpi_),
         review_y - gap - conversation_y);
@@ -4051,33 +4189,35 @@ void MainWindow::layout_controls() {
         std::max(1, workspace_content_top - gap));
     move_control(control(id::chat_conversation_card), 0, workspace_content_top,
         conversation_width,
-        std::max(1, review_y + review_block_height - workspace_content_top));
-    move_control(control(id::chat_composer_card), 0, prompt_label_y,
+        std::max(
+            1,
+            review_y + review_block_height + surface_padding - workspace_content_top));
+    move_control(control(id::chat_composer_card), 0, composer_top,
         conversation_width,
-        std::max(1, height - prompt_label_y));
+        std::max(1, height - composer_top));
     move_control(control(id::chat_activity_card), sidebar_x, workspace_content_top,
         sidebar_width,
         std::max(1, height - workspace_content_top));
 
     move_control(
         control(id::chat_response_label),
-        0,
-        workspace_content_top,
+        conversation_inner_x,
+        conversation_label_y,
         scaled(160, dpi_),
         row);
     move_control(
         control(id::chat_response),
-        0,
+        conversation_inner_x,
         conversation_y,
-        conversation_width,
+        conversation_inner_width,
         conversation_height);
 
     if (compact_actions) {
-        auto review_x = 0;
+        auto review_x = conversation_inner_x;
         const auto first_row_y = review_y;
         const auto selector_width = std::max(
             scaled(140, dpi_),
-            conversation_width - scaled(62 + 62 + 70, dpi_) - gap * 3);
+            conversation_inner_width - scaled(62 + 62 + 70, dpi_) - gap * 3);
         const auto move_first_row = [&](const int identifier, const int control_width) {
             const auto control_height = identifier == id::chat_turn
                 ? row + scaled(220, dpi_)
@@ -4090,7 +4230,7 @@ void MainWindow::layout_controls() {
         move_first_row(id::chat_edit, scaled(62, dpi_));
         move_first_row(id::chat_retry, scaled(70, dpi_));
 
-        review_x = 0;
+        review_x = conversation_inner_x;
         const auto second_row_y = review_y + row + gap;
         const auto move_second_row = [&](const int identifier, const int control_width) {
             move_control(control(identifier), review_x, second_row_y, control_width, row);
@@ -4103,10 +4243,10 @@ void MainWindow::layout_controls() {
         const auto review_fixed_width =
             scaled(55 + 55 + 62 + 120 + 62 + 68, dpi_) + gap * 6;
         const auto reply_selector_width = std::clamp(
-            conversation_width - review_fixed_width,
+            conversation_inner_width - review_fixed_width,
             scaled(80, dpi_),
             scaled(180, dpi_));
-        auto review_x = 0;
+        auto review_x = conversation_inner_x;
         const auto move_review_action = [&](const int identifier, const int control_width) {
             const auto control_height = identifier == id::chat_turn
                 ? row + scaled(220, dpi_)
@@ -4125,31 +4265,31 @@ void MainWindow::layout_controls() {
 
     move_control(
         control(id::chat_prompt_label),
-        0,
+        conversation_inner_x,
         prompt_label_y,
         scaled(140, dpi_),
         row);
     move_control(
         control(id::chat_include_context),
-        scaled(144, dpi_),
+        conversation_inner_x + scaled(144, dpi_),
         prompt_label_y,
         scaled(270, dpi_),
         row);
     move_control(
         control(id::chat_attachment_status),
-        scaled(418, dpi_),
+        conversation_inner_x + scaled(418, dpi_),
         prompt_label_y,
-        std::max(1, conversation_width - scaled(418, dpi_)),
+        std::max(1, conversation_inner_width - scaled(418, dpi_)),
         row);
     move_control(
         control(id::chat_prompt),
-        0,
+        conversation_inner_x,
         prompt_y,
-        conversation_width,
+        conversation_inner_width,
         prompt_height);
 
     if (compact_bottom_actions) {
-        auto action_x = 0;
+        auto action_x = conversation_inner_x;
         const auto move_first_action = [&](const int identifier, const int control_width) {
             const auto control_height = identifier == id::chat_mode
                 ? row + scaled(220, dpi_)
@@ -4161,7 +4301,7 @@ void MainWindow::layout_controls() {
         move_first_action(id::chat_send, scaled(100, dpi_));
         move_first_action(id::chat_stop, scaled(75, dpi_));
         move_first_action(id::chat_clear, scaled(100, dpi_));
-        action_x = 0;
+        action_x = conversation_inner_x;
         const auto second_action_y = action_y + row + gap;
         const auto move_second_action = [&](const int identifier, const int control_width) {
             move_control(control(identifier), action_x, second_action_y, control_width, row);
@@ -4170,9 +4310,12 @@ void MainWindow::layout_controls() {
         move_second_action(id::chat_attach, scaled(125, dpi_));
         move_second_action(id::chat_open_output, scaled(135, dpi_));
         move_control(control(id::chat_hint), action_x, second_action_y,
-            std::max(1, conversation_width - action_x), row);
+            std::max(
+                1,
+                conversation_inner_x + conversation_inner_width - action_x),
+            row);
     } else {
-        auto action_x = 0;
+        auto action_x = conversation_inner_x;
         const auto move_workspace_action = [&](const int identifier, const int control_width) {
             const auto control_height = identifier == id::chat_mode
                 ? row + scaled(220, dpi_)
@@ -4187,22 +4330,26 @@ void MainWindow::layout_controls() {
         move_workspace_action(id::chat_attach, scaled(115, dpi_));
         move_workspace_action(id::chat_open_output, scaled(125, dpi_));
         move_control(control(id::chat_hint), action_x, action_y,
-            std::max(1, conversation_width - action_x), row);
+            std::max(
+                1,
+                conversation_inner_x + conversation_inner_width - action_x),
+            row);
     }
 
     move_control(
         control(id::chat_plan_label),
-        sidebar_x,
-        workspace_content_top,
-        sidebar_width - scaled(140, dpi_) - gap,
+        sidebar_inner_x,
+        workspace_content_top + surface_padding,
+        sidebar_inner_width - scaled(140, dpi_) - gap,
         row);
     move_control(
         control(id::chat_route),
-        width - scaled(140, dpi_),
-        workspace_content_top,
+        width - surface_padding - scaled(140, dpi_),
+        workspace_content_top + surface_padding,
         scaled(140, dpi_),
         row);
-    const auto sidebar_available = height - workspace_content_top - row - gap;
+    const auto sidebar_available =
+        height - workspace_content_top - surface_padding * 2 - row - gap;
     const auto sidebar_status_reserve = row + gap + scaled(70, dpi_);
     const auto maximum_plan_height = std::max(
         scaled(120, dpi_),
@@ -4213,23 +4360,23 @@ void MainWindow::layout_controls() {
         maximum_plan_height);
     move_control(
         control(id::chat_plan),
-        sidebar_x,
-        workspace_content_top + row,
-        sidebar_width,
+        sidebar_inner_x,
+        workspace_content_top + surface_padding + row,
+        sidebar_inner_width,
         plan_height);
     const auto workspace_learning_y =
-        workspace_content_top + row + plan_height + gap;
+        workspace_content_top + surface_padding + row + plan_height + gap;
     move_control(
         control(id::chat_auto_learning),
-        sidebar_x,
+        sidebar_inner_x,
         workspace_learning_y,
-        sidebar_width,
+        sidebar_inner_width,
         row);
     move_control(
         control(id::chat_learning_status),
-        sidebar_x,
+        sidebar_inner_x,
         workspace_learning_y + row + gap,
-        sidebar_width,
+        sidebar_inner_width,
         scaled(70, dpi_));
     // Dedicated coding workspace remains available as the second primary tab.
     auto coding_x = 0;
@@ -4577,25 +4724,25 @@ void MainWindow::layout_controls() {
     move_control(control(id::learning_session_status), 0, learning_y, width, row);
     learning_y += row + gap;
 
-    const auto training_label_width = scaled(170, dpi_);
     const auto training_button_width = scaled(245, dpi_);
     move_control(
         control(id::learning_session_label),
         0,
         learning_y,
-        training_label_width,
-        row);
-    move_control(
-        control(id::learning_session_budget),
-        training_label_width + gap,
-        learning_y,
-        std::max(1, width - training_label_width - training_button_width - gap * 2),
+        std::max(1, width - training_button_width - gap),
         row);
     move_control(
         control(id::learning_session_start),
         std::max(0, width - training_button_width),
         learning_y,
         training_button_width,
+        row);
+    learning_y += row + gap;
+    move_control(
+        control(id::learning_session_budget),
+        0,
+        learning_y,
+        width,
         row);
     learning_y += row + gap;
     const auto auto_width = std::max(1, width * 58 / 100);
@@ -5037,7 +5184,14 @@ void MainWindow::layout_controls() {
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
     const auto log_y = storage_y + storage_height + gap;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
+    }
 
+    // Commit every queued child move before showing a page. Showing the host
+    // while its children still had their previous bounds exposed a half-laid-out
+    // frame after Send, Retry, source changes, and tab changes.
+    for (const auto page : page_windows_) {
+        static_cast<void>(::InvalidateRect(page, nullptr, FALSE));
+    }
     show_page(page_);
 }
 
@@ -5396,6 +5550,7 @@ void MainWindow::handle_command(const int identifier) {
     default:
         break;
     }
+    update_global_activity();
 }
 
 
@@ -9604,6 +9759,140 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     }
     set_control_text(id::models_progress_detail, detail.str());
 }
+
+void MainWindow::update_global_activity() {
+    std::vector<std::wstring> active_work;
+    active_work.reserve(10);
+    const auto add_running = [&active_work](
+        const util::AsyncOperation& operation,
+        std::wstring label) {
+        if (operation.running()) {
+            active_work.push_back(std::move(label));
+        }
+    };
+
+    add_running(chat_operation_, L"Answering your message");
+    add_running(long_horizon_operation_, L"Working on a repository task");
+    add_running(media_operation_, L"Creating image or audio output");
+    add_running(storage_cleanup_operation_, L"Cleaning application storage safely");
+    add_running(capability_pack_operation_, L"Changing an optional add-on");
+    add_running(discovery_operation_, L"Finding AI apps on this computer");
+    add_running(mcp_operation_, L"Connecting optional tools");
+
+    if (backend_operation_.running()) {
+        std::wstring backend_work;
+        switch (lifecycle_action_) {
+        case LifecycleAction::install_backend:
+            backend_work = L"Preparing built-in AI files";
+            break;
+        case LifecycleAction::verify_backend:
+            backend_work = L"Checking built-in AI files";
+            break;
+        case LifecycleAction::start_host:
+            backend_work = L"Starting the built-in AI";
+            break;
+        case LifecycleAction::bootstrap_model: {
+            backend_work = L"Training a separate built-in AI candidate";
+            const auto progress = runtime::read_internal_model_progress(paths_);
+            const auto completed = progress.total_steps > 0U
+                ? progress.total_steps
+                : progress.prior_total_steps + progress.step;
+            const auto target = progress.bootstrap_target_steps > 0U
+                ? progress.bootstrap_target_steps
+                : progress.maximum_steps;
+            if (target > 0U) {
+                backend_work += L" — " + std::to_wstring(completed) +
+                    L"/" + std::to_wstring(target);
+            }
+            if (progress.eta_seconds.has_value()) {
+                backend_work += L", about " +
+                    format_duration(*progress.eta_seconds) + L" left";
+            }
+            break;
+        }
+        case LifecycleAction::none:
+            backend_work = L"Managing the built-in AI";
+            break;
+        }
+        active_work.push_back(std::move(backend_work));
+    }
+
+    add_running(
+        piggyback_operation_,
+        L"Creating and checking verified practice examples");
+
+    const auto pipeline = learning_service_->pipeline_snapshot();
+    if (pipeline.active_job.has_value()) {
+        auto label = std::wstring{L"Retraining a separate test model"};
+        if (!pipeline.active_job->skill.empty()) {
+            label += L" — " + widen(pipeline.active_job->skill);
+        }
+        active_work.push_back(std::move(label));
+    }
+    add_running(storage_operation_, L"Measuring disk and memory use");
+
+    std::wostringstream text;
+    if (!active_work.empty()) {
+        text << L"WORKING — " << active_work.front() << L"\r\n";
+        if (active_work.size() > 1U) {
+            text << L"Also running: ";
+            for (std::size_t index = 1; index < active_work.size(); ++index) {
+                if (index > 1U) {
+                    text << L" • ";
+                }
+                text << active_work[index];
+            }
+        } else if (chat_operation_.running() || media_operation_.running() ||
+                   long_horizon_operation_.running()) {
+            text << L"Foreground work has priority; background learning is waiting.";
+        } else if (backend_operation_.running() &&
+                   lifecycle_action_ == LifecycleAction::bootstrap_model) {
+            text << L"The working AI stays available; only the isolated candidate is changing.";
+        } else if (pipeline.active_job.has_value()) {
+            text << L"The working AI stays available until the test model passes every check.";
+        } else {
+            text << L"This activity is live; the Activity page keeps its detailed log.";
+        }
+        if (pipeline.queued_updates > 0U) {
+            text << L" • " << pipeline.queued_updates << L" saved improvement"
+                 << (pipeline.queued_updates == 1U ? L"" : L"s") << L" waiting";
+        }
+    } else if (pipeline.queued_updates > 0U) {
+        text << L"WAITING — " << pipeline.queued_updates << L" saved improvement"
+             << (pipeline.queued_updates == 1U ? L"" : L"s")
+             << L" queued\r\nChat has priority; weight training starts only when its requirements are ready.";
+    } else {
+        const auto state = runtime::inspect_internal_model_state(paths_);
+        const auto now = std::chrono::steady_clock::now();
+        if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+                lifecycle_retry_at_ - now).count();
+            text << L"ATTENTION — Built-in AI will retry automatically\r\n"
+                 << L"Next attempt in " << std::max<std::int64_t>(0, remaining)
+                 << L" seconds • " << widen(lifecycle_last_error_);
+        } else if (automatic_learning_limit_reached(paths_, state)) {
+            text << L"ATTENTION — Built-in AI stopped at its verified quality limit\r\n"
+                 << L"No failed candidate replaced the working AI; details remain on the Activity page.";
+        } else {
+            const auto registry = runtime_model_snapshot();
+            const auto other_ai_count = std::ranges::count_if(
+                registry.models(),
+                [](const models::ModelProfile& model) {
+                    return model.enabled && !models::is_internal_model(model);
+                });
+            text << L"READY — No work is running\r\n"
+                 << L"Built-in AI: "
+                 << (backend_server_.running() ? L"ready" : L"not running")
+                 << L" • Other AI choices: " << other_ai_count
+                 << L" • Automatic learning: "
+                 << (checked(id::learning_auto) ? L"on" : L"off");
+        }
+    }
+
+    set_control_text(id::activity_strip, text.str());
+    redraw_control(control(id::activity_strip));
+}
+
 void MainWindow::update_periodic_state() {
     update_chat_result();
     update_media_result();
@@ -9705,6 +9994,8 @@ void MainWindow::update_periodic_state() {
         std::chrono::steady_clock::now() >= next_piggyback_at_) {
         generate_piggyback(true);
     }
+
+    update_global_activity();
 
     if (page_ == Page::learning) {
         update_learning_report();

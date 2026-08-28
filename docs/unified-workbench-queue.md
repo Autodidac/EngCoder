@@ -9,6 +9,8 @@ This queue is ordered by user-visible impact. Each item must pass Release and De
 5. **Exact add-on audit — complete.** Inspect and report every installed optional add-on file: purpose, size, owning dependency/version, origin, license, loading condition, runtime/training role, confirmed byte-for-byte redundancy, dependency relationships, and safe removal rules. Uninstalled catalog entries explicitly report zero installed files and weights.
 6. **Unified specialists and safe self-coding — complete.** Present English, coding, image, audio, tools, and future specialists as one EngCoder system while keeping capability internals isolated. Run self-coding only in a staged workspace with compile/test/evaluation evidence and atomic promotion.
 
-7. **Truthful learning and model visibility — complete.** Separate bundled curriculum, held-out checks, automatic teacher attempts, and user reviews; identify the zero-weight native foundation separately from promoted neural weights; and keep resize updates batched and responsive.
+7. **Truthful learning and model visibility — complete.** Separate bundled curriculum, held-out checks, automatic teacher attempts, and user reviews; identify the zero-weight native foundation separately from promoted neural weights; keep resize updates batched and responsive; and expose all foreground/background activity in one permanent global strip.
+
+8. **Professional non-overpainting workspace — complete.** Page hosts paint rounded, accented card surfaces behind clipped native controls. A layout transaction commits before the active page is shown, and consistent inner spacing keeps Chat, review actions, the composer, the AI sidebar, and the neural-training explanation readable after Send, Retry, source changes, tab changes, and resize.
 
 Completed items remain subject to regression tests while later items are implemented.

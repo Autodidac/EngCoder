@@ -138,6 +138,7 @@ private:
     void layout_controls();
     void show_page(Page page);
     void update_periodic_state();
+    void update_global_activity();
     void drive_automatic_lifecycle();
     void update_internal_model_lifecycle_ui();
     void handle_lifecycle_completion();

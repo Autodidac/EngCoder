@@ -46,9 +46,11 @@ The native installed base, excluding models and optional packs, must remain at o
 - **AI & Tools** contains connected-server discovery and backup connection/repair controls.
 - **Memory & Learning** contains permanent memory, automatic example collection, explicit neural retraining, live job state, and the complete searchable Training Library.
 - **Capabilities** shows what is ready and audits every optional pack without following links outside its root.
-- **Files & Activity** shows outputs, logs, eight storage/RAM cards, growth, largest files/directories, pack projections, quotas, and safe cleanup.
+- **Activity** shows outputs, logs, eight storage/RAM cards, growth, largest files/directories, pack projections, quotas, and safe cleanup.
 
-Window layout is DPI-aware. Live resizing batches native child-window movement into one layout commit to avoid repainting every control separately during each drag event.
+An always-visible two-line activity strip sits below every page. It reports active replies, repository work, media generation, discovery, tool connections, built-in setup/training, verified-example creation, test-model retraining, add-on changes, cleanup, storage/RAM measurement, queued learning, retry waits, and ready state without requiring a tab change.
+
+Window layout is DPI-aware. Live resizing batches native child-window movement into one layout commit before a page is shown. Rounded cards are painted by the clipped page background, so decorative surfaces cannot repaint over selectors, labels, or buttons after Send, Retry, source changes, or resize.
 
 ## C++23 modules
 
@@ -119,6 +121,7 @@ Useful documents:
 - [Module boundaries](docs/module-abi.md)
 - [Current implementation queue](docs/unified-workbench-queue.md)
 - [Session verification report](docs/session-report-2026-08-26.md)
+- [UI and activity verification report](docs/session-report-2026-08-28.md)
 
 ## License
 

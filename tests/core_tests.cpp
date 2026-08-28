@@ -1667,16 +1667,39 @@ void test_windows_ui_source_contract() {
                 ui.find("scaled(600, dpi_)") != std::string::npos &&
                 ui.find("id::chat_setup_card") != std::string::npos &&
                 ui.find("SS_OWNERDRAW") != std::string::npos &&
-                ui.find("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW") != std::string::npos &&
+                ui.find("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW") == std::string::npos &&
+                ui.find("void draw_page_background(") != std::string::npos &&
+                ui.find("case WM_PAINT:") != std::string::npos &&
+                ui.find("draw_page_background(page, device_context)") != std::string::npos &&
                 ui.find("RoundRect") != std::string::npos &&
                 ui.find("header_brush") == std::string::npos &&
                 ui.find("accent_rule") == std::string::npos &&
                 ui.find("id::skills_overview_card") != std::string::npos &&
-                ui.find("compact_actions = conversation_width < scaled(550, dpi_)") != std::string::npos &&
+                ui.find("compact_actions = conversation_inner_width < scaled(550, dpi_)") != std::string::npos &&
+                ui.find("const auto surface_padding = scaled(12, dpi_)") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos &&
                 ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
                 ui.find("storage_available * 68 / 100") != std::string::npos,
             "the GUI must use a readable high-DPI type scale, non-overpainting native card surfaces, and independently wrapping reply and composer controls");
+    require(ui.find("id::activity_strip") != std::string::npos &&
+                ui.find("void MainWindow::update_global_activity()") != std::string::npos &&
+                ui.find("update_global_activity();") != std::string::npos &&
+                ui.find("chat_operation_") != std::string::npos &&
+                ui.find("long_horizon_operation_") != std::string::npos &&
+                ui.find("media_operation_") != std::string::npos &&
+                ui.find("storage_cleanup_operation_") != std::string::npos &&
+                ui.find("capability_pack_operation_") != std::string::npos &&
+                ui.find("discovery_operation_") != std::string::npos &&
+                ui.find("mcp_operation_") != std::string::npos &&
+                ui.find("backend_operation_") != std::string::npos &&
+                ui.find("piggyback_operation_") != std::string::npos &&
+                ui.find("pipeline.active_job") != std::string::npos &&
+                ui.find("storage_operation_") != std::string::npos &&
+                ui.find("WORKING — ") != std::string::npos &&
+                ui.find("WAITING — ") != std::string::npos &&
+                ui.find("ATTENTION — ") != std::string::npos &&
+                ui.find("READY — ") != std::string::npos,
+            "one always-visible strip must report every foreground, setup, learning, add-on, cleanup, discovery, tool, and measurement activity");
     require(ui.find("ResponseReview::already_known") != std::string::npos &&
                 ui.find("failed • retry available") != std::string::npos &&
                 ui.find(".learning_destination = \"request-error\"") != std::string::npos &&
@@ -1914,7 +1937,9 @@ void test_windows_ui_source_contract() {
                 ui.find("RDW_INVALIDATE | RDW_ALLCHILDREN") != std::string::npos &&
                 ui.find("erase and immediate-update flags") != std::string::npos &&
                 ui.find("case WM_EXITSIZEMOVE") != std::string::npos &&
-                ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos,
+                ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos &&
+                ui.find("Commit every queued child move before showing a page") != std::string::npos &&
+                ui.find("::InvalidateRect(page, nullptr, FALSE)") != std::string::npos,
             "live resizing must commit parent geometry first, batch leaf movement per parent, and repaint the complete dark tree once");
 
     const auto launcher = read_text_file(source / "build-and-run.cmd");
