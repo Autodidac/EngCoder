@@ -1386,6 +1386,17 @@ struct PendingLayoutMove final {
 
 class LayoutBatch;
 LayoutBatch* active_layout_batch = nullptr;
+HWND active_layout_page_host = nullptr;
+
+void set_window_visibility(const HWND window, const bool visible) {
+    if (window == nullptr || ::IsWindow(window) == FALSE) {
+        return;
+    }
+    const auto currently_visible = ::IsWindowVisible(window) != FALSE;
+    if (currently_visible != visible) {
+        ::ShowWindow(window, visible ? SW_SHOW : SW_HIDE);
+    }
+}
 
 class LayoutBatch final {
 public:
@@ -1475,6 +1486,13 @@ void move_control(
     auto safe_width = std::max(1, width);
     auto safe_height = std::max(1, height);
     const auto parent = ::GetParent(control);
+    if (active_layout_page_host != nullptr && parent != nullptr &&
+        parent != active_layout_page_host && ::IsWindowVisible(parent) == FALSE) {
+        // Hidden tab pages receive their final geometry when selected. Moving
+        // every hidden page on every drag event made live resize needlessly
+        // expensive and could expose half-updated child trees.
+        return;
+    }
     RECT parent_client{};
     if (parent != nullptr && ::GetClientRect(parent, &parent_client) != FALSE) {
         const auto parent_width = std::max(
@@ -1490,6 +1508,23 @@ void move_control(
         safe_y = std::clamp(safe_y, 0, parent_height - 1);
         safe_width = std::clamp(safe_width, 1, parent_width - safe_x);
         safe_height = std::clamp(safe_height, 1, parent_height - safe_y);
+    }
+
+    RECT current{};
+    if (::GetWindowRect(control, &current) != FALSE) {
+        std::array<POINT, 2> points{{
+            POINT{current.left, current.top},
+            POINT{current.right, current.bottom},
+        }};
+        if (parent != nullptr) {
+            static_cast<void>(::MapWindowPoints(
+                nullptr, parent, points.data(), static_cast<UINT>(points.size())));
+        }
+        if (points[0].x == safe_x && points[0].y == safe_y &&
+            points[1].x - points[0].x == safe_width &&
+            points[1].y - points[0].y == safe_height) {
+            return;
+        }
     }
 
     constexpr auto flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS;
@@ -2690,13 +2725,10 @@ LRESULT MainWindow::handle_message(
     }
     case WM_SIZE:
         layout_controls();
-        // Invalidate asynchronously so repeated drag events coalesce. Avoid
-        // erase and immediate-update flags that caused white flashes and stalls.
-        static_cast<void>(::RedrawWindow(
-            window_,
-            nullptr,
-            nullptr,
-            RDW_INVALIDATE | RDW_ALLCHILDREN));
+        // Child moves invalidate their own newly exposed areas. Only queue the
+        // unclipped shell background here; repainting the complete child tree
+        // for every drag event made live resizing visibly stall.
+        static_cast<void>(::InvalidateRect(window_, nullptr, FALSE));
         return 0;
     case WM_EXITSIZEMOVE:
         static_cast<void>(::RedrawWindow(
@@ -3999,16 +4031,19 @@ void MainWindow::layout_controls() {
                     settings_navigation_height);
             }
         }
-        ::ShowWindow(settings_tabs, SW_SHOW);
-        ::ShowWindow(control(id::settings_tab_tail), SW_SHOW);
+        set_window_visibility(settings_tabs, true);
+        set_window_visibility(control(id::settings_tab_tail), true);
     } else {
-        ::ShowWindow(settings_tabs, SW_HIDE);
-        ::ShowWindow(control(id::settings_tab_tail), SW_HIDE);
+        set_window_visibility(settings_tabs, false);
+        set_window_visibility(control(id::settings_tab_tail), false);
     }
 
     for (std::size_t index = 0; index < page_windows_.size(); ++index) {
         const auto page = page_windows_[index];
         const auto page_kind = static_cast<Page>(index);
+        if (page_kind != page_) {
+            continue;
+        }
         const auto settings_page =
             page_kind == Page::models || page_kind == Page::learning || page_kind == Page::skills;
         const auto host_top = page_top + (settings_page ? settings_navigation_height : 0);
@@ -4055,6 +4090,7 @@ void MainWindow::layout_controls() {
 
     // The root shell and every page host now have their final bounds. Queue
     // leaf controls by parent so Win32 never abandons a mixed-parent batch.
+    active_layout_page_host = page_windows_[static_cast<std::size_t>(page_)];
     {
     LayoutBatch layout_batch{192};
 
@@ -4083,7 +4119,7 @@ void MainWindow::layout_controls() {
         row);
 
     const auto workspace_top = surface_padding + row + gap;
-    ::ShowWindow(control(id::chat_mode_label), SW_HIDE);
+    set_window_visibility(control(id::chat_mode_label), false);
     auto workspace_x = surface_padding;
     move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(75, dpi_), row);
     workspace_x += scaled(79, dpi_);
@@ -4127,7 +4163,7 @@ void MainWindow::layout_controls() {
              id::chat_repository_label,
              id::chat_repository,
              id::chat_repository_browse}) {
-        ::ShowWindow(control(identifier), show_workspace_repository ? SW_SHOW : SW_HIDE);
+        set_window_visibility(control(identifier), show_workspace_repository);
     }
     move_control(
         control(id::chat_repository_label),
@@ -4565,7 +4601,7 @@ void MainWindow::layout_controls() {
     };
     const auto show_backup_controls = checked(id::models_advanced_header);
     for (const auto identifier : backup_model_controls) {
-        ::ShowWindow(control(identifier), show_backup_controls ? SW_SHOW : SW_HIDE);
+        set_window_visibility(control(identifier), show_backup_controls);
     }
 
     if (show_backup_controls) {
@@ -4774,7 +4810,7 @@ void MainWindow::layout_controls() {
         id::learning_policy,
     };
     for (const auto identifier : advanced_source_controls) {
-        ::ShowWindow(control(identifier), advanced_sources ? SW_SHOW : SW_HIDE);
+        set_window_visibility(control(identifier), advanced_sources);
     }
 
     if (advanced_sources) {
@@ -4919,7 +4955,7 @@ void MainWindow::layout_controls() {
         id::learning_library,
     };
     for (const auto identifier : default_learning_controls) {
-        ::ShowWindow(control(identifier), advanced_sources ? SW_HIDE : SW_SHOW);
+        set_window_visibility(control(identifier), !advanced_sources);
     }
     if (!advanced_sources) {
     move_control(control(id::learning_memory_header), 0, learning_y, width, row);
@@ -5185,13 +5221,13 @@ void MainWindow::layout_controls() {
     const auto log_y = storage_y + storage_height + gap;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
     }
+    active_layout_page_host = nullptr;
 
     // Commit every queued child move before showing a page. Showing the host
     // while its children still had their previous bounds exposed a half-laid-out
     // frame after Send, Retry, source changes, and tab changes.
-    for (const auto page : page_windows_) {
-        static_cast<void>(::InvalidateRect(page, nullptr, FALSE));
-    }
+    static_cast<void>(::InvalidateRect(
+        page_windows_[static_cast<std::size_t>(page_)], nullptr, FALSE));
     show_page(page_);
 }
 
@@ -5199,14 +5235,16 @@ void MainWindow::show_page(const Page page) {
     page_ = page;
     const auto selected = static_cast<std::size_t>(page);
     HWND visible_page = nullptr;
+    bool visible_page_was_visible = false;
 
     for (std::size_t index = 0; index < page_windows_.size(); ++index) {
         const auto host = page_windows_[index];
         if (index == selected) {
             visible_page = host;
+            visible_page_was_visible = ::IsWindowVisible(host) != FALSE;
             continue;
         }
-        ::ShowWindow(host, SW_HIDE);
+        set_window_visibility(host, false);
     }
 
     if (visible_page != nullptr) {
@@ -5218,12 +5256,15 @@ void MainWindow::show_page(const Page page) {
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
-                SWP_NOOWNERZORDER | SWP_SHOWWINDOW));
-        static_cast<void>(::RedrawWindow(
-            visible_page,
-            nullptr,
-            nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW));
+                SWP_NOOWNERZORDER |
+                (visible_page_was_visible ? 0U : SWP_SHOWWINDOW)));
+        if (!visible_page_was_visible) {
+            static_cast<void>(::RedrawWindow(
+                visible_page,
+                nullptr,
+                nullptr,
+                RDW_INVALIDATE | RDW_ALLCHILDREN));
+        }
     }
 }
 
@@ -5422,7 +5463,7 @@ void MainWindow::handle_command(const int identifier) {
             control(id::page_learning),
             nullptr,
             nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            RDW_INVALIDATE | RDW_ALLCHILDREN);
         set_status(checked(id::learning_advanced_sources)
             ? L"Backup example-source controls shown; automatic improvement remains unchanged"
             : L"Automatic improvement, memory, activity, and the complete Training Library are visible");
@@ -6475,7 +6516,7 @@ std::wstring MainWindow::runtime_summary(
     if (custom_host_running) {
         built_in_status = internal_state.bootstrap_complete
             ? L"TRAINED MODEL READY — promoted neural weights"
-            : L"FOUNDATION READY — bundled responses; 0 B neural weights";
+            : L"NATIVE RETRIEVAL READY — 0 B neural weights; no trained LLM";
     } else if (setup_running) {
         const auto completed = progress.total_steps > 0U
             ? progress.total_steps
@@ -10427,7 +10468,7 @@ void MainWindow::update_skill_report() {
     if (backend_server_.running()) {
         built_in << (internal.bootstrap_complete
             ? L"Ready — promoted model is serving; verified memory stays available"
-            : L"Foundation ready — bundled deterministic English and C++ answers; 0 B neural weights");
+            : L"Native retrieval ready — curated English and C++ examples; 0 B neural weights; not a trained LLM");
     } else if (backend_operation_.running()) {
         built_in << L"Starting automatically — Chat can use connected AI meanwhile";
     } else if (runtime::native_inference_source_available(paths_)) {

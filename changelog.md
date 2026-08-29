@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 — 2026-08-29 resize and model-state clarification
+
+- Removed synchronous full-child-tree repainting, redundant page visibility changes, hidden-page movement, and unchanged control moves from the live-resize path.
+- Clarified that the immediately available native retrieval layer uses curated examples with 0 B neural weights and is not a trained LLM; only a promoted candidate weight artifact is a neural model.
+
 ## Unreleased
 
 - Separated bundled curriculum, held-out checks, automatic teacher attempts, and user approvals/rejections in the Training Library so totals describe their actual purpose.

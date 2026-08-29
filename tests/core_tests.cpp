@@ -1801,7 +1801,7 @@ void test_windows_ui_source_contract() {
             "automatic optional-file installation must stay transactional and isolated from training, startup, and model selection");
     require(ui.find("Backup and repair options") != std::string::npos &&
                 ui.find("backup_model_controls") != std::string::npos &&
-                ui.find("show_backup_controls ? SW_SHOW : SW_HIDE") != std::string::npos &&
+                ui.find("set_window_visibility(control(identifier), show_backup_controls)") != std::string::npos &&
                 ui.find("id::models_manual_endpoint") != std::string::npos &&
                 ui.find("L\"BUTTON\", L\"Install pack\"") == std::string::npos &&
                 ui.find("L\"BUTTON\", L\"Verify\"") == std::string::npos &&
@@ -1838,7 +1838,7 @@ void test_windows_ui_source_contract() {
                 ui.find("EngCoder built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
                 ui.find("L\"TRAINED MODEL READY — promoted neural weights\"") != std::string::npos &&
-                ui.find("L\"FOUNDATION READY — bundled responses; 0 B neural weights\"") != std::string::npos &&
+                ui.find("L\"NATIVE RETRIEVAL READY — 0 B neural weights; no trained LLM\"") != std::string::npos &&
                 ui.find("const auto progress_active = progress.available") != std::string::npos &&
                 ui.find("progress_active && completed == 0U") != std::string::npos &&
                 ui.find("stream << L\"starting\"") != std::string::npos &&
@@ -1934,13 +1934,17 @@ void test_windows_ui_source_contract() {
                 leaf_layout_batch != std::string::npos &&
                 leaf_layout_batch > page_host_layout &&
                 ui.find("case WM_SIZE:\n        layout_controls();") != std::string::npos &&
-                ui.find("RDW_INVALIDATE | RDW_ALLCHILDREN") != std::string::npos &&
-                ui.find("erase and immediate-update flags") != std::string::npos &&
+                ui.find("::InvalidateRect(window_, nullptr, FALSE)") != std::string::npos &&
+                ui.find("active_layout_page_host") != std::string::npos &&
+                ui.find("every hidden page on every drag event") != std::string::npos &&
+                ui.find("currently_visible != visible") != std::string::npos &&
+                ui.find("visible_page_was_visible") != std::string::npos &&
                 ui.find("case WM_EXITSIZEMOVE") != std::string::npos &&
                 ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos &&
                 ui.find("Commit every queued child move before showing a page") != std::string::npos &&
-                ui.find("::InvalidateRect(page, nullptr, FALSE)") != std::string::npos,
-            "live resizing must commit parent geometry first, batch leaf movement per parent, and repaint the complete dark tree once");
+                ui.find("page_windows_[static_cast<std::size_t>(page_)]") != std::string::npos &&
+                ui.find("RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW") == std::string::npos,
+            "live resizing must skip hidden and unchanged controls, avoid synchronous per-drag child-tree repaints, and perform one final dark-tree repaint");
 
     const auto launcher = read_text_file(source / "build-and-run.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&
