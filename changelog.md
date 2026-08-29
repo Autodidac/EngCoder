@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 — 2026-08-29 Live Auto queue repair
+
+- Fixed Live Auto Training to read its own Workspace checkbox instead of the separate idle-practice setting.
+- Preserved the two-second post-reply review schedule instead of replacing it with a two-minute delay.
+- Removed the circular wait in which a safely queued neural-weight job prevented Qwen and Nemotron from reviewing new live interactions.
+- Kept active neural training mutually exclusive with example review while allowing Live Auto admission to continue when weight data is merely queued.
+- Made the Workspace status explain that verified weight improvements remain stored and neural weights stay at 0 B when the optional Internal PyTorch Training pack is not installed.
+
 ## 0.7.0 — 2026-08-29 Live Auto Training
 
 - Added a separate **Live Auto Training** checkbox after the per-reply manual controls; it no longer aliases or disables the older idle practice-example generator.

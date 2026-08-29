@@ -105,6 +105,8 @@ EngCoder trains weighted token relationships, not a filing cabinet of phrases. E
 
 Independently accepted reusable episodes are classified for `lora-incubation` and count toward the configured promotion microbatch. The current internal-base policy queues a scoped shadow update after eight eligible episodes. The button can request a smaller pending batch; it never edits the active generation in place.
 
+Live review and neural optimization are separate queues. A verified weight update waiting for resources or an explicitly installed training capability does not stop Qwen and Nemotron from reviewing later conversations. If the optional Internal PyTorch Training pack is absent, accepted evidence remains stored and inspectable while the interface states plainly that neural weights remain at 0 B. EngCoder does not silently install the multi-gigabyte trainer.
+
 Live review also feeds the existing routing-quality metric:
 
 - an accepted original answer raises that source model's quality gradually;
@@ -150,6 +152,7 @@ Important persistent files:
 - Current fact without evidence: held as needs evidence.
 - Coding record without compiler and tests: held as needs evidence.
 - Duplicate interaction: not appended again.
+- Neural trainer absent: accepted evidence and the pending weight update remain stored; Live Auto review continues.
 - Weight candidate fails evaluation or host checks: the working model and active pointer remain unchanged.
 - App restart: the ledger cursor, episodes, expert counters, jobs, and checkpoints resume from disk.
 

@@ -90,7 +90,7 @@ A release reset is permitted only after the replacement release build, CTest, sm
 ```powershell
 .\tools\reset_engcoder_appdata.ps1 `
   -Target "$env:LOCALAPPDATA\EngCoder" `
-  -ReplacementVersion 0.7.0 `
+  -ReplacementVersion 0.7.1 `
   -ValidateOnly
 ```
 

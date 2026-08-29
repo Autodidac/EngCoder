@@ -126,6 +126,7 @@ Useful documents:
 - [Session verification report](docs/session-report-2026-08-26.md)
 - [UI and activity verification report](docs/session-report-2026-08-28.md)
 - [Live Auto Training verification report](docs/session-report-2026-08-29.md)
+- [Live Auto queue repair verification report](docs/session-report-2026-08-29-0.7.1.md)
 
 ## License
 

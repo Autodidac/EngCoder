@@ -1678,6 +1678,11 @@ void test_windows_ui_source_contract() {
                 ui.find("result->progress.accepted_source_models") != std::string::npos &&
                 ui.find("model_registry_.record_feedback(model_id, true)") != std::string::npos,
             "Live Auto Training must remain a separate visible control, use only the two authorized loopback models, redact private exclusions, stage skills, and require evidence plus two-model confirmation");
+    require(ui.find("if (!deterministic_result && checked(id::chat_auto_learning))") != std::string::npos &&
+                ui.find("(!live_candidates && pipeline.queued_updates > 0U)") != std::string::npos &&
+                ui.find("(!run_live_pass && learning_pipeline.queued_updates > 0U)") != std::string::npos &&
+                ui.find("Neural weights remain 0 B because the optional Internal PyTorch Training pack is not installed") != std::string::npos,
+            "Live Auto must use its own checkbox, start despite a merely queued weight job, and explain when the optional neural trainer is absent");
 
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&

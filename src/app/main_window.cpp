@@ -9024,14 +9024,19 @@ void MainWindow::generate_piggyback(
         return;
     }
     const auto pipeline = learning_service_->pipeline_snapshot();
-    if (pipeline.active_job.has_value() || pipeline.queued_updates > 0U) {
+    const auto weight_training_blocks_examples =
+        pipeline.active_job.has_value() ||
+        (!live_candidates && pipeline.queued_updates > 0U);
+    if (weight_training_blocks_examples) {
         if (!automatic) {
             set_status(
                 L"Weight training is already active or queued. The example pass "
                 L"will wait so the current checkpoint can finish without disruption.");
         }
         next_piggyback_at_ =
-            std::chrono::steady_clock::now() + std::chrono::minutes(2);
+            std::chrono::steady_clock::now() + (live_candidates
+                ? std::chrono::seconds(2)
+                : std::chrono::minutes(2));
         return;
     }
 
@@ -10471,9 +10476,9 @@ void MainWindow::update_periodic_state() {
     }
     const auto live_models_ready = qwen_ready && nemotron_ready;
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
-    const auto weight_update_busy =
-        learning_pipeline.active_job.has_value() ||
-        learning_pipeline.queued_updates > 0U;
+    auto training_paths = paths_;
+    training_paths.python = selected_python_;
+    const auto neural_training_ready = runtime::backend_files_present(training_paths);
     set_control_text(id::chat_backend, summary);
     set_control_text(id::coding_backend, summary);
 
@@ -10506,13 +10511,6 @@ void MainWindow::update_periodic_state() {
         set_control_text(
             id::chat_learning_status,
             L"Improving the built-in AI in the background. You can keep using Chat.");
-    } else if (learning_pipeline.queued_updates > 0U) {
-        std::wostringstream queued;
-        queued << L"Automatic learning has "
-               << learning_pipeline.queued_updates << L" saved improvement"
-               << (learning_pipeline.queued_updates == 1U ? L"" : L"s")
-               << L" waiting.";
-        set_control_text(id::chat_learning_status, queued.str());
     } else if (!checked(id::chat_auto_learning)) {
         set_control_text(
             id::chat_learning_status,
@@ -10522,9 +10520,25 @@ void MainWindow::update_periodic_state() {
             id::chat_learning_status,
             L"Live Auto Training is waiting: start and discover both loopback models, Qwen 3.8 27B and Nemotron 3 Nano 4B.");
     } else if (live_training_pending_) {
-        set_control_text(
-            id::chat_learning_status,
-            L"Live Auto Training has cleaned interaction candidates waiting; Chat keeps priority.");
+        std::wostringstream pending;
+        pending << L"Live Auto Training has cleaned interactions waiting for Qwen and Nemotron; Chat keeps priority.";
+        if (learning_pipeline.queued_updates > 0U) {
+            pending << L" " << learning_pipeline.queued_updates << L" verified weight improvement"
+                    << (learning_pipeline.queued_updates == 1U ? L" is" : L"s are")
+                    << L" retained separately.";
+        }
+        set_control_text(id::chat_learning_status, pending.str());
+    } else if (learning_pipeline.queued_updates > 0U) {
+        std::wostringstream queued;
+        queued << learning_pipeline.queued_updates << L" verified weight improvement"
+               << (learning_pipeline.queued_updates == 1U ? L" is" : L"s are")
+               << L" saved.";
+        if (!neural_training_ready) {
+            queued << L" Neural weights remain 0 B because the optional Internal PyTorch Training pack is not installed; no data was lost.";
+        } else {
+            queued << L" Weight training will start when its resource and foreground-priority checks pass.";
+        }
+        set_control_text(id::chat_learning_status, queued.str());
     } else {
         set_control_text(
             id::chat_learning_status,
@@ -10536,10 +10550,13 @@ void MainWindow::update_periodic_state() {
     const auto run_practice_pass =
         !run_live_pass && checked(id::learning_auto);
     const auto helper_ready = run_live_pass ? live_models_ready : teacher_available;
+    const auto example_pass_blocked =
+        learning_pipeline.active_job.has_value() ||
+        (!run_live_pass && learning_pipeline.queued_updates > 0U);
     if ((run_live_pass || run_practice_pass) &&
         helper_ready &&
         !piggyback_operation_.running() &&
-        !weight_update_busy &&
+        !example_pass_blocked &&
         !chat_operation_.running() &&
         !long_horizon_operation_.running() &&
         !media_operation_.running() &&
@@ -10745,9 +10762,6 @@ void MainWindow::update_chat_result() {
         } catch (...) {
         }
     }
-    next_piggyback_at_ =
-        std::chrono::steady_clock::now() + std::chrono::minutes(2);
-
     std::wostringstream status;
     status << L"Reply complete";
     if (deterministic_result) {
@@ -10774,12 +10788,15 @@ void MainWindow::update_chat_result() {
         id::chat_learning_status,
         deterministic_result
             ? L"Verified calculation • recomputed when needed • nothing added to memory or model weights"
-            : checked(id::learning_auto)
+            : checked(id::chat_auto_learning)
             ? L"Live Auto Training is checking whether this interaction is reusable learning material."
             : L"Live Auto Training is off; the reply was not added to the automatic review queue.");
-    if (!deterministic_result && checked(id::learning_auto)) {
+    if (!deterministic_result && checked(id::chat_auto_learning)) {
         queue_live_training_candidate(response_turns_.back());
         update_response_turn_controls();
+    } else {
+        next_piggyback_at_ =
+            std::chrono::steady_clock::now() + std::chrono::minutes(2);
     }
     persist_current_chat();
 }
