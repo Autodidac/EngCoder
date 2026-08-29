@@ -1657,6 +1657,8 @@ void test_windows_ui_source_contract() {
     require(ui.find("stream_timer") != std::string::npos &&
                 ui.find("capture_edit_viewport") != std::string::npos &&
                 ui.find("EM_GETFIRSTVISIBLELINE") != std::string::npos &&
+                ui.find("apply_transcript_tail_inset") != std::string::npos &&
+                ui.find("EM_SETRECTNP") != std::string::npos &&
                 ui.find("WM_SETREDRAW") != std::string::npos &&
                 ui.find("PostMessageW(window_, stream_message") == std::string::npos,
             "streaming and live reports must batch repaints and preserve a user's scroll position instead of fighting it");
@@ -1696,6 +1698,8 @@ void test_windows_ui_source_contract() {
                 ui.find("pipeline.active_job") != std::string::npos &&
                 ui.find("storage_operation_") != std::string::npos &&
                 ui.find("WORKING — ") != std::string::npos &&
+                ui.find("COMPLETED — ") != std::string::npos &&
+                ui.find("This result stays visible until another activity begins") != std::string::npos &&
                 ui.find("WAITING — ") != std::string::npos &&
                 ui.find("ATTENTION — ") != std::string::npos &&
                 ui.find("READY — ") != std::string::npos,

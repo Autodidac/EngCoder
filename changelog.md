@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-29 — Persistent activity completion
+
+- Fast operations no longer vanish into the generic ready state before they can be read. The global activity card retains the most recently completed operation until new work begins and points to the full Activity history.
+- Conversation transcripts reserve a DPI-scaled tail margin, so a streaming or newly completed reply remains fully visible above the review controls instead of sinking into the bottom edge.
+
 ## 0.6.0 — 2026-08-29 resize and model-state clarification
 
 - Removed synchronous full-child-tree repainting, redundant page visibility changes, hidden-page movement, and unchanged control moves from the live-resize path.

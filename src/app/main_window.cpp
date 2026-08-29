@@ -641,6 +641,8 @@ struct EditViewport final {
     bool follow_tail{false};
 };
 
+[[nodiscard]] EditViewport capture_edit_viewport(const HWND handle) noexcept;
+
 [[nodiscard]] std::wstring window_text(const HWND handle) {
     if (handle == nullptr) {
         return {};
@@ -685,6 +687,47 @@ struct EditViewport final {
     const auto formatting_height = static_cast<int>(
         formatting.bottom - formatting.top);
     return std::max(1, formatting_height / line_height);
+}
+
+void apply_transcript_tail_inset(
+    const HWND handle,
+    const unsigned int dpi) noexcept {
+    if (handle == nullptr || ::IsWindow(handle) == FALSE) {
+        return;
+    }
+
+    RECT client{};
+    if (::GetClientRect(handle, &client) == FALSE) {
+        return;
+    }
+    const auto horizontal = scaled(12, dpi);
+    const auto top = scaled(10, dpi);
+    const auto bottom = scaled(30, dpi);
+    RECT desired{
+        horizontal,
+        top,
+        std::max(horizontal + 1, static_cast<int>(client.right) - horizontal),
+        std::max(top + 1, static_cast<int>(client.bottom) - bottom),
+    };
+    RECT current{};
+    static_cast<void>(::SendMessageW(
+        handle,
+        EM_GETRECT,
+        0,
+        reinterpret_cast<LPARAM>(&current)));
+    if (::EqualRect(&current, &desired) != FALSE) {
+        return;
+    }
+
+    const auto viewport = capture_edit_viewport(handle);
+    static_cast<void>(::SendMessageW(
+        handle,
+        EM_SETRECTNP,
+        0,
+        reinterpret_cast<LPARAM>(&desired)));
+    if (viewport.follow_tail) {
+        static_cast<void>(::SendMessageW(handle, EM_SCROLLCARET, 0, 0));
+    }
 }
 
 [[nodiscard]] EditViewport capture_edit_viewport(const HWND handle) noexcept {
@@ -5220,6 +5263,11 @@ void MainWindow::layout_controls() {
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
     const auto log_y = storage_y + storage_height + gap;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
+    }
+    if (page_ == Page::chat) {
+        apply_transcript_tail_inset(control(id::chat_response), dpi_);
+    } else if (page_ == Page::coding) {
+        apply_transcript_tail_inset(control(id::coding_response), dpi_);
     }
     active_layout_page_host = nullptr;
 
@@ -9872,6 +9920,13 @@ void MainWindow::update_global_activity() {
     }
     add_running(storage_operation_, L"Measuring disk and memory use");
 
+    if (!active_work.empty()) {
+        active_activity_summary_ = active_work.front();
+    } else if (!active_activity_summary_.empty()) {
+        last_completed_activity_summary_ = std::move(active_activity_summary_);
+        active_activity_summary_.clear();
+    }
+
     std::wostringstream text;
     if (!active_work.empty()) {
         text << L"WORKING — " << active_work.front() << L"\r\n";
@@ -9900,8 +9955,11 @@ void MainWindow::update_global_activity() {
         }
     } else if (pipeline.queued_updates > 0U) {
         text << L"WAITING — " << pipeline.queued_updates << L" saved improvement"
-             << (pipeline.queued_updates == 1U ? L"" : L"s")
-             << L" queued\r\nChat has priority; weight training starts only when its requirements are ready.";
+             << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
+        if (!last_completed_activity_summary_.empty()) {
+            text << L"Last completed: " << last_completed_activity_summary_ << L" • ";
+        }
+        text << L"Chat has priority; weight training starts only when its requirements are ready.";
     } else {
         const auto state = runtime::inspect_internal_model_state(paths_);
         const auto now = std::chrono::steady_clock::now();
@@ -9914,6 +9972,9 @@ void MainWindow::update_global_activity() {
         } else if (automatic_learning_limit_reached(paths_, state)) {
             text << L"ATTENTION — Built-in AI stopped at its verified quality limit\r\n"
                  << L"No failed candidate replaced the working AI; details remain on the Activity page.";
+        } else if (!last_completed_activity_summary_.empty()) {
+            text << L"COMPLETED — " << last_completed_activity_summary_ << L"\r\n"
+                 << L"No work is running. This result stays visible until another activity begins; full history remains on the Activity page.";
         } else {
             const auto registry = runtime_model_snapshot();
             const auto other_ai_count = std::ranges::count_if(

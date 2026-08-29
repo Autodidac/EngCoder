@@ -388,6 +388,8 @@ private:
     std::filesystem::path custom_training_dataset_;
     std::chrono::steady_clock::time_point next_piggyback_at_{};
     std::chrono::steady_clock::time_point next_storage_refresh_{};
+    std::wstring active_activity_summary_;
+    std::wstring last_completed_activity_summary_;
     std::uintmax_t previous_storage_bytes_{0};
     std::uintmax_t previous_models_bytes_{0};
     std::uintmax_t previous_ram_bytes_{0};
