@@ -17,6 +17,8 @@ struct PiggybackRequest final {
     std::string target_skill{"english-foundation"};
     bool restrict_to_target_domain{true};
     bool generate_teacher_variations{true};
+    bool untrusted_live_examples{false};
+    bool wrap_seed_dataset{true};
     std::string internal_base_url;
     models::ModelProfile teacher;
     std::optional<models::ModelProfile> verifier;
@@ -36,6 +38,10 @@ struct PiggybackProgress final {
     std::size_t trusted_seeded{0};
     std::size_t generated{0};
     std::size_t verified{0};
+    std::size_t revised{0};
+    std::size_t needs_evidence{0};
+    std::vector<std::string> accepted_source_models;
+    std::vector<std::string> rejected_source_models;
     std::size_t stored{0};
     std::size_t rejected{0};
     std::size_t attempted{0};

@@ -1786,6 +1786,88 @@ LRESULT CALLBACK page_host_subclass(
         });
 }
 
+[[nodiscard]] int live_training_model_family(const models::ModelProfile& model) {
+    auto endpoint = model.endpoint;
+    auto model_name = model.model_name;
+    auto protocol = model.protocol;
+    std::ranges::transform(endpoint, endpoint.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    std::ranges::transform(model_name, model_name.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    std::ranges::transform(protocol, protocol.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    const auto scheme_end = endpoint.find("://");
+    if (scheme_end == std::string::npos || protocol != "openai") {
+        return 0;
+    }
+    const auto scheme = endpoint.substr(0U, scheme_end);
+    if (scheme != "http" && scheme != "https") {
+        return 0;
+    }
+    const auto authority_start = scheme_end + 3U;
+    const auto authority_end = endpoint.find_first_of("/?#", authority_start);
+    auto authority = endpoint.substr(
+        authority_start,
+        authority_end == std::string::npos
+            ? std::string::npos
+            : authority_end - authority_start);
+    if (authority.empty() || authority.find('@') != std::string::npos) {
+        return 0;
+    }
+    std::string host;
+    std::string port;
+    if (authority.starts_with('[')) {
+        const auto close = authority.find(']');
+        if (close == std::string::npos) {
+            return 0;
+        }
+        host = authority.substr(0U, close + 1U);
+        const auto remainder = authority.substr(close + 1U);
+        if (!remainder.empty()) {
+            if (!remainder.starts_with(':')) {
+                return 0;
+            }
+            port = remainder.substr(1U);
+        }
+    } else {
+        const auto colon = authority.find(':');
+        host = authority.substr(0U, colon);
+        if (colon != std::string::npos) {
+            port = authority.substr(colon + 1U);
+        }
+    }
+    if (host != "127.0.0.1" && host != "localhost" && host != "[::1]") {
+        return 0;
+    }
+    if (authority.ends_with(':') && port.empty()) {
+        return 0;
+    }
+    unsigned long port_value = 0UL;
+    for (const auto character : port) {
+        if (std::isdigit(static_cast<unsigned char>(character)) == 0) {
+            return 0;
+        }
+        port_value = (port_value * 10UL) + static_cast<unsigned long>(character - '0');
+        if (port_value > 65535UL) {
+            return 0;
+        }
+    }
+    if (model_name == "qwen/qwen3.8-27b" || model_name == "qwen3.8-27b") {
+        return 1;
+    }
+    if (model_name == "nvidia/nemotron-3-nano-4b" || model_name == "nemotron-3-nano-4b") {
+        return 2;
+    }
+    return 0;
+}
+
+[[nodiscard]] bool authorized_live_training_model(const models::ModelProfile& model) {
+    return live_training_model_family(model) != 0;
+}
+
 [[nodiscard]] std::string skill_for(const routing::TaskAnalysis& analysis) {
     switch (analysis.kind) {
     case routing::TaskKind::code_debugging:
@@ -1814,6 +1896,44 @@ LRESULT CALLBACK page_host_subclass(
         return "english-conversation";
     }
     return "general";
+}
+
+[[nodiscard]] bool private_or_nonpublic_training_prompt(const std::string_view prompt) {
+    auto lowered = std::string(prompt);
+    std::ranges::transform(lowered, lowered.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    const auto at = lowered.find('@');
+    const auto probable_email = at != std::string::npos &&
+        lowered.find('.', at) != std::string::npos;
+    const auto digit_count = std::ranges::count_if(lowered, [](const unsigned char character) {
+        return std::isdigit(character) != 0;
+    });
+    return probable_email || digit_count >= 7 ||
+           lowered.find("my name") != std::string::npos ||
+           lowered.find("my address") != std::string::npos ||
+           lowered.find("home address") != std::string::npos ||
+           lowered.find("i live at") != std::string::npos ||
+           lowered.find("my phone") != std::string::npos ||
+           lowered.find("my email") != std::string::npos ||
+           lowered.find("my birthday") != std::string::npos ||
+           lowered.find("social security") != std::string::npos ||
+           lowered.find("ssn") != std::string::npos ||
+           lowered.find("credit card") != std::string::npos ||
+           lowered.find("bank account") != std::string::npos ||
+           lowered.find("password") != std::string::npos ||
+           lowered.find("passcode") != std::string::npos ||
+           lowered.find("api key") != std::string::npos ||
+           lowered.find("access token") != std::string::npos ||
+           lowered.find("private key") != std::string::npos ||
+           lowered.find("confidential") != std::string::npos ||
+           lowered.find("proprietary") != std::string::npos ||
+           lowered.find("internal only") != std::string::npos ||
+           lowered.find("private repo") != std::string::npos ||
+           lowered.find("not public") != std::string::npos ||
+           lowered.find("on my machine") != std::string::npos ||
+           lowered.find("local path") != std::string::npos ||
+           lowered.find("c:\\") != std::string::npos;
 }
 
 
@@ -1935,6 +2055,7 @@ struct TrainingLibraryRecord final {
     enum class Origin {
         bundled_curriculum,
         user_review,
+        live_auto_training,
         automatic_teacher,
         held_out_check,
     };
@@ -2149,15 +2270,17 @@ void append_training_library_file(
 
         const auto held_out = category == "Held-out check";
         const auto teacher_attempt = category == "Teacher attempt";
-        const auto review_record = category == "Review record" || teacher_attempt;
+        const auto live_attempt = category == "Live Auto decision";
+        const auto review_record = category == "Review record" || teacher_attempt || live_attempt;
         const auto provenance = core::json::string_or(document->find("provenance"));
+        const auto live_review = live_attempt || provenance.starts_with("live-auto-training");
         const auto correction = core::json::string_or(document->find("correction"));
         const auto hard_correction = review_record && !teacher_attempt &&
             core::json::bool_or(document->find("human_rejected"), false) &&
             !correction.empty() && provenance == "interactive-hard-correction";
         const auto review_rejected = review_record && !hard_correction && (
             core::json::bool_or(document->find("human_rejected"), false) ||
-            (teacher_attempt &&
+            ((teacher_attempt || live_review) &&
              !core::json::bool_or(document->find("reference_verified"), false)));
         const auto independently_checked = review_record && (hard_correction ||
             core::json::bool_or(document->find("human_accepted"), false) ||
@@ -2175,15 +2298,36 @@ void append_training_library_file(
         TrainingLibraryRecord record;
         record.origin = held_out
             ? TrainingLibraryRecord::Origin::held_out_check
-            : (teacher_attempt
+            : (live_review
+                ? TrainingLibraryRecord::Origin::live_auto_training
+                : (teacher_attempt
                 ? TrainingLibraryRecord::Origin::automatic_teacher
                 : (category == "Review record"
                     ? TrainingLibraryRecord::Origin::user_review
-                    : TrainingLibraryRecord::Origin::bundled_curriculum));
-        record.category = review_record
-            ? (hard_correction ? "Approved correction" :
-                (review_rejected ? "Rejected result" : "Approved result"))
-            : std::string(category);
+                    : TrainingLibraryRecord::Origin::bundled_curriculum)));
+        const auto auto_action = core::json::string_or(document->find("auto_action"));
+        if (live_review) {
+            if (auto_action == "revised-and-accepted" ||
+                provenance == "live-auto-training-revised") {
+                record.category = "Live Auto revised and accepted";
+            } else if (auto_action == "needs-evidence") {
+                record.category = "Live Auto needs evidence";
+            } else if (auto_action == "excluded") {
+                record.category = "Live Auto excluded";
+            } else if (review_rejected) {
+                record.category = "Live Auto rejected";
+            } else if (live_attempt) {
+                record.category = "Live Auto accepted";
+            } else {
+                record.category = "Live Auto stored for training";
+            }
+        } else if (review_record) {
+            record.category = hard_correction
+                ? "Approved correction"
+                : (review_rejected ? "Rejected result" : "Approved result");
+        } else {
+            record.category = std::string(category);
+        }
         record.identifier = core::json::string_or(document->find("id"), "unnamed-record");
         record.topic = core::json::string_or(
             document->find("skill"),
@@ -2232,6 +2376,18 @@ void append_training_library_file(
             if (teacher_attempt && record.answer.empty()) {
                 record.answer = "[No usable generated answer] " +
                     core::json::string_or(document->find("generation_error"));
+            }
+            if (live_review) {
+                const auto reviewer = core::json::string_or(document->find("verifier_name"));
+                const auto confirmer = core::json::string_or(document->find("confirmation_name"));
+                record.verification = "Decision: " +
+                    (auto_action.empty() ? record.category : auto_action) +
+                    (reviewer.empty() ? std::string{} : " • Reviewer: " + reviewer) +
+                    (confirmer.empty() ? std::string{} : " • Confirmer: " + confirmer) +
+                    (record.verification.empty() ? std::string{} : " • " + record.verification);
+                if (record.answer.empty()) {
+                    record.answer = "[Excluded before positive training]";
+                }
             }
             record.verification += " • Destination: " + core::json::string_or(
                 document->find("knowledge_destination"),
@@ -2300,6 +2456,11 @@ void append_training_library_file(
         records,
         unreadable_records);
     append_training_library_file(
+        paths.logs / "live-training-attempts.jsonl",
+        "Live Auto decision",
+        records,
+        unreadable_records);
+    append_training_library_file(
         paths.bootstrap_anchors,
         "Held-out check",
         records,
@@ -2330,6 +2491,10 @@ void append_training_library_file(
     std::size_t user_rejected_count = 0;
     std::size_t automatic_approved_count = 0;
     std::size_t automatic_rejected_count = 0;
+    std::size_t live_accepted_count = 0;
+    std::size_t live_revised_count = 0;
+    std::size_t live_rejected_count = 0;
+    std::size_t live_evidence_count = 0;
     std::size_t held_out_count = 0;
     for (const auto& record : records) {
         ++duplicate_counts[record.fingerprint];
@@ -2343,6 +2508,14 @@ void append_training_library_file(
         case TrainingLibraryRecord::Origin::user_review:
             user_approved_count += approved ? 1U : 0U;
             user_rejected_count += rejected ? 1U : 0U;
+            break;
+        case TrainingLibraryRecord::Origin::live_auto_training:
+            live_accepted_count += record.category == "Live Auto accepted" ||
+                record.category == "Live Auto stored for training" ? 1U : 0U;
+            live_revised_count += record.category == "Live Auto revised and accepted" ? 1U : 0U;
+            live_evidence_count += record.category == "Live Auto needs evidence" ? 1U : 0U;
+            live_rejected_count += record.category == "Live Auto rejected" ||
+                record.category == "Live Auto excluded" ? 1U : 0U;
             break;
         case TrainingLibraryRecord::Origin::automatic_teacher:
             automatic_approved_count += approved ? 1U : 0U;
@@ -2369,8 +2542,10 @@ void append_training_library_file(
              record.origin == TrainingLibraryRecord::Origin::user_review &&
              record.category == "Rejected result") ||
             (source_filter == 4 &&
-             record.origin == TrainingLibraryRecord::Origin::automatic_teacher) ||
+             record.origin == TrainingLibraryRecord::Origin::live_auto_training) ||
             (source_filter == 5 &&
+             record.origin == TrainingLibraryRecord::Origin::automatic_teacher) ||
+            (source_filter == 6 &&
              record.origin == TrainingLibraryRecord::Origin::held_out_check);
         if (!source_matches) {
             continue;
@@ -2392,6 +2567,11 @@ void append_training_library_file(
                    << user_approved_count << L" approved, "
                    << user_rejected_count << L" rejected, "
                    << superseded_count << L" superseded"
+                   << L" • Live Auto: "
+                   << live_accepted_count << L" accepted, "
+                   << live_revised_count << L" revised, "
+                   << live_evidence_count << L" need evidence, "
+                   << live_rejected_count << L" rejected/excluded"
                    << L" • automatic attempts: "
                    << (automatic_approved_count + automatic_rejected_count)
                    << L" (" << automatic_approved_count << L" accepted, "
@@ -2410,7 +2590,7 @@ void append_training_library_file(
     std::wostringstream output;
     output << L"WHAT ENGCODER CAN TRAIN ON\r\n"
            << L"Bundled curriculum is shipped with the app; it is not your learning history. "
-           << L"Your reviews and automatic teacher attempts are counted separately above. "
+           << L"Your reviews, Live Auto decisions, and idle teacher attempts are counted separately above. "
            << L"Approved results say whether they are memory-only or eligible for a future weight update. "
            << L"Rejected results are negative evidence and never positive training. Held-out checks never "
            << L"train the model; they only decide whether a candidate is safe to use. Superseded results are "
@@ -2427,6 +2607,7 @@ void append_training_library_file(
             switch (record->origin) {
             case TrainingLibraryRecord::Origin::bundled_curriculum: return L"Bundled curriculum";
             case TrainingLibraryRecord::Origin::user_review: return L"Your review";
+            case TrainingLibraryRecord::Origin::live_auto_training: return L"Live Auto Training";
             case TrainingLibraryRecord::Origin::automatic_teacher: return L"Automatic teacher attempt";
             case TrainingLibraryRecord::Origin::held_out_check: return L"Held-out check";
             }
@@ -2613,8 +2794,15 @@ MainWindow::MainWindow(const HINSTANCE instance)
     const auto training_setting = trim_line_endings(read_text(
         paths_.root / "config" / "automatic-training.txt"));
     automatic_training_enabled_ = training_setting != "off";
+    const auto live_training_setting = trim_line_endings(read_text(
+        paths_.root / "config" / "live-auto-training.txt"));
+    live_auto_training_enabled_ = live_training_setting != "off";
     lifecycle_retry_at_ = std::chrono::steady_clock::now();
     next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    live_training_pending_ = has_pending_live_training_candidates();
+    if (live_training_pending_) {
+        next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    }
 }
 
 MainWindow::~MainWindow() {
@@ -3317,13 +3505,13 @@ void MainWindow::create_chat_page() {
         WS_EX_CLIENTEDGE, id::chat_plan, parent);
 
     create_control(
-        L"BUTTON", L"Learn automatically from approved results",
+        L"BUTTON", L"Live Auto Training",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::chat_auto_learning, parent);
-    set_checked(id::chat_auto_learning, automatic_training_enabled_);
+    set_checked(id::chat_auto_learning, live_auto_training_enabled_);
     create_control(
         L"STATIC",
-        L"Automatic learning is on. It waits while you are using the app.",
+        L"Live Auto Training is on. Every decision appears in Activity and the Training Library.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_learning_status, parent);
     create_control(
         L"STATIC", L"Optional tools: not connected",
@@ -3732,6 +3920,7 @@ void MainWindow::create_learning_page() {
              L"Bundled curriculum",
              L"Your approved learning",
              L"Your rejected evidence",
+             L"Live Auto Training",
              L"Automatic teacher attempts",
              L"Held-out checks"}) {
         static_cast<void>(::SendMessageW(
@@ -4318,9 +4507,10 @@ void MainWindow::layout_controls() {
         move_second_row(id::chat_accept, scaled(140, dpi_));
         move_second_row(id::chat_reject, scaled(82, dpi_));
         move_second_row(id::chat_learning_preview, scaled(92, dpi_));
+        move_second_row(id::chat_auto_learning, scaled(170, dpi_));
     } else {
         const auto review_fixed_width =
-            scaled(55 + 55 + 62 + 120 + 62 + 68, dpi_) + gap * 6;
+            scaled(55 + 55 + 62 + 120 + 62 + 68 + 170, dpi_) + gap * 7;
         const auto reply_selector_width = std::clamp(
             conversation_inner_width - review_fixed_width,
             scaled(80, dpi_),
@@ -4340,6 +4530,7 @@ void MainWindow::layout_controls() {
         move_review_action(id::chat_accept, scaled(120, dpi_));
         move_review_action(id::chat_reject, scaled(62, dpi_));
         move_review_action(id::chat_learning_preview, scaled(68, dpi_));
+        move_review_action(id::chat_auto_learning, scaled(170, dpi_));
     }
 
     move_control(
@@ -4429,7 +4620,7 @@ void MainWindow::layout_controls() {
         row);
     const auto sidebar_available =
         height - workspace_content_top - surface_padding * 2 - row - gap;
-    const auto sidebar_status_reserve = row + gap + scaled(70, dpi_);
+    const auto sidebar_status_reserve = scaled(70, dpi_);
     const auto maximum_plan_height = std::max(
         scaled(120, dpi_),
         sidebar_available - sidebar_status_reserve);
@@ -4446,15 +4637,9 @@ void MainWindow::layout_controls() {
     const auto workspace_learning_y =
         workspace_content_top + surface_padding + row + plan_height + gap;
     move_control(
-        control(id::chat_auto_learning),
-        sidebar_inner_x,
-        workspace_learning_y,
-        sidebar_inner_width,
-        row);
-    move_control(
         control(id::chat_learning_status),
         sidebar_inner_x,
-        workspace_learning_y + row + gap,
+        workspace_learning_y,
         sidebar_inner_width,
         scaled(70, dpi_));
     // Dedicated coding workspace remains available as the second primary tab.
@@ -5406,20 +5591,23 @@ void MainWindow::handle_command(const int identifier) {
         break;
     }
     case id::chat_auto_learning:
-        automatic_training_enabled_ = checked(id::chat_auto_learning);
-        set_checked(id::learning_auto, automatic_training_enabled_);
+        live_auto_training_enabled_ = checked(id::chat_auto_learning);
         try {
             write_text(
-                paths_.root / "config" / "automatic-training.txt",
-                automatic_training_enabled_ ? "on\n" : "off\n");
+                paths_.root / "config" / "live-auto-training.txt",
+                live_auto_training_enabled_ ? "on\n" : "off\n");
         } catch (...) {
         }
-        if (!automatic_training_enabled_) {
-            piggyback_operation_.cancel();
-            set_status(L"Automatic verified-example generation disabled and saved");
+        if (!live_auto_training_enabled_) {
+            if (active_piggyback_live_) {
+                piggyback_operation_.cancel();
+            }
+            set_status(L"Live Auto Training is off; manual review and idle practice generation are unchanged");
         } else {
-            next_piggyback_at_ =
-                std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            live_training_pending_ = has_pending_live_training_candidates();
+            next_piggyback_at_ = std::chrono::steady_clock::now() +
+                (live_training_pending_ ? std::chrono::seconds(2) : std::chrono::seconds(30));
+            set_status(L"Live Auto Training is on; new conversations will be cleaned and independently reviewed");
         }
         update_learning_report();
         break;
@@ -5518,7 +5706,6 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::learning_auto:
         automatic_training_enabled_ = checked(id::learning_auto);
-        set_checked(id::chat_auto_learning, automatic_training_enabled_);
         try {
             write_text(
                 paths_.root / "config" / "automatic-training.txt",
@@ -7896,6 +8083,164 @@ memory::Episode MainWindow::learning_episode_for(
     };
 }
 
+bool MainWindow::has_pending_live_training_candidates() {
+    const auto dataset = paths_.candidates / "live-interactions.jsonl";
+    if (!std::filesystem::is_regular_file(dataset)) {
+        return false;
+    }
+    std::ifstream stream(dataset, std::ios::binary);
+    std::size_t records = 0U;
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!trim_ascii(line).empty()) {
+            ++records;
+        }
+    }
+    const auto key = training_cursor_key("live-interaction", dataset);
+    return records > piggyback_cursor_for(key);
+}
+
+void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
+    if (!live_auto_training_enabled_ || turn.model_id == "request-error" ||
+        turn.model_id == "deterministic-calculator" || turn.model_id == "verified-memory" ||
+        turn.learning_destination.starts_with("local-") ||
+        turn.learning_destination.starts_with("repository-") ||
+        turn.prompt.empty() || turn.response.empty()) {
+        return;
+    }
+
+    const auto modules = learning_service_->expert_snapshot();
+    const auto ready_skill = [&](const std::string_view skill, const std::size_t minimum_examples) {
+        const auto found = std::ranges::find(modules, skill, &learning::ExpertModule::skill);
+        return found != modules.end() && found->accepted_episodes >= minimum_examples &&
+               found->lora_generations > 0U && found->validation_score >= 0.86;
+    };
+    const auto conversation_ready = ready_skill("english-conversation", 24U);
+    const auto planning_ready = ready_skill("planning", 16U);
+    const auto kind = turn.analysis.kind;
+    const auto stage_allows =
+        kind == routing::TaskKind::conversation ||
+        (conversation_ready && kind == routing::TaskKind::planning) ||
+        (conversation_ready && planning_ready &&
+         (kind == routing::TaskKind::code_generation ||
+          kind == routing::TaskKind::code_debugging));
+    if (!stage_allows) {
+        return;
+    }
+
+    auto episode = learning_episode_for(turn, false);
+    episode.human_rejected = false;
+    episode.self_generated = true;
+    episode.score = 0.0;
+    episode.provenance = "live-auto-training-candidate";
+    const auto inspection = learning_service_->preview(episode);
+    const auto cleaned_prompt = inspection.stored_prompt;
+    const auto cleaned_response = inspection.stored_response;
+    const auto audit_path = paths_.logs / "live-training-attempts.jsonl";
+    const auto append_exclusion = [&](const std::string_view reason, const bool redact) {
+        std::error_code directory_error;
+        std::filesystem::create_directories(audit_path.parent_path(), directory_error);
+        if (directory_error) {
+            return;
+        }
+        const auto created = memory::now_unix_ms();
+        core::json::Value::Object record{
+            {"id", "live-excluded-" + std::to_string(created)},
+            {"skill", skill_for(turn.analysis)},
+            {"prompt", redact ? std::string{"[redacted private interaction]"}
+                               : (cleaned_prompt.empty() ? turn.prompt : cleaned_prompt)},
+            {"response", redact ? std::string{} : cleaned_response},
+            {"source_response", redact ? std::string{} : turn.response},
+            {"model_id", turn.model_id},
+            {"auto_action", "excluded"},
+            {"human_accepted", false},
+            {"human_rejected", false},
+            {"deterministic_verified", false},
+            {"reference_verified", false},
+            {"eligible_for_training", false},
+            {"score", 0.0},
+            {"verification_notes", std::string(reason)},
+            {"provenance", "live-auto-training"},
+            {"knowledge_destination", "excluded"},
+            {"created_unix_ms", static_cast<double>(created)},
+        };
+        std::ofstream stream(audit_path, std::ios::binary | std::ios::app);
+        if (stream) {
+            stream << core::json::stringify(core::json::Value(std::move(record))) << '\n';
+        }
+    };
+
+    if (private_or_nonpublic_training_prompt(turn.prompt + "\n" + turn.response)) {
+        append_exclusion(
+            "Personal, private, credential, or machine-specific information is never learned by Live Auto Training.",
+            true);
+        set_control_text(
+            id::chat_learning_status,
+            L"Live Auto Training excluded this interaction because it may contain private or machine-specific information.");
+        return;
+    }
+    if (inspection.destination == learning::KnowledgeDestination::reject ||
+        cleaned_prompt.empty() || cleaned_response.empty()) {
+        append_exclusion(inspection.reason.empty()
+            ? std::string_view{"The interaction was not usable training material."}
+            : std::string_view{inspection.reason}, false);
+        set_control_text(
+            id::chat_learning_status,
+            L"Live Auto Training rejected an error, corrupt draft, or empty interaction before review.");
+        return;
+    }
+
+    const auto content_hash = memory::make_content_hash(
+        skill_for(turn.analysis), cleaned_prompt, cleaned_response);
+    const auto dataset = paths_.candidates / "live-interactions.jsonl";
+    try {
+        if (std::filesystem::is_regular_file(dataset) &&
+            read_text(dataset).find(content_hash) != std::string::npos) {
+            set_control_text(
+                id::chat_learning_status,
+                L"Live Auto Training already has this exact cleaned interaction; no duplicate was added.");
+            return;
+        }
+        std::filesystem::create_directories(dataset.parent_path());
+        core::json::Value::Object candidate{
+            {"candidate_id", "live-" + content_hash},
+            {"content_hash", content_hash},
+            {"domain", "live-interaction"},
+            {"skill", skill_for(turn.analysis)},
+            {"prompt", cleaned_prompt},
+            {"response", cleaned_response},
+            {"source_model_id", turn.model_id},
+            {"needs_current_information", turn.analysis.needs_current_information},
+            {"compiler_passed", turn.repository_compiler_passed},
+            {"tests_passed", turn.repository_tests_passed},
+            {"tool_trace_hash", join_tool_events(turn.tool_events)},
+            {"curriculum_stage", conversation_ready
+                ? (planning_ready ? "coding" : "planning")
+                : "conversation"},
+            {"created_unix_ms", static_cast<double>(memory::now_unix_ms())},
+        };
+        std::ofstream stream(dataset, std::ios::binary | std::ios::app);
+        if (!stream) {
+            throw std::runtime_error("could not open live interaction ledger");
+        }
+        stream << core::json::stringify(core::json::Value(std::move(candidate))) << '\n';
+        stream.flush();
+        if (!stream) {
+            throw std::runtime_error("could not append live interaction ledger");
+        }
+        turn.learning_destination = "live-auto-pending";
+        live_training_pending_ = true;
+        next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        set_control_text(
+            id::chat_learning_status,
+            L"Live Auto Training queued this cleaned interaction for an independent check. Chat still has priority.");
+    } catch (const std::exception& error) {
+        set_control_text(
+            id::chat_learning_status,
+            widen("Live Auto Training could not save its candidate: " + std::string(error.what())));
+    }
+}
+
 std::size_t MainWindow::apply_hard_corrections_for(const ResponseTurn& approved) {
     const auto approved_prompt = lower_ascii(trim_line_endings(approved.prompt));
     if (approved_prompt.empty() || approved.response.empty()) {
@@ -8670,7 +9015,8 @@ void MainWindow::import_custom_training_data() {
 
 void MainWindow::generate_piggyback(
     const bool automatic,
-    const bool trusted_only) {
+    const bool trusted_only,
+    const bool live_candidates) {
     if (piggyback_operation_.running()) {
         if (!automatic) {
             set_status(L"A teacher or dataset-import batch is already running");
@@ -8689,10 +9035,14 @@ void MainWindow::generate_piggyback(
         return;
     }
 
-    const auto target_skill = selected_training_skill();
+    const auto target_skill = live_candidates
+        ? std::string{"live-interaction"}
+        : selected_training_skill();
     const auto dataset = trusted_only
         ? selected_training_dataset().lexically_normal()
-        : (paths_.data / "seed.jsonl");
+        : (live_candidates
+            ? paths_.candidates / "live-interactions.jsonl"
+            : paths_.data / "seed.jsonl");
     if (!std::filesystem::is_regular_file(dataset)) {
         if (!automatic) {
             set_status(widen("Training dataset does not exist: " + dataset.string()));
@@ -8709,14 +9059,18 @@ void MainWindow::generate_piggyback(
         for (const auto& model : snapshot.models()) {
             if (model.enabled &&
                 !models::is_internal_model(model) &&
-                model.teacher &&
+                (live_candidates
+                    ? authorized_live_training_model(model)
+                    : model.teacher) &&
                 models::has_capability(model, "chat")) {
                 teachers.push_back(model);
             }
         }
-        if (teachers.empty()) {
+        if (teachers.empty() || (live_candidates && teachers.size() < 2U)) {
             if (!automatic) {
-                set_status(L"No external teacher AI is ready. Start a capable local AI and discover it first.");
+                set_status(live_candidates
+                    ? L"Live Auto Training needs both authorized local LM Studio models: Qwen 3.8 27B and Nemotron 3 Nano 4B."
+                    : L"No external teacher AI is ready. Start a capable local AI and discover it first.");
             }
             next_piggyback_at_ =
                 std::chrono::steady_clock::now() + std::chrono::minutes(2);
@@ -8732,17 +9086,45 @@ void MainWindow::generate_piggyback(
                 std::min(0.08, right.tokens_per_second / 1000.0);
             return left_score > right_score;
         });
+        if (live_candidates) {
+            std::vector<models::ModelProfile> distinct_families;
+            for (const auto& candidate : teachers) {
+                const auto family = live_training_model_family(candidate);
+                if (family == 0 || std::ranges::any_of(
+                        distinct_families,
+                        [family](const auto& existing) {
+                            return live_training_model_family(existing) == family;
+                        })) {
+                    continue;
+                }
+                distinct_families.push_back(candidate);
+            }
+            teachers = std::move(distinct_families);
+            if (teachers.size() < 2U) {
+                if (!automatic) {
+                    set_status(
+                        L"Live Auto Training needs one loopback Qwen 3.8 27B and one loopback Nemotron 3 Nano 4B model.");
+                }
+                next_piggyback_at_ =
+                    std::chrono::steady_clock::now() + std::chrono::minutes(2);
+                return;
+            }
+        }
         if (teachers.size() > 2U) {
             teachers.resize(2U);
         }
         teacher = teachers.front();
 
-        for (const auto& candidate : snapshot.models()) {
-            if (candidate.enabled &&
-                !models::is_internal_model(candidate) &&
-                models::has_capability(candidate, "chat") &&
-                (candidate.teacher || candidate.verifier || candidate.quality >= 0.68)) {
-                verifiers.push_back(candidate);
+        if (live_candidates) {
+            verifiers = teachers;
+        } else {
+            for (const auto& candidate : snapshot.models()) {
+                if (candidate.enabled &&
+                    !models::is_internal_model(candidate) &&
+                    models::has_capability(candidate, "chat") &&
+                    (candidate.teacher || candidate.verifier || candidate.quality >= 0.68)) {
+                    verifiers.push_back(candidate);
+                }
             }
         }
         std::ranges::sort(verifiers, [](const auto& left, const auto& right) {
@@ -8762,7 +9144,7 @@ void MainWindow::generate_piggyback(
         }
     }
     std::size_t maximum_examples = trusted_only ? 100000U : 8U;
-    if (!trusted_only) {
+    if (!trusted_only && !live_candidates) {
         try {
             maximum_examples = static_cast<std::size_t>(std::stoull(
                 narrow(control_text(id::learning_piggyback_count))));
@@ -8778,6 +9160,7 @@ void MainWindow::generate_piggyback(
     training_target_ = target_skill;
     active_piggyback_skill_ = target_skill;
     active_piggyback_trusted_only_ = trusted_only;
+    active_piggyback_live_ = live_candidates;
     active_piggyback_cursor_key_ = training_cursor_key(target_skill, dataset);
     custom_training_dataset_ = trusted_only ? dataset : custom_training_dataset_;
     persist_training_configuration();
@@ -8786,6 +9169,18 @@ void MainWindow::generate_piggyback(
         set_control_text(
             id::learning_piggyback_status,
             widen("Importing trusted JSONL into target: " + target_skill));
+    } else if (live_candidates) {
+        std::string teacher_names;
+        for (const auto& model : teachers) {
+            if (!teacher_names.empty()) {
+                teacher_names += " + ";
+            }
+            teacher_names += model.display_name;
+        }
+        set_control_text(
+            id::learning_piggyback_status,
+            widen("Live Auto Training • checking interaction candidates with " + teacher_names +
+                  " • weak answers are revised or rejected • every decision is logged"));
     } else {
         std::string teacher_names;
         for (const auto& model : teachers) {
@@ -8806,8 +9201,10 @@ void MainWindow::generate_piggyback(
     const auto request = learning::PiggybackRequest{
         .seed_dataset = dataset,
         .target_skill = target_skill,
-        .restrict_to_target_domain = !trusted_only,
+        .restrict_to_target_domain = !trusted_only && !live_candidates,
         .generate_teacher_variations = !trusted_only,
+        .untrusted_live_examples = live_candidates,
+        .wrap_seed_dataset = !live_candidates,
         .internal_base_url = backend_server_.running()
             ? backend_server_.base_url()
             : std::string{},
@@ -8815,7 +9212,8 @@ void MainWindow::generate_piggyback(
         .verifier = verifier,
         .teachers = teachers,
         .verifiers = verifiers,
-        .audit_log = paths_.logs / "teacher-attempts.jsonl",
+        .audit_log = paths_.logs /
+            (live_candidates ? "live-training-attempts.jsonl" : "teacher-attempts.jsonl"),
         .maximum_parallel_per_teacher = 4U,
         .seed_offset = trusted_only
             ? 0U
@@ -8853,7 +9251,9 @@ void MainWindow::generate_piggyback(
                         : util::OperationState::failed),
                 .exit_code = result.succeeded ? 0 : 1,
                 .message = result.succeeded
-                    ? (request.generate_teacher_variations
+                    ? (request.untrusted_live_examples
+                        ? "Live Auto Training pass complete"
+                        : request.generate_teacher_variations
                         ? "teacher-data pass complete"
                         : "trusted JSONL import complete")
                     : result.error,
@@ -8861,9 +9261,12 @@ void MainWindow::generate_piggyback(
         },
         trusted_only
             ? "importing trusted custom training data"
-            : "generating training examples from local teacher models");
+            : (live_candidates
+                ? "checking and revising live interactions with authorized local models"
+                : "generating training examples from local teacher models"));
     if (!started) {
         learning_service_->set_interactive_busy(false);
+        active_piggyback_live_ = false;
     }
     next_piggyback_at_ =
         std::chrono::steady_clock::now() + (started
@@ -9906,9 +10309,16 @@ void MainWindow::update_global_activity() {
         active_work.push_back(std::move(backend_work));
     }
 
-    add_running(
-        piggyback_operation_,
-        L"Creating and checking verified practice examples");
+    if (piggyback_operation_.running()) {
+        const auto operation = piggyback_operation_.snapshot();
+        auto label = std::wstring{active_piggyback_live_
+            ? L"Live Auto Training"
+            : L"Creating and checking verified practice examples"};
+        if (!operation.message.empty()) {
+            label += L" — " + widen(operation.message);
+        }
+        active_work.push_back(std::move(label));
+    }
 
     const auto pipeline = learning_service_->pipeline_snapshot();
     if (pipeline.active_job.has_value()) {
@@ -9953,6 +10363,22 @@ void MainWindow::update_global_activity() {
             text << L" • " << pipeline.queued_updates << L" saved improvement"
                  << (pipeline.queued_updates == 1U ? L"" : L"s") << L" waiting";
         }
+    } else if (live_training_pending_ && checked(id::chat_auto_learning)) {
+        const auto registry = runtime_model_snapshot();
+        auto qwen_ready = false;
+        auto nemotron_ready = false;
+        for (const auto& model : registry.models()) {
+            if (!model.enabled || !models::has_capability(model, "chat")) {
+                continue;
+            }
+            const auto family = live_training_model_family(model);
+            qwen_ready = qwen_ready || family == 1;
+            nemotron_ready = nemotron_ready || family == 2;
+        }
+        text << L"WAITING — Live Auto Training has cleaned interactions queued\r\n"
+             << L"Qwen 3.8 27B: " << (qwen_ready ? L"ready" : L"waiting")
+             << L" • Nemotron 3 Nano 4B: " << (nemotron_ready ? L"ready" : L"waiting")
+             << L" • Chat has priority; every decision will remain in the Training Library.";
     } else if (pipeline.queued_updates > 0U) {
         text << L"WAITING — " << pipeline.queued_updates << L" saved improvement"
              << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
@@ -9986,7 +10412,9 @@ void MainWindow::update_global_activity() {
                  << L"Built-in AI: "
                  << (backend_server_.running() ? L"ready" : L"not running")
                  << L" • Other AI choices: " << other_ai_count
-                 << L" • Automatic learning: "
+                 << L" • Live Auto Training: "
+                 << (checked(id::chat_auto_learning) ? L"on" : L"off")
+                 << L" • Idle practice generation: "
                  << (checked(id::learning_auto) ? L"on" : L"off");
         }
     }
@@ -10030,7 +10458,18 @@ void MainWindow::update_periodic_state() {
         snapshot = model_registry_;
     }
     const auto summary = runtime_summary(snapshot, backend_running);
-    const auto teacher_available = has_available_teacher(runtime_model_snapshot());
+    const auto teacher_available = has_available_teacher(snapshot);
+    auto qwen_ready = false;
+    auto nemotron_ready = false;
+    for (const auto& model : snapshot.models()) {
+        if (!model.enabled || !models::has_capability(model, "chat")) {
+            continue;
+        }
+        const auto family = live_training_model_family(model);
+        qwen_ready = qwen_ready || family == 1;
+        nemotron_ready = nemotron_ready || family == 2;
+    }
+    const auto live_models_ready = qwen_ready && nemotron_ready;
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
     const auto weight_update_busy =
         learning_pipeline.active_job.has_value() ||
@@ -10052,15 +10491,17 @@ void MainWindow::update_periodic_state() {
     if (chat_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Answering now. Automatic learning is waiting.");
+            L"Answering now. Live Auto Training is waiting and will not contact a second foreground model.");
     } else if (media_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Creating media now. Automatic learning is waiting.");
+            L"Creating media now. Live Auto Training is waiting.");
     } else if (piggyback_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
-            L"Improving the built-in AI automatically from approved examples. Chat remains available.");
+            active_piggyback_live_
+                ? L"Live Auto Training is checking, revising, or rejecting interaction candidates with Qwen and Nemotron. Every decision is retained."
+                : L"Creating and checking separate practice examples. Chat remains available.");
     } else if (learning_pipeline.active_job.has_value()) {
         set_control_text(
             id::chat_learning_status,
@@ -10072,29 +10513,38 @@ void MainWindow::update_periodic_state() {
                << (learning_pipeline.queued_updates == 1U ? L"" : L"s")
                << L" waiting.";
         set_control_text(id::chat_learning_status, queued.str());
-    } else if (!checked(id::learning_auto)) {
+    } else if (!checked(id::chat_auto_learning)) {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic learning is off.");
-    } else if (!teacher_available) {
+            L"Live Auto Training is off. Manual review and idle practice generation are separate controls.");
+    } else if (live_training_pending_ && !live_models_ready) {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic learning is on and waiting for another AI to help create examples.");
+            L"Live Auto Training is waiting: start and discover both loopback models, Qwen 3.8 27B and Nemotron 3 Nano 4B.");
+    } else if (live_training_pending_) {
+        set_control_text(
+            id::chat_learning_status,
+            L"Live Auto Training has cleaned interaction candidates waiting; Chat keeps priority.");
     } else {
         set_control_text(
             id::chat_learning_status,
-            L"Automatic learning is on and will run only while the app is idle.");
+            L"Live Auto Training is on. New conversations are cleaned, cross-checked, and shown in the Training Library.");
     }
 
-    if (checked(id::learning_auto) &&
-        teacher_available &&
+    const auto run_live_pass =
+        checked(id::chat_auto_learning) && live_training_pending_;
+    const auto run_practice_pass =
+        !run_live_pass && checked(id::learning_auto);
+    const auto helper_ready = run_live_pass ? live_models_ready : teacher_available;
+    if ((run_live_pass || run_practice_pass) &&
+        helper_ready &&
         !piggyback_operation_.running() &&
         !weight_update_busy &&
         !chat_operation_.running() &&
         !long_horizon_operation_.running() &&
         !media_operation_.running() &&
         std::chrono::steady_clock::now() >= next_piggyback_at_) {
-        generate_piggyback(true);
+        generate_piggyback(true, false, run_live_pass);
     }
 
     update_global_activity();
@@ -10325,8 +10775,12 @@ void MainWindow::update_chat_result() {
         deterministic_result
             ? L"Verified calculation • recomputed when needed • nothing added to memory or model weights"
             : checked(id::learning_auto)
-            ? L"Reply verified. Automatic learning is armed and will run while idle."
-            : L"Reply verified. Automatic teacher-data generation is disabled.");
+            ? L"Live Auto Training is checking whether this interaction is reusable learning material."
+            : L"Live Auto Training is off; the reply was not added to the automatic review queue.");
+    if (!deterministic_result && checked(id::learning_auto)) {
+        queue_live_training_candidate(response_turns_.back());
+        update_response_turn_controls();
+    }
     persist_current_chat();
 }
 
@@ -10471,6 +10925,7 @@ void MainWindow::update_piggyback_result() {
         return;
     }
     const auto trusted_only = active_piggyback_trusted_only_;
+    const auto live_candidates = active_piggyback_live_;
     if (!trusted_only && !active_piggyback_cursor_key_.empty()) {
         const auto current = piggyback_cursor_for(active_piggyback_cursor_key_);
         if (result->progress.next_seed_offset > current) {
@@ -10488,6 +10943,8 @@ void MainWindow::update_piggyback_result() {
            << L" • trusted " << result->progress.trusted_seeded
            << L" • generated " << result->progress.generated
            << L" • independently verified " << result->progress.verified
+           << L" • revised " << result->progress.revised
+           << L" • need evidence " << result->progress.needs_evidence
            << L" • stored " << result->progress.stored
            << L" • rejected " << result->progress.rejected;
     if (!result->error.empty()) {
@@ -10497,7 +10954,25 @@ void MainWindow::update_piggyback_result() {
     const auto now = std::chrono::steady_clock::now();
     const auto trainable_evidence =
         result->progress.trusted_seeded + result->progress.verified;
-    if (result->succeeded && trainable_evidence > 0U) {
+    if (live_candidates) {
+        live_training_pending_ = has_pending_live_training_candidates();
+        {
+            std::lock_guard lock(model_mutex_);
+            for (const auto& model_id : result->progress.accepted_source_models) {
+                model_registry_.record_feedback(model_id, true);
+            }
+            for (const auto& model_id : result->progress.rejected_source_models) {
+                model_registry_.record_feedback(model_id, false);
+            }
+            try {
+                model_registry_.save(paths_.model_registry);
+            } catch (...) {
+            }
+        }
+    }
+    if (live_candidates && live_training_pending_) {
+        next_piggyback_at_ = now + std::chrono::seconds(2);
+    } else if (result->succeeded && trainable_evidence > 0U) {
         // Let the coalesced weight candidate drain before another teacher pass.
         next_piggyback_at_ = now + std::chrono::minutes(10);
     } else if (result->succeeded) {
@@ -10508,13 +10983,18 @@ void MainWindow::update_piggyback_result() {
     set_status(result->succeeded
         ? (trusted_only
             ? L"Trusted custom JSONL import completed"
-            : L"Local teacher-data pass completed")
+            : (live_candidates
+                ? L"Live Auto Training pass completed; every decision is in the Training Library"
+                : L"Local teacher-data pass completed"))
         : (trusted_only
             ? L"Trusted custom JSONL import did not complete"
-            : L"Local teacher-data pass did not complete"));
+            : (live_candidates
+                ? L"Live Auto Training pass did not complete; its audit remains available"
+                : L"Local teacher-data pass did not complete")));
     active_piggyback_skill_.clear();
     active_piggyback_cursor_key_.clear();
     active_piggyback_trusted_only_ = false;
+    active_piggyback_live_ = false;
     update_learning_report();
     update_skill_report();
 }
@@ -10541,7 +11021,9 @@ void MainWindow::update_skill_report() {
 
     std::wostringstream learning_status;
     learning_status << L"AUTOMATIC IMPROVEMENT\r\n";
-    if (pipeline.active_job.has_value()) {
+    if (active_piggyback_live_ && piggyback_operation_.running()) {
+        learning_status << L"Live Auto Training — Qwen and Nemotron are reviewing the interaction";
+    } else if (pipeline.active_job.has_value()) {
         learning_status << L"Working safely in the background — "
                         << widen(learning::to_string(pipeline.active_job->state));
     } else if (pipeline.queued_updates > 0U) {
@@ -10549,8 +11031,10 @@ void MainWindow::update_skill_report() {
                         << L" verified update"
                         << (pipeline.queued_updates == 1U ? L"" : L"s")
                         << L" waiting for an idle moment";
+    } else if (checked(id::chat_auto_learning)) {
+        learning_status << L"Live Auto Training on — accepted behavior enters bounded weight batches";
     } else if (checked(id::learning_auto)) {
-        learning_status << L"On — accepted replies are immediate; deeper updates wait until idle";
+        learning_status << L"Idle practice generation on — Live Auto Training is off";
     } else {
         learning_status << L"Ready — automatic example generation is off; manual approval still works";
     }
@@ -10577,6 +11061,9 @@ void MainWindow::update_skill_report() {
            << L"  Repository work: compile/test evidence is required before a result can teach weights\r\n"
            << L"  Exact calculations: computed locally and never baked into model weights\r\n\r\n"
            << L"Learning\r\n"
+           << L"  Live Auto Training: "
+           << (checked(id::chat_auto_learning) ? L"on" : L"off")
+           << L" — separate from idle practice generation and explicit retraining\r\n"
            << L"  Approved specialized examples: " << approved_examples << L"\r\n"
            << L"  Waiting updates: " << pipeline.queued_updates << L"\r\n"
            << L"  Active update: ";
@@ -11122,7 +11609,20 @@ void MainWindow::update_learning_report() {
     const auto pipeline = learning_service_->pipeline_snapshot();
     const auto foundry = piggyback_operation_.snapshot();
     const auto automatic_teacher = checked(id::learning_auto);
-    const auto teacher_available = has_available_teacher(runtime_model_snapshot());
+    const auto live_auto = checked(id::chat_auto_learning);
+    const auto model_snapshot = runtime_model_snapshot();
+    const auto teacher_available = has_available_teacher(model_snapshot);
+    auto qwen_ready = false;
+    auto nemotron_ready = false;
+    for (const auto& model : model_snapshot.models()) {
+        if (!model.enabled || !models::has_capability(model, "chat")) {
+            continue;
+        }
+        const auto family = live_training_model_family(model);
+        qwen_ready = qwen_ready || family == 1;
+        nemotron_ready = nemotron_ready || family == 2;
+    }
+    const auto live_models_ready = qwen_ready && nemotron_ready;
     const auto now = std::chrono::steady_clock::now();
     const auto selected_skill = selected_training_skill();
     const auto selected_dataset = selected_training_dataset();
@@ -11130,7 +11630,9 @@ void MainWindow::update_learning_report() {
         learning_service_->memory_store().training_count_for_skill(selected_skill);
     std::wostringstream learning_summary;
     if (piggyback_operation_.running()) {
-        learning_summary << L"Automatic idle learning: verifying new examples; Chat has priority";
+        learning_summary << (active_piggyback_live_
+            ? L"Live Auto Training: reviewing live interactions; Chat has priority"
+            : L"Automatic idle learning: verifying separate practice examples; Chat has priority");
     } else if (pipeline.active_job.has_value()) {
         learning_summary << L"Weight training: "
                          << friendly_learning_stage(pipeline.active_job->state)
@@ -11159,8 +11661,19 @@ void MainWindow::update_learning_report() {
     std::wostringstream report;
     report << L"VERIFIED LEARNING PIPELINE\r\n"
            << L"  Status: " << learning_summary.str() << L"\r\n"
+           << L"  Live Auto Training: " << (live_auto ? L"enabled" : L"disabled")
+           << L"; interaction ledger: " << (live_training_pending_ ? L"work waiting" : L"caught up")
+           << L"\r\n"
+           << L"  Authorized live reviewers: Qwen 3.8 27B "
+           << (qwen_ready ? L"ready" : L"waiting")
+           << L"; Nemotron 3 Nano 4B "
+           << (nemotron_ready ? L"ready" : L"waiting")
+           << L"; loopback OpenAI-compatible endpoints only\r\n"
            << L"  Automatic idle learning: " << (automatic_teacher ? L"enabled" : L"disabled") << L"\r\n"
-           << L"  Neural weight retraining: explicit Compile data and retrain model action\r\n"
+           << L"  Neural weight retraining: automatically queued after a verified microbatch; Compile data and retrain model can force a smaller pending batch\r\n"
+           << L"  Foreground rule: one routed AI answers; Qwen and Nemotron cooperate only in the background review pass\r\n"
+           << L"  Curriculum rule: conversation first, planning after measured competence, then coding with compiler and test evidence\r\n"
+           << L"  Information rule: private/personal data, branding, emoji noise, errors, and unsupported current facts never enter weights\r\n"
            << L"  Compute ceiling: the bounded model, curated replay set, checkpoints, evaluation, and promotion are designed to complete within 12 hours on the target hardware; this is not a countdown\r\n"
            << L"  Controlled software self-improvement: separate, evidence-gated, and never started by learning controls\r\n"
            << L"  Retained verified examples for the selected topic: " << selected_evidence
@@ -11187,6 +11700,8 @@ void MainWindow::update_learning_report() {
                : L"idle")
            << L"\r\nTeacher model: "
            << (teacher_available ? L"external local teacher ready" : L"waiting for an external local teacher")
+           << L"\r\nLive reviewer pair: "
+           << (live_models_ready ? L"both authorized models ready" : L"waiting for the complete pair")
            << L"\r\nActive example pass target: "
            << (active_piggyback_skill_.empty() ? L"none" : widen(active_piggyback_skill_))
            << L"\r\nTeacher foundry: "
@@ -11201,7 +11716,9 @@ void MainWindow::update_learning_report() {
            << (settings.policy.lora_microbatch == 1U ? L"" : L"s")
            << L"\r\nPressing the retrain button can compile any smaller pending verified batch.\r\n\r\n";
 
-    if (automatic_teacher && teacher_available && !piggyback_operation_.running()) {
+    if (((live_auto && live_training_pending_ && live_models_ready) ||
+         (automatic_teacher && teacher_available)) &&
+        !piggyback_operation_.running()) {
         if (now >= next_piggyback_at_) {
             report << L"Next verified teacher pass: ready as soon as inference and weight training are idle.\r\n\r\n";
         } else {

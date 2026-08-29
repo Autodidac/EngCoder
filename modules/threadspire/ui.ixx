@@ -212,10 +212,15 @@ private:
         const ResponseTurn& turn,
         bool accepted) const;
     [[nodiscard]] std::wstring learning_preview_text(const ResponseTurn& turn) const;
+    void queue_live_training_candidate(ResponseTurn& turn);
+    [[nodiscard]] bool has_pending_live_training_candidates();
     void discover_local_ai();
     void add_manual_local_ai();
     void connect_mcp();
-    void generate_piggyback(bool automatic = false, bool trusted_only = false);
+    void generate_piggyback(
+        bool automatic = false,
+        bool trusted_only = false,
+        bool live_candidates = false);
     void handle_training_target_change();
     void browse_custom_training_data();
     void import_custom_training_data();
@@ -319,6 +324,7 @@ private:
     LifecycleAction lifecycle_action_{LifecycleAction::none};
     bool automatic_lifecycle_enabled_{true};
     bool automatic_training_enabled_{true};
+    bool live_auto_training_enabled_{true};
     bool bootstrap_priority_lease_{false};
     bool backend_verified_{false};
     bool backend_repair_required_{false};
@@ -383,6 +389,8 @@ private:
     std::string active_piggyback_skill_;
     std::string active_piggyback_cursor_key_;
     bool active_piggyback_trusted_only_{false};
+    bool active_piggyback_live_{false};
+    bool live_training_pending_{false};
     std::string training_target_{"english-foundation"};
     std::string custom_training_skill_{"custom-skill"};
     std::filesystem::path custom_training_dataset_;

@@ -1242,6 +1242,37 @@ void test_targeted_and_custom_training_import() {
         require(service.memory_store().count_for_skill("custom-domain") == 2U &&
                     service.memory_store().training_count_for_skill("custom-domain") == 0U,
                 "A selected custom target must retain every trusted record as memory without entering core weights");
+
+        const auto live_dataset = root / "live-interactions.jsonl";
+        const auto live_audit = root / "live-training-attempts.jsonl";
+        {
+            std::ofstream stream(live_dataset, std::ios::binary | std::ios::trunc);
+            stream << R"({"candidate_id":"live-one","domain":"live-interaction","skill":"english-conversation","prompt":"How are you?","response":"I'm doing well. How can I help?","source_model_id":"qwen","needs_current_information":false,"compiler_passed":false,"tests_passed":false})"
+                   << '\n';
+        }
+        threadspire::ai::learning::PiggybackRequest live_request;
+        live_request.seed_dataset = live_dataset;
+        live_request.target_skill = "live-interaction";
+        live_request.restrict_to_target_domain = false;
+        live_request.generate_teacher_variations = true;
+        live_request.untrusted_live_examples = true;
+        live_request.wrap_seed_dataset = false;
+        live_request.audit_log = live_audit;
+        live_request.maximum_examples = 8U;
+        const auto live_without_reviewers =
+            threadspire::ai::learning::run_piggyback_foundry(live_request, service);
+        require(live_without_reviewers.succeeded &&
+                    live_without_reviewers.progress.examined == 1U &&
+                    live_without_reviewers.progress.rejected == 1U &&
+                    live_without_reviewers.progress.stored == 0U &&
+                    live_without_reviewers.progress.next_seed_offset == 1U &&
+                    read_text_file(live_audit).find("distinct local reviewer") != std::string::npos,
+                "Live Auto Training must audit and reject an interaction when a distinct local reviewer is unavailable");
+        live_request.seed_offset = 1U;
+        const auto exhausted_live_ledger =
+            threadspire::ai::learning::run_piggyback_foundry(live_request, service);
+        require(!exhausted_live_ledger.succeeded && exhausted_live_ledger.progress.examined == 0U,
+                "the live-interaction ledger must be consumed once and must never wrap old conversations into repeated weight");
         service.request_stop();
     }
     std::filesystem::remove_all(root);
@@ -1622,6 +1653,31 @@ void test_windows_ui_source_contract() {
                 ui.find("up to 4 workers each") != std::string::npos &&
                 ui.find("every attempt logged") != std::string::npos,
             "automatic teaching must run bounded local teachers in parallel and retain every accepted or rejected attempt for inspection");
+    require(ui.find("L\"Live Auto Training\"") != std::string::npos &&
+                ui.find("live-auto-training.txt") != std::string::npos &&
+                ui.find("automatic-training.txt") != std::string::npos &&
+                ui.find("move_review_action(id::chat_auto_learning") != std::string::npos &&
+                ui.find("move_second_row(id::chat_auto_learning") != std::string::npos &&
+                ui.find("live-interactions.jsonl") != std::string::npos &&
+                ui.find("live-training-attempts.jsonl") != std::string::npos &&
+                ui.find("live_training_model_family") != std::string::npos &&
+                ui.find("host != \"127.0.0.1\"") != std::string::npos &&
+                ui.find("model_name == \"qwen/qwen3.8-27b\"") != std::string::npos &&
+                ui.find("model_name == \"nvidia/nemotron-3-nano-4b\"") != std::string::npos &&
+                ui.find("qwen/qwen3.8-27b") != std::string::npos &&
+                ui.find("nvidia/nemotron-3-nano-4b") != std::string::npos &&
+                ui.find("redact ? std::string{\"[redacted private interaction]\"}") != std::string::npos &&
+                ui.find("conversation_ready && planning_ready") != std::string::npos &&
+                foundry.find("review_live_example") != std::string::npos &&
+                foundry.find("Current information needs a cited research/tool result") != std::string::npos &&
+                foundry.find("Coding material needs compiler and test evidence") != std::string::npos &&
+                foundry.find("Second-model confirmation failed") != std::string::npos &&
+                foundry.find("revised-and-accepted") != std::string::npos &&
+                foundry.find("needs-evidence") != std::string::npos &&
+                foundry.find("accepted_source_models.push_back") != std::string::npos &&
+                ui.find("result->progress.accepted_source_models") != std::string::npos &&
+                ui.find("model_registry_.record_feedback(model_id, true)") != std::string::npos,
+            "Live Auto Training must remain a separate visible control, use only the two authorized loopback models, redact private exclusions, stage skills, and require evidence plus two-model confirmation");
 
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
@@ -1735,7 +1791,7 @@ void test_windows_ui_source_contract() {
     require(ui.find("has_available_teacher") != std::string::npos &&
                 ui.find("if (interactive_model_verified_ &&") == std::string::npos &&
                 ui.find("piggyback_operation_.cancel()") != std::string::npos &&
-                ui.find("Answering now. Automatic learning is waiting.") != std::string::npos,
+                ui.find("Answering now. Live Auto Training is waiting") != std::string::npos,
             "automatic learning must start from an available teacher and yield to foreground requests");
     require(ui.find("!models::is_internal_model(model)") != std::string::npos &&
                 ui.find("settings.policy.lora_microbatch = internal_base ? 8U : 4U") != std::string::npos &&
@@ -1848,7 +1904,7 @@ void test_windows_ui_source_contract() {
                 ui.find("stream << L\"starting\"") != std::string::npos &&
                 ui.find("progress_has_saved_work") != std::string::npos &&
                 ui.find("Built-in AI failed quality checks at ") != std::string::npos &&
-                ui.find("Improving the built-in AI automatically from approved examples") != std::string::npos &&
+                ui.find("Creating and checking separate practice examples") != std::string::npos &&
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
             "Chat and AI & Tools must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
     const auto native_missing_status =
@@ -1908,6 +1964,9 @@ void test_windows_ui_source_contract() {
                 ui.find("Training Library • your learning:") != std::string::npos &&
                 ui.find("Record source: ") != std::string::npos &&
                 ui.find("Automatic teacher attempts") != std::string::npos &&
+                ui.find("Live Auto Training") != std::string::npos &&
+                ui.find("Live Auto needs evidence") != std::string::npos &&
+                ui.find("confirmation_name") != std::string::npos &&
                 ui.find("id::learning_library_filter") != std::string::npos &&
                 ui.find("width >= scaled(760, dpi_)") != std::string::npos,
             "Learning must expose every full trainable or held-out record in a searchable, responsive, plain-language library");

@@ -15,10 +15,11 @@ Connected AI applications remain separate. Locking one exact AI contacts only th
 
 ## What is bundled and what is learned
 
-The Training Library shows four sources independently:
+The Training Library shows five sources independently:
 
 - **Bundled curriculum:** 4,247 English and C++23 examples shipped with the executable. These are not user learning history.
 - **Your learning:** explicit approved replies, corrections, and rejected drafts. Repeated approval of the same prompt/reply does not add weight.
+- **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, rejected, and privacy-excluded decisions remain inspectable.
 - **Automatic teacher attempts:** candidate examples proposed by connected local AI servers and checked independently. Accepted, rejected, and failed attempts remain inspectable.
 - **Held-out checks:** 320 message-disjoint examples used only to evaluate candidates. They never train weights.
 
@@ -26,11 +27,12 @@ Emoji and provider branding are removed at the training boundary. Error cards, p
 
 ## Learning and retraining
 
-EngCoder keeps three processes separate:
+EngCoder keeps four learning processes separate:
 
 - **Immediate approved memory** makes an accepted or corrected answer retrievable without retraining.
-- **Automatic idle learning** gathers and verifies practice examples while the app is idle. It requires a connected teacher AI for generated variations and never edits weights by itself.
-- **Compile data and retrain model** explicitly compiles pending verified examples into a separate test model. Training is serialized, resumable, checkpointed, and preempted by Chat. The working model remains online until the test copy passes evaluation and host checks.
+- **Live Auto Training** cleans each successful live interaction, lets the authorized loopback Qwen and Nemotron models accept, revise, reject, or hold it for evidence, and automatically feeds only independently accepted reusable behavior into bounded weight batches.
+- **Automatic idle learning** separately gathers and verifies seed-curriculum practice examples while the app is idle.
+- **Neural weight retraining** is automatically queued when a verified microbatch fills. **Compile data and retrain model** can force a smaller pending batch. Training is serialized, resumable, checkpointed, and preempted by Chat.
 
 Initial neural setup uses adaptive targets of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. Each run stops at its bound with diagnostics. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
 
@@ -42,7 +44,7 @@ The native installed base, excluding models and optional packs, must remain at o
 
 ## Unified interface
 
-- **Chat** contains the conversation, composer, task override, AI access group, exact AI selector, file attachments, Stop, and per-reply Copy/Edit/Retry/Accept/Reject controls.
+- **Chat** contains the conversation, composer, task override, AI access group, exact AI selector, file attachments, Stop, per-reply controls, and the separate **Live Auto Training** checkbox.
 - **AI & Tools** contains connected-server discovery and backup connection/repair controls.
 - **Memory & Learning** contains permanent memory, automatic example collection, explicit neural retraining, live job state, and the complete searchable Training Library.
 - **Capabilities** shows what is ready and audits every optional pack without following links outside its root.
@@ -118,10 +120,12 @@ Useful documents:
 - [Building](building.md)
 - [Custom training data](custom-training.md)
 - [Learning pipeline](docs/learning-pipeline.md)
+- [Live Auto Training design](docs/live-auto-training.md)
 - [Module boundaries](docs/module-abi.md)
 - [Current implementation queue](docs/unified-workbench-queue.md)
 - [Session verification report](docs/session-report-2026-08-26.md)
 - [UI and activity verification report](docs/session-report-2026-08-28.md)
+- [Live Auto Training verification report](docs/session-report-2026-08-29.md)
 
 ## License
 

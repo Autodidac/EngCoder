@@ -84,7 +84,9 @@ A foreground inference marker causes a checkpoint and exit code `75`. The C++ co
 
 Automatic idle learning is a persistent lightweight pipeline, not a timed session. When enabled, it curates approved evidence, asks available local teacher models for bounded variations, independently verifies the results, deduplicates them, and admits only eligible records. It always yields to Chat and other foreground work. Disabling it stops new automatic teacher passes; it does not erase accepted evidence or corrupt queued checkpoints.
 
-`Compile data and retrain model` is a separate explicit action. It gathers every topic with pending verified weight-eligible evidence, serializes one coalesced shadow update per topic, and lets the existing persistent worker train, evaluate, and promote or reject each candidate. The last promoted model continues serving throughout. This action is not automatic software self-improvement and does not edit application source.
+Live Auto Training is a third, separately persisted pipeline. It turns successful live conversations into a one-pass ledger, requires the exact authorized local Qwen and Nemotron families to review every acceptance, and exposes every accepted, revised, needs-evidence, rejected, or privacy-excluded decision. It never changes foreground AI selection. See [Live Auto Training](live-auto-training.md).
+
+Verified evidence automatically queues one coalesced shadow update per topic when its configured microbatch fills. `Compile data and retrain model` is a separate explicit action that can force a smaller pending verified batch. The persistent worker trains, evaluates, and promotes or rejects each candidate while the last promoted model continues serving. Neither pathway is automatic software self-improvement and neither edits application source.
 
 The 12-hour requirement is a compute ceiling for a complete bounded compile, training, evaluation, and promotion cycle on the target RTX 5080 / Ryzen 9 9900X / 64 GiB system. It is enforced through bounded model size, curated replay, capped steps, checkpointing, and serialized candidates—not through a wall-clock countdown in the interface. The cycle ends when the finite work completes. Foreground inference still requests a safe checkpoint and recovery code `75`; the same candidate resumes afterward.
 
@@ -104,7 +106,7 @@ Immediate memory is the fastest learning path and remains active even when backg
 Conversational `remember`, `forget`, memory-list, `teach`, and `correct` controls are intercepted before provider routing. They print exact receipts and never contact a model. Permanent user facts remain in the editable user-memory file and are never weight data. Taught replies and corrections enter the same admission service used by the per-reply controls. A correction supersedes every earlier positive answer for that normalized prompt in exact and semantic retrieval; historical drafts remain negative audit evidence only. Both optional Python loaders independently keep only the newest hard correction and exclude stale positives before batching.
 The visible Training Library applies the same rule: it presents the correction as the approved expected answer, shows the replaced draft as excluded audit material, and labels older approvals for the prompt as superseded.
 
-Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off automatic idle learning stops new teacher-generated examples; already queued verified candidates and explicit full training remain independent, and no context or memory is erased.
+Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off Live Auto or automatic idle learning stops only that source; already admitted evidence, queued candidates, explicit training, context, and memory remain independent.
 
 ## Conversation, coding, and self-iteration
 
@@ -117,13 +119,15 @@ EngCoder keeps these concerns separate without exposing sampler jargon in the in
 
 The selected repository is never the build/repair workspace and is never hard-reset. A passing trajectory remains quarantined until its conversation result is explicitly approved. Approval rechecks the candidate commit, original source revision, and clean source status, then publishes only an `engcoder/candidate-…` review branch; it does not switch, merge, or change working files. Rejection publishes nothing. Compiler/test evidence can enter scoped shadow learning only after this human approval, so source promotion and model-weight promotion remain separate atomic operations.
 
-## Automatic teacher generation and immediate updates
+## Automatic teacher generation, Live Auto, and weight updates
 
 A connected external local LLM may propose examples. The internal model is never eligible to teach or verify itself. A distinct external verifier, trusted bundled reference, compiler, test suite, or user acceptance must establish positive evidence; otherwise generated output remains quarantined.
 
-A trusted or independently verified episode increments the corresponding skill's pending-evidence counter. For the internal model, the promotion microbatch is one admitted episode, so the skill is queued immediately. Duplicate queued requests for the same skill coalesce. The teacher loop pauses while that queue or an active trainer exists, then resumes after the weight work drains.
+A trusted or independently verified episode increments the corresponding skill's pending-evidence counter. The internal-base promotion microbatch is eight eligible episodes; external-base policy defaults to four. Duplicate queued requests for the same skill coalesce. The Live Auto and teacher loops pause while that queue or an active trainer exists, then resume after the weight work drains. The explicit retrain button can request a smaller nonempty pending batch.
 
 The connected model's weights are never copied into the internal model. Only verified input/output evidence is loaded by the Python worker and used to train EngCoder's own tensors.
+
+Live Auto also updates routing evidence for the model that produced the original answer. An accepted original raises quality gradually; a revised or rejected original lowers it; a needs-evidence outcome is neutral. Automatic foreground routing can therefore shift toward EngCoder only after demonstrated improvement.
 
 The Learning page reports both sides of this pipeline:
 

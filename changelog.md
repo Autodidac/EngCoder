@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 — 2026-08-29 Live Auto Training
+
+- Added a separate **Live Auto Training** checkbox after the per-reply manual controls; it no longer aliases or disables the older idle practice-example generator.
+- Added a non-wrapping cleaned live-interaction ledger and a complete decision audit for accepted, revised-and-accepted, needs-evidence, rejected, and privacy-excluded records.
+- Restricted live background review to exact loopback OpenAI-compatible Qwen 3.8 27B and Nemotron 3 Nano 4B model families. Both models must confirm accepted behavior; up to four bounded workers per family generate cross-checked diversity.
+- Added conversation-first curriculum gates, planning and coding competence thresholds, compiler/test requirements for code, and tool/user-evidence requirements for current facts.
+- Redacted private exclusions, blocked provider branding/emoji/errors from learning, prevented ledger wraparound and duplicate weight, and exposed every result in the Training Library.
+- Connected Live Auto outcomes to existing routing feedback so accepted sources earn traffic gradually while revised/rejected behavior loses confidence; needs-evidence results are neutral.
+- Made queued and active Live Auto work persistent in the always-visible Activity strip and documented the complete foreground, memory, evidence, weight, and failure boundaries.
+
 ## 2026-08-29 — Persistent activity completion
 
 - Fast operations no longer vanish into the generic ready state before they can be read. The global activity card retains the most recently completed operation until new work begins and points to the full Activity history.

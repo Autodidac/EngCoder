@@ -46,6 +46,14 @@ Bootstrap targets are bounded at 24,000 steps for Small, 36,000 for Medium, and 
 
 The learning admission boundary removes emoji and emoji formatting before deduplication and persistence. It also normalizes assistant self-branding to EngCoder while retaining the true provider/model ID only as audit metadata. The C++ service and both Python loaders enforce the same rule; chat transcripts are not modified.
 
+## 2.3 Live Auto Training boundary
+
+Foreground inference and background learning are intentionally different routes. One selected or automatically routed model answers a message. Only after completion may the exact loopback Qwen 3.8 27B and Nemotron 3 Nano 4B families review the cleaned interaction in the background, with up to four bounded workers per family.
+
+The first reviewer returns `accept`, `revise`, `reject`, or `needs-evidence`; the other model confirms every acceptance. Current facts require a tool trace or user confirmation, coding requires compiler and tests, and private/nonpublic material is redacted before the model-review boundary. The one-pass ledger and complete decision audit are described in [Live Auto Training](docs/live-auto-training.md).
+
+Conversation, planning, and coding open in measured stages. Accepted or rejected original replies also update the existing routing-quality metric, so the internal model earns automatic conversational traffic through demonstrated results rather than a forced switch.
+
 ## 3. Internal neural architecture
 
 ### 3.1 Token ABI
@@ -205,6 +213,8 @@ A connected model can provide:
 - independent verification;
 - routing comparisons;
 - optional LoRA targets in Model Lab.
+
+The exact authorized Qwen and Nemotron models may also cooperate in Live Auto Training. They review data; their weights are never copied. Normal foreground Chat still contacts only one model, and a manual exact-model selection never enables silent fall-through.
 
 It cannot silently become the internal source. Its generated output is data with provenance, not imported inference weights.
 
