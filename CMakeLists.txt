@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 4.4)
 
 project(
     EngCoder
-    VERSION 0.7.1
+    VERSION 0.7.2
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -16,6 +16,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 find_package(Threads REQUIRED)
+
+# EpochGui is vendored from the clean, backend-neutral EpochGui subtree only.
+# EngCoder keeps ownership of HWND lifetime, Win32 event translation, painting,
+# and presentation while EpochGui supplies deterministic layout calculations.
+add_subdirectory(third_party/EpochGui _deps/EpochGui)
 
 set(THREADSPIRE_AI_CORE_SOURCES
     src/core/ini.cpp
@@ -171,6 +176,7 @@ if(WIN32)
         EngCoder
         PRIVATE
             threadspire::ai::core
+            EpochGui
             Comctl32
             Dwmapi
             Gdi32

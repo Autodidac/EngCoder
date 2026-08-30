@@ -398,6 +398,7 @@ struct PiggybackProgress final {
     std::size_t verified{0};
     std::size_t revised{0};
     std::size_t needs_evidence{0};
+    std::size_t retry_pending{0};
     std::vector<std::string> accepted_source_models;
     std::vector<std::string> rejected_source_models;
     std::size_t stored{0};

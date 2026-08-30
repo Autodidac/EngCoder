@@ -762,6 +762,16 @@ std::size_t EpisodeStore::human_acceptance_count_for_skill(
     return iterator == human_accepted_counts_.end() ? 0U : iterator->second;
 }
 
+std::size_t EpisodeStore::total_human_acceptance_count() const {
+    std::lock_guard lock(mutex_);
+    std::size_t total = 0U;
+    for (const auto& [skill, count] : human_accepted_counts_) {
+        static_cast<void>(skill);
+        total += count;
+    }
+    return total;
+}
+
 std::size_t EpisodeStore::training_count_for_skill(const std::string_view skill) const {
     std::lock_guard lock(mutex_);
     const auto iterator = training_counts_.find(std::string(skill));

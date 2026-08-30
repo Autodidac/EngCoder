@@ -35,6 +35,7 @@ struct Verification final {
     bool accepted{false};
     bool revised{false};
     bool needs_evidence{false};
+    bool retryable{false};
     double score{0.0};
     std::string reason;
     std::string response;
@@ -371,11 +372,13 @@ struct VariationAttempt final {
             .should_stop = [stop_token] { return stop_token.stop_requested(); },
         });
     if (!result.succeeded) {
+        verification.retryable = true;
         verification.reason = "Reviewer failed: " + result.error;
         return verification;
     }
     const auto document = extract_json_object(result.content);
     if (!document.has_value()) {
+        verification.retryable = true;
         verification.reason = "Reviewer returned malformed JSON.";
         return verification;
     }
@@ -418,7 +421,9 @@ struct VariationAttempt final {
         return false;
     }
     const auto created = memory::now_unix_ms();
-    const auto action = verification.accepted
+    const auto action = verification.retryable
+        ? "retry-pending"
+        : verification.accepted
         ? (verification.revised ? "revised-and-accepted" : "accepted")
         : (verification.needs_evidence ? "needs-evidence" : "rejected");
     core::json::Value::Object record{
@@ -443,11 +448,13 @@ struct VariationAttempt final {
         {"eligible_for_training", verification.accepted},
         {"score", verification.accepted ? verification.score : 0.0},
         {"verification_notes", verification.reason},
-        {"generation_error", std::string{}},
+        {"generation_error", verification.retryable ? verification.reason : std::string{}},
         {"provenance", "live-auto-training"},
-        {"knowledge_destination", verification.accepted
-            ? "lora-incubation"
-            : (verification.needs_evidence ? "needs-evidence" : "quarantine")},
+        {"knowledge_destination", verification.retryable
+            ? "pending-review"
+            : (verification.accepted
+                ? "lora-incubation"
+                : (verification.needs_evidence ? "needs-evidence" : "quarantine"))},
         {"tool_trace_hash", example.tool_trace_hash},
         {"created_unix_ms", static_cast<double>(created)},
     };
@@ -659,7 +666,9 @@ PiggybackResult run_piggyback_foundry(
             return result;
         }
         ++result.progress.examined;
-        result.progress.next_seed_offset = request.seed_offset + result.progress.examined;
+        if (!request.untrusted_live_examples) {
+            result.progress.next_seed_offset = request.seed_offset + result.progress.examined;
+        }
         result.progress.current_prompt = example.prompt;
         if (request.untrusted_live_examples) {
             result.progress.message = "Checking live interaction " +
@@ -675,6 +684,7 @@ PiggybackResult run_piggyback_foundry(
             const models::ModelProfile* confirmer = nullptr;
             auto reviewed_response = example.reference;
             if (reviewer_it == verifiers.end()) {
+                verification.retryable = true;
                 verification.reason =
                     "A distinct local reviewer is required; the source model cannot approve itself.";
             } else {
@@ -693,6 +703,7 @@ PiggybackResult run_piggyback_foundry(
                     });
                     if (confirmer_it == verifiers.end()) {
                         verification.accepted = false;
+                        verification.retryable = true;
                         verification.reason =
                             "A revised answer needs confirmation from a second distinct local model.";
                     } else {
@@ -712,6 +723,7 @@ PiggybackResult run_piggyback_foundry(
                         } else {
                             verification.accepted = false;
                             verification.needs_evidence = confirmation.needs_evidence;
+                            verification.retryable = confirmation.retryable;
                             verification.reason = "Revision was not independently confirmed: " +
                                 confirmation.reason;
                         }
@@ -722,6 +734,7 @@ PiggybackResult run_piggyback_foundry(
                     });
                     if (confirmer_it == verifiers.end()) {
                         verification.accepted = false;
+                        verification.retryable = true;
                         verification.reason =
                             "Acceptance needs confirmation from the second authorized local model.";
                     } else {
@@ -739,6 +752,7 @@ PiggybackResult run_piggyback_foundry(
                         } else {
                             verification.accepted = false;
                             verification.needs_evidence = confirmation.needs_evidence;
+                            verification.retryable = confirmation.retryable;
                             verification.reason = "Second-model confirmation failed: " +
                                 confirmation.reason;
                         }
@@ -761,6 +775,19 @@ PiggybackResult run_piggyback_foundry(
                 publish_progress(on_progress, result.progress);
                 return result;
             }
+            if (verification.retryable) {
+                ++result.progress.retry_pending;
+                result.progress.message =
+                    "Live interaction retained for retry; no learning decision was made: " +
+                    verification.reason;
+                publish_progress(on_progress, result.progress);
+                // The cursor intentionally remains on this record. Preserve
+                // ledger order and retry after a backoff instead of skipping
+                // later records around an unresolved review.
+                break;
+            }
+            result.progress.next_seed_offset =
+                request.seed_offset + result.progress.examined;
             if (!verification.accepted) {
                 ++result.progress.rejected;
                 if (!verification.needs_evidence && !example.source_model_id.empty()) {
@@ -986,6 +1013,7 @@ PiggybackResult run_piggyback_foundry(
                 std::to_string(result.progress.verified) + " verified, " +
                 std::to_string(result.progress.revised) + " revised, " +
                 std::to_string(result.progress.needs_evidence) + " need evidence, " +
+                std::to_string(result.progress.retry_pending) + " retry pending, " +
                 std::to_string(result.progress.rejected) + " rejected."
             : "Audited teacher-data batch complete: " +
                 std::to_string(result.progress.verified) + " verified, " +

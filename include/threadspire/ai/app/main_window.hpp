@@ -274,6 +274,7 @@ private:
     HBRUSH card_brush_{nullptr};
     HBRUSH edit_brush_{nullptr};
     unsigned int dpi_{96};
+    bool resize_layout_scheduled_{false};
     Page page_{Page::chat};
     AppPaths paths_;
     std::filesystem::path selected_python_;

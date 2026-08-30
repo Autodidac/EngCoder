@@ -1,6 +1,7 @@
 module;
 #include "module_prelude.hpp"
 #include "resource.h"
+#include <gui/layout_primitives.hpp>
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <Richedit.h>
@@ -39,6 +40,7 @@ namespace {
 constexpr wchar_t window_class_name[] = L"EngCoder.MainWindow";
 constexpr UINT_PTR update_timer = 1;
 constexpr UINT_PTR stream_timer = 2;
+constexpr UINT_PTR resize_layout_timer = 3;
 constexpr COLORREF window_color = RGB(20, 22, 27);
 constexpr COLORREF card_color = RGB(27, 30, 37);
 constexpr COLORREF edit_color = RGB(31, 34, 41);
@@ -1430,6 +1432,7 @@ struct PendingLayoutMove final {
 class LayoutBatch;
 LayoutBatch* active_layout_batch = nullptr;
 HWND active_layout_page_host = nullptr;
+std::unordered_map<HWND, epochengine::gui_lib::Rect> layout_bounds_cache;
 
 void set_window_visibility(const HWND window, const bool visible) {
     if (window == nullptr || ::IsWindow(window) == FALSE) {
@@ -1553,22 +1556,18 @@ void move_control(
         safe_height = std::clamp(safe_height, 1, parent_height - safe_y);
     }
 
-    RECT current{};
-    if (::GetWindowRect(control, &current) != FALSE) {
-        std::array<POINT, 2> points{{
-            POINT{current.left, current.top},
-            POINT{current.right, current.bottom},
-        }};
-        if (parent != nullptr) {
-            static_cast<void>(::MapWindowPoints(
-                nullptr, parent, points.data(), static_cast<UINT>(points.size())));
-        }
-        if (points[0].x == safe_x && points[0].y == safe_y &&
-            points[1].x - points[0].x == safe_width &&
-            points[1].y - points[0].y == safe_height) {
-            return;
-        }
+    const epochengine::gui_lib::Rect desired_bounds{
+        {static_cast<float>(safe_x), static_cast<float>(safe_y)},
+        {static_cast<float>(safe_width), static_cast<float>(safe_height)}};
+    const auto cached = layout_bounds_cache.find(control);
+    if (cached != layout_bounds_cache.end() &&
+        cached->second.position.x == desired_bounds.position.x &&
+        cached->second.position.y == desired_bounds.position.y &&
+        cached->second.size.x == desired_bounds.size.x &&
+        cached->second.size.y == desired_bounds.size.y) {
+        return;
     }
+    layout_bounds_cache.insert_or_assign(control, desired_bounds);
 
     constexpr auto flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS;
     if (active_layout_batch != nullptr) {
@@ -2274,15 +2273,17 @@ void append_training_library_file(
         const auto review_record = category == "Review record" || teacher_attempt || live_attempt;
         const auto provenance = core::json::string_or(document->find("provenance"));
         const auto live_review = live_attempt || provenance.starts_with("live-auto-training");
+        const auto auto_action = core::json::string_or(document->find("auto_action"));
+        const auto live_retry_pending = live_review && auto_action == "retry-pending";
         const auto correction = core::json::string_or(document->find("correction"));
         const auto hard_correction = review_record && !teacher_attempt &&
             core::json::bool_or(document->find("human_rejected"), false) &&
             !correction.empty() && provenance == "interactive-hard-correction";
-        const auto review_rejected = review_record && !hard_correction && (
+        const auto review_rejected = review_record && !hard_correction && !live_retry_pending && (
             core::json::bool_or(document->find("human_rejected"), false) ||
             ((teacher_attempt || live_review) &&
              !core::json::bool_or(document->find("reference_verified"), false)));
-        const auto independently_checked = review_record && (hard_correction ||
+        const auto independently_checked = review_record && (live_retry_pending || hard_correction ||
             core::json::bool_or(document->find("human_accepted"), false) ||
             core::json::bool_or(document->find("deterministic_verified"), false) ||
             core::json::bool_or(document->find("reference_verified"), false));
@@ -2305,9 +2306,10 @@ void append_training_library_file(
                 : (category == "Review record"
                     ? TrainingLibraryRecord::Origin::user_review
                     : TrainingLibraryRecord::Origin::bundled_curriculum)));
-        const auto auto_action = core::json::string_or(document->find("auto_action"));
         if (live_review) {
-            if (auto_action == "revised-and-accepted" ||
+            if (live_retry_pending) {
+                record.category = "Live Auto retry pending";
+            } else if (auto_action == "revised-and-accepted" ||
                 provenance == "live-auto-training-revised") {
                 record.category = "Live Auto revised and accepted";
             } else if (auto_action == "needs-evidence") {
@@ -2341,7 +2343,11 @@ void append_training_library_file(
             record.prompt = core::json::string_or(document->find("prompt"));
             record.answer = core::json::string_or(document->find("response"));
             record.hard_correction = hard_correction;
-            if (hard_correction) {
+            if (live_retry_pending) {
+                record.verification = core::json::string_or(
+                    document->find("generation_error"),
+                    "Independent review was interrupted; the interaction remains queued");
+            } else if (hard_correction) {
                 record.replaced_answer = record.answer;
                 record.answer = correction;
             }
@@ -2367,7 +2373,7 @@ void append_training_library_file(
                     record.verification = "Passed an independent deterministic check";
                 }
             }
-            if (!review_rejected) {
+            if (!review_rejected && !live_retry_pending) {
                 record.verification += core::json::bool_or(
                     document->find("eligible_for_training"), false)
                     ? " • Weight training: eligible"
@@ -2386,7 +2392,9 @@ void append_training_library_file(
                     (confirmer.empty() ? std::string{} : " • Confirmer: " + confirmer) +
                     (record.verification.empty() ? std::string{} : " • " + record.verification);
                 if (record.answer.empty()) {
-                    record.answer = "[Excluded before positive training]";
+                    record.answer = live_retry_pending
+                        ? "[Pending independent review]"
+                        : "[Excluded before positive training]";
                 }
             }
             record.verification += " • Destination: " + core::json::string_or(
@@ -2495,6 +2503,7 @@ void append_training_library_file(
     std::size_t live_revised_count = 0;
     std::size_t live_rejected_count = 0;
     std::size_t live_evidence_count = 0;
+    std::size_t live_retry_count = 0;
     std::size_t held_out_count = 0;
     for (const auto& record : records) {
         ++duplicate_counts[record.fingerprint];
@@ -2514,6 +2523,7 @@ void append_training_library_file(
                 record.category == "Live Auto stored for training" ? 1U : 0U;
             live_revised_count += record.category == "Live Auto revised and accepted" ? 1U : 0U;
             live_evidence_count += record.category == "Live Auto needs evidence" ? 1U : 0U;
+            live_retry_count += record.category == "Live Auto retry pending" ? 1U : 0U;
             live_rejected_count += record.category == "Live Auto rejected" ||
                 record.category == "Live Auto excluded" ? 1U : 0U;
             break;
@@ -2571,6 +2581,7 @@ void append_training_library_file(
                    << live_accepted_count << L" accepted, "
                    << live_revised_count << L" revised, "
                    << live_evidence_count << L" need evidence, "
+                   << live_retry_count << L" retry pending, "
                    << live_rejected_count << L" rejected/excluded"
                    << L" • automatic attempts: "
                    << (automatic_approved_count + automatic_rejected_count)
@@ -2955,13 +2966,24 @@ LRESULT MainWindow::handle_message(
         return 0;
     }
     case WM_SIZE:
-        layout_controls();
-        // Child moves invalidate their own newly exposed areas. Only queue the
-        // unclipped shell background here; repainting the complete child tree
-        // for every drag event made live resizing visibly stall.
-        static_cast<void>(::InvalidateRect(window_, nullptr, FALSE));
+        if (wparam == SIZE_MINIMIZED) {
+            return 0;
+        }
+        // WM_SIZE can arrive hundreds of times during one drag. Coalesce those
+        // messages into one bounded layout pass per display frame.
+        if (!resize_layout_scheduled_) {
+            resize_layout_scheduled_ =
+                ::SetTimer(window_, resize_layout_timer, 33U, nullptr) != 0U;
+            if (!resize_layout_scheduled_) {
+                layout_controls();
+                static_cast<void>(::InvalidateRect(window_, nullptr, FALSE));
+            }
+        }
         return 0;
     case WM_EXITSIZEMOVE:
+        static_cast<void>(::KillTimer(window_, resize_layout_timer));
+        resize_layout_scheduled_ = false;
+        layout_controls();
         static_cast<void>(::RedrawWindow(
             window_,
             nullptr,
@@ -2978,6 +3000,8 @@ LRESULT MainWindow::handle_message(
             suggested->right - suggested->left,
             suggested->bottom - suggested->top,
             SWP_NOZORDER | SWP_NOACTIVATE));
+        static_cast<void>(::KillTimer(window_, resize_layout_timer));
+        resize_layout_scheduled_ = false;
         layout_controls();
         return 0;
     }
@@ -3059,6 +3083,11 @@ LRESULT MainWindow::handle_message(
             update_periodic_state();
         } else if (wparam == stream_timer) {
             flush_stream_text();
+        } else if (wparam == resize_layout_timer) {
+            static_cast<void>(::KillTimer(window_, resize_layout_timer));
+            resize_layout_scheduled_ = false;
+            layout_controls();
+            static_cast<void>(::InvalidateRect(window_, nullptr, FALSE));
         }
         return 0;
     case WM_CTLCOLORSTATIC:
@@ -3107,6 +3136,8 @@ LRESULT MainWindow::handle_message(
     case WM_DESTROY:
         static_cast<void>(::KillTimer(window_, update_timer));
         static_cast<void>(::KillTimer(window_, stream_timer));
+        static_cast<void>(::KillTimer(window_, resize_layout_timer));
+        layout_bounds_cache.clear();
         ::PostQuitMessage(0);
         return 0;
     default:
@@ -4419,12 +4450,26 @@ void MainWindow::layout_controls() {
     const auto workspace_content_top = show_workspace_repository
         ? workspace_repository_y + row + gap + surface_padding
         : workspace_repository_y + surface_padding;
-    const auto sidebar_width = std::clamp(
-        width * 30 / 100,
-        scaled(330, dpi_),
-        scaled(600, dpi_));
-    const auto conversation_width = width - sidebar_width - gap;
-    const auto sidebar_x = conversation_width + gap;
+    const auto workspace_split = epochengine::gui_lib::make_splitter_layout({
+        .area = {
+            {0.0f, 0.0f},
+            {static_cast<float>(width), static_cast<float>(height)}},
+        .axis = epochengine::gui_lib::SplitterAxis::vertical,
+        .split_fraction = 0.70f,
+        .thickness = static_cast<float>(gap),
+        .min_before = static_cast<float>(scaled(500, dpi_)),
+        .min_after = static_cast<float>(scaled(330, dpi_)),
+    });
+    const auto conversation_width = std::max(
+        1,
+        static_cast<int>(std::lround(workspace_split.before.size.x)));
+    const auto sidebar_x = std::clamp(
+        static_cast<int>(std::lround(workspace_split.after.position.x)),
+        conversation_width,
+        width - 1);
+    const auto sidebar_width = std::max(
+        1,
+        static_cast<int>(std::lround(workspace_split.after.size.x)));
     const auto conversation_inner_x = surface_padding;
     const auto conversation_inner_width = std::max(
         1,
@@ -10326,6 +10371,8 @@ void MainWindow::update_global_activity() {
     }
 
     const auto pipeline = learning_service_->pipeline_snapshot();
+    const auto user_taught_replies =
+        learning_service_->memory_store().total_human_acceptance_count();
     if (pipeline.active_job.has_value()) {
         auto label = std::wstring{L"Retraining a separate test model"};
         if (!pipeline.active_job->skill.empty()) {
@@ -10365,8 +10412,13 @@ void MainWindow::update_global_activity() {
             text << L"This activity is live; the Activity page keeps its detailed log.";
         }
         if (pipeline.queued_updates > 0U) {
-            text << L" • " << pipeline.queued_updates << L" saved improvement"
-                 << (pipeline.queued_updates == 1U ? L"" : L"s") << L" waiting";
+            text << L" • " << pipeline.queued_updates << L" neural-weight job"
+                 << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued";
+        }
+        if (user_taught_replies > 0U) {
+            text << L" • " << user_taught_replies << L" user-taught repl"
+                 << (user_taught_replies == 1U ? L"y" : L"ies")
+                 << L" saved in verified memory";
         }
     } else if (live_training_pending_ && checked(id::chat_auto_learning)) {
         const auto registry = runtime_model_snapshot();
@@ -10383,14 +10435,22 @@ void MainWindow::update_global_activity() {
         text << L"WAITING — Live Auto Training has cleaned interactions queued\r\n"
              << L"Qwen 3.8 27B: " << (qwen_ready ? L"ready" : L"waiting")
              << L" • Nemotron 3 Nano 4B: " << (nemotron_ready ? L"ready" : L"waiting")
+             << L" • User-taught replies: " << user_taught_replies
+             << L" • Neural-weight jobs: " << pipeline.queued_updates;
+        if (!last_completed_activity_summary_.empty()) {
+            text << L" • Last review: " << last_completed_activity_summary_;
+        }
+        text
              << L" • Chat has priority; every decision will remain in the Training Library.";
     } else if (pipeline.queued_updates > 0U) {
-        text << L"WAITING — " << pipeline.queued_updates << L" saved improvement"
+        text << L"WAITING — " << pipeline.queued_updates << L" neural-weight job"
              << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
         if (!last_completed_activity_summary_.empty()) {
             text << L"Last completed: " << last_completed_activity_summary_ << L" • ";
         }
-        text << L"Chat has priority; weight training starts only when its requirements are ready.";
+        text << user_taught_replies << L" user-taught repl"
+             << (user_taught_replies == 1U ? L"y is" : L"ies are")
+             << L" already saved in verified memory. Weight training starts only when its requirements are ready.";
     } else {
         const auto state = runtime::inspect_internal_model_state(paths_);
         const auto now = std::chrono::steady_clock::now();
@@ -10419,6 +10479,7 @@ void MainWindow::update_global_activity() {
                  << L" • Other AI choices: " << other_ai_count
                  << L" • Live Auto Training: "
                  << (checked(id::chat_auto_learning) ? L"on" : L"off")
+                 << L" • User-taught replies: " << user_taught_replies
                  << L" • Idle practice generation: "
                  << (checked(id::learning_auto) ? L"on" : L"off");
         }
@@ -10476,6 +10537,8 @@ void MainWindow::update_periodic_state() {
     }
     const auto live_models_ready = qwen_ready && nemotron_ready;
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
+    const auto user_taught_replies =
+        learning_service_->memory_store().total_human_acceptance_count();
     auto training_paths = paths_;
     training_paths.python = selected_python_;
     const auto neural_training_ready = runtime::backend_files_present(training_paths);
@@ -10523,16 +10586,22 @@ void MainWindow::update_periodic_state() {
         std::wostringstream pending;
         pending << L"Live Auto Training has cleaned interactions waiting for Qwen and Nemotron; Chat keeps priority.";
         if (learning_pipeline.queued_updates > 0U) {
-            pending << L" " << learning_pipeline.queued_updates << L" verified weight improvement"
+            pending << L" " << learning_pipeline.queued_updates << L" neural-weight job"
                     << (learning_pipeline.queued_updates == 1U ? L" is" : L"s are")
-                    << L" retained separately.";
+                    << L" queued separately.";
         }
+        pending << L" " << user_taught_replies << L" user-taught repl"
+                << (user_taught_replies == 1U ? L"y is" : L"ies are")
+                << L" already saved in verified memory.";
         set_control_text(id::chat_learning_status, pending.str());
     } else if (learning_pipeline.queued_updates > 0U) {
         std::wostringstream queued;
-        queued << learning_pipeline.queued_updates << L" verified weight improvement"
+        queued << user_taught_replies << L" user-taught repl"
+               << (user_taught_replies == 1U ? L"y is" : L"ies are")
+               << L" saved in verified memory. "
+               << learning_pipeline.queued_updates << L" neural-weight job"
                << (learning_pipeline.queued_updates == 1U ? L" is" : L"s are")
-               << L" saved.";
+               << L" queued.";
         if (!neural_training_ready) {
             queued << L" Neural weights remain 0 B because the optional Internal PyTorch Training pack is not installed; no data was lost.";
         } else {
@@ -10542,7 +10611,7 @@ void MainWindow::update_periodic_state() {
     } else {
         set_control_text(
             id::chat_learning_status,
-            L"Live Auto Training is on. New conversations are cleaned, cross-checked, and shown in the Training Library.");
+            L"Live Auto Training is on and caught up. New conversations will be cleaned, cross-checked, and shown in the Training Library.");
     }
 
     const auto run_live_pass =
@@ -10962,6 +11031,7 @@ void MainWindow::update_piggyback_result() {
            << L" • independently verified " << result->progress.verified
            << L" • revised " << result->progress.revised
            << L" • need evidence " << result->progress.needs_evidence
+           << L" • retry pending " << result->progress.retry_pending
            << L" • stored " << result->progress.stored
            << L" • rejected " << result->progress.rejected;
     if (!result->error.empty()) {
@@ -10988,7 +11058,9 @@ void MainWindow::update_piggyback_result() {
         }
     }
     if (live_candidates && live_training_pending_) {
-        next_piggyback_at_ = now + std::chrono::seconds(2);
+        next_piggyback_at_ = now + (result->progress.retry_pending > 0U
+            ? std::chrono::seconds(30)
+            : std::chrono::seconds(2));
     } else if (result->succeeded && trainable_evidence > 0U) {
         // Let the coalesced weight candidate drain before another teacher pass.
         next_piggyback_at_ = now + std::chrono::minutes(10);
@@ -10997,11 +11069,28 @@ void MainWindow::update_piggyback_result() {
     } else {
         next_piggyback_at_ = now + std::chrono::minutes(5);
     }
+    if (live_candidates && result->progress.retry_pending > 0U) {
+        active_activity_summary_ =
+            L"Live Auto review paused; " +
+            std::to_wstring(result->progress.retry_pending) +
+            L" interaction" +
+            (result->progress.retry_pending == 1U ? L"" : L"s") +
+            L" retained for automatic retry";
+    } else if (live_candidates) {
+        active_activity_summary_ =
+            L"Live Auto pass: " +
+            std::to_wstring(result->progress.verified) + L" accepted, " +
+            std::to_wstring(result->progress.revised) + L" revised, " +
+            std::to_wstring(result->progress.needs_evidence) + L" need evidence, " +
+            std::to_wstring(result->progress.rejected) + L" rejected";
+    }
     set_status(result->succeeded
         ? (trusted_only
             ? L"Trusted custom JSONL import completed"
             : (live_candidates
-                ? L"Live Auto Training pass completed; every decision is in the Training Library"
+                ? (result->progress.retry_pending > 0U
+                    ? L"Live Auto Training retained an unresolved review and will retry it automatically"
+                    : L"Live Auto Training pass completed; every decision is in the Training Library")
                 : L"Local teacher-data pass completed"))
         : (trusted_only
             ? L"Trusted custom JSONL import did not complete"
@@ -11020,6 +11109,8 @@ void MainWindow::update_skill_report() {
     const auto internal = runtime::inspect_internal_model_state(paths_);
     const auto pipeline = learning_service_->pipeline_snapshot();
     const auto modules = learning_service_->expert_snapshot();
+    const auto user_taught_replies =
+        learning_service_->memory_store().total_human_acceptance_count();
 
     std::wostringstream built_in;
     built_in << L"BUILT-IN ENGCODER\r\n";
@@ -11044,10 +11135,14 @@ void MainWindow::update_skill_report() {
         learning_status << L"Working safely in the background — "
                         << widen(learning::to_string(pipeline.active_job->state));
     } else if (pipeline.queued_updates > 0U) {
-        learning_status << pipeline.queued_updates
-                        << L" verified update"
+        learning_status << user_taught_replies
+                        << L" user-taught repl"
+                        << (user_taught_replies == 1U ? L"y" : L"ies")
+                        << L" saved in verified memory • "
+                        << pipeline.queued_updates
+                        << L" neural-weight job"
                         << (pipeline.queued_updates == 1U ? L"" : L"s")
-                        << L" waiting for an idle moment";
+                        << L" queued";
     } else if (checked(id::chat_auto_learning)) {
         learning_status << L"Live Auto Training on — accepted behavior enters bounded weight batches";
     } else if (checked(id::learning_auto)) {
@@ -11081,8 +11176,9 @@ void MainWindow::update_skill_report() {
            << L"  Live Auto Training: "
            << (checked(id::chat_auto_learning) ? L"on" : L"off")
            << L" — separate from idle practice generation and explicit retraining\r\n"
+           << L"  User-taught replies in verified memory: " << user_taught_replies << L"\r\n"
            << L"  Approved specialized examples: " << approved_examples << L"\r\n"
-           << L"  Waiting updates: " << pipeline.queued_updates << L"\r\n"
+           << L"  Queued neural-weight jobs: " << pipeline.queued_updates << L"\r\n"
            << L"  Active update: ";
     if (pipeline.active_job.has_value()) {
         report << widen(learning::to_string(pipeline.active_job->state))

@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{7b41a9b2-4b7e-4b5d-9b39-68d2408bca90}</ProjectGuid>
+    <ProjectName>EpochGui</ProjectName>
+    <RootNamespace>EpochGui</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <EpochGuiEnableRoundedRect Condition="'$(EpochGuiEnableRoundedRect)'==''">false</EpochGuiEnableRoundedRect>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg">
+    <VcpkgEnableManifest>false</VcpkgEnableManifest>
+    <VcpkgManifestInstall>false</VcpkgManifestInstall>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <VcpkgAutoLink>false</VcpkgAutoLink>
+    <VcpkgApplocalDeps>false</VcpkgApplocalDeps>
+  </PropertyGroup>
+  <PropertyGroup>
+    <TargetName>EpochGui</TargetName>
+    <OutDir Condition="'$(SolutionPath)'!='' and '$(SolutionPath)'!='*Undefined*'">$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <OutDir Condition="'$(SolutionPath)'=='' or '$(SolutionPath)'=='*Undefined*'">$(ProjectDir)build\msvc\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Label="EpochGuiSourceRoot">
+    <EpochGuiSourceRoot Condition="'$(EpochGuiSourceRoot)'=='' and Exists('$(ProjectDir)include\gui\floating_window.hpp')">$(ProjectDir)</EpochGuiSourceRoot>
+    <EpochGuiSourceRoot Condition="'$(EpochGuiSourceRoot)'=='' and Exists('$(ProjectDir)..\..\include\gui\floating_window.hpp')">$(ProjectDir)..\..\</EpochGuiSourceRoot>
+  </PropertyGroup>
+  <PropertyGroup Label="EpochGuiModuleRoot">
+    <EpochGuiModuleRoot Condition="'$(EpochGuiModuleRoot)'=='' and Exists('$(ProjectDir)modules\epoch.gui.ixx')">$(ProjectDir)</EpochGuiModuleRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <IntDir Condition="'$(SolutionPath)'!='' and '$(SolutionPath)'!='*Undefined*'">$(SolutionDir)\Debug\$(Platform)\$(ProjectName)\$(Configuration)\</IntDir>
+    <IntDir Condition="'$(SolutionPath)'=='' or '$(SolutionPath)'=='*Undefined*'">$(ProjectDir)build\msvc-int\$(Platform)\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <IntDir Condition="'$(SolutionPath)'!='' and '$(SolutionPath)'!='*Undefined*'">$(SolutionDir)\Release\$(Platform)\$(ProjectName)\$(Configuration)\</IntDir>
+    <IntDir Condition="'$(SolutionPath)'=='' or '$(SolutionPath)'=='*Undefined*'">$(ProjectDir)build\msvc-int\$(Platform)\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <Target Name="ValidateEpochGuiSourceRoot" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(EpochGuiSourceRoot)'==''" Text="EpochGui could not find include\gui and src\epochgui. Keep this project in Engine\dep\EpochGui, place include and src beside the project in a standalone mirror, or pass /p:EpochGuiSourceRoot=&lt;path-with-trailing-slash&gt;." />
+    <Error Condition="'$(EpochGuiModuleRoot)'==''" Text="EpochGui could not find modules\epoch.gui.ixx. Keep modules beside EpochGui.vcxproj or pass /p:EpochGuiModuleRoot=&lt;path-with-trailing-slash&gt;." />
+  </Target>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(EpochGuiSourceRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>false</FunctionLevelLinking>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(EpochGuiSourceRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(EpochGuiSourceRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>false</FunctionLevelLinking>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(EpochGuiSourceRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(EpochGuiEnableRoundedRect)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>EPOCHGUI_ENABLE_ROUNDED_RECT=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>EPOCHGUI_ENABLE_INPUT=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.ixx" />
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.font.ixx" />
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.image.ixx" />
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.tile_workspace.ixx" />
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.input.ixx" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\dockable_window.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\dock_layout.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\floating_window.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\hierarchy_tree.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\image.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\input.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\node_graph_workspace.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\panel_host.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\popup_layout.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\text_control.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\text_editor.cpp" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\tile_workspace.cpp" />
+
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\system_workspace.cpp" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EpochGuiEnableRoundedRect)'=='true'">
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.rounded_rect.ixx" />
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\rounded_rect.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\dockable_window.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\dock_layout.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\floating_window.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\font.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\hierarchy_tree.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\layout_primitives.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\node_graph_workspace.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\panel_host.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\popup_layout.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\text_control.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\text_editor.hpp" />
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\version.hpp" />
+
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\system_workspace.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

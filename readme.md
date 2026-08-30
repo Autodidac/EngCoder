@@ -19,7 +19,7 @@ The Training Library shows five sources independently:
 
 - **Bundled curriculum:** 4,247 English and C++23 examples shipped with the executable. These are not user learning history.
 - **Your learning:** explicit approved replies, corrections, and rejected drafts. Repeated approval of the same prompt/reply does not add weight.
-- **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, rejected, and privacy-excluded decisions remain inspectable.
+- **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, retry-pending, rejected, and privacy-excluded decisions remain inspectable.
 - **Automatic teacher attempts:** candidate examples proposed by connected local AI servers and checked independently. Accepted, rejected, and failed attempts remain inspectable.
 - **Held-out checks:** 320 message-disjoint examples used only to evaluate candidates. They never train weights.
 
@@ -35,6 +35,8 @@ EngCoder keeps four learning processes separate:
 - **Neural weight retraining** is automatically queued when a verified microbatch fills. **Compile data and retrain model** can force a smaller pending batch. Training is serialized, resumable, checkpointed, and preempted by Chat.
 
 Initial neural setup uses adaptive targets of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. Each run stops at its bound with diagnostics. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
+
+The visible counts are intentionally different. **User-taught replies** counts durable approved or corrected examples. **Neural-weight jobs** counts coalesced topic updates, so three teachings may legitimately be stored behind one queued job. With no optional trainer installed, the teachings still work through verified memory while neural weights remain exactly 0 B.
 
 ## Native base and optional packs
 
@@ -52,7 +54,7 @@ The native installed base, excluding models and optional packs, must remain at o
 
 An always-visible two-line activity strip sits below every page. It reports active replies, repository work, media generation, discovery, tool connections, built-in setup/training, verified-example creation, test-model retraining, add-on changes, cleanup, storage/RAM measurement, queued learning, retry waits, and ready state without requiring a tab change.
 
-Window layout is DPI-aware. Live resizing batches native child-window movement into one layout commit before a page is shown. Rounded cards are painted by the clipped page background, so decorative surfaces cannot repaint over selectors, labels, or buttons after Send, Retry, source changes, or resize.
+Window layout is DPI-aware. EngCoder vendors the backend-neutral EpochGui layout library, uses its splitter and rectangle primitives, and keeps Win32 ownership of windows, events, painting, text, and commands. Live resize events are coalesced to 30 Hz, unchanged bounds are served from an EpochGui rectangle cache, hidden pages are skipped, and native child-window movement is committed in one batch per parent. Drag completion performs one exact layout and full dark-tree redraw. Rounded cards are painted by the clipped page background, so decorative surfaces cannot repaint over selectors, labels, or buttons after Send, Retry, source changes, or resize.
 
 ## C++23 modules
 
@@ -78,7 +80,7 @@ Requirements:
 
 - Windows 10 or newer
 - Visual Studio 2022 with Desktop development with C++
-- CMake 3.30 or newer
+- CMake 4.4 or newer
 - Git for optional project work
 
 From PowerShell:
@@ -127,6 +129,7 @@ Useful documents:
 - [UI and activity verification report](docs/session-report-2026-08-28.md)
 - [Live Auto Training verification report](docs/session-report-2026-08-29.md)
 - [Live Auto queue repair verification report](docs/session-report-2026-08-29-0.7.1.md)
+- [0.7.2 retained-review and EpochGui verification report](docs/session-report-2026-08-30-0.7.2.md)
 
 ## License
 

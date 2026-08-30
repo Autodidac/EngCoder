@@ -70,6 +70,7 @@ public:
     [[nodiscard]] std::size_t count_for_skill(std::string_view skill) const;
     [[nodiscard]] std::size_t human_acceptance_count_for_skill(
         std::string_view skill) const;
+    [[nodiscard]] std::size_t total_human_acceptance_count() const;
     [[nodiscard]] std::size_t training_count_for_skill(std::string_view skill) const;
     [[nodiscard]] std::filesystem::path path() const;
 

@@ -58,6 +58,7 @@ Every candidate ends in one of these visible states:
 | Accepted | Both local reviewers accepted the reusable behavior at the configured score gate. |
 | Revised and accepted | One reviewer corrected a useful but weak answer and the other reviewer accepted the corrected standalone answer. |
 | Needs evidence | Current information lacks a tool trace, or coding material lacks compiler and test evidence. It does not enter weights. |
+| Retry pending | A required local reviewer was cancelled, failed, or returned malformed output. The interaction stays at the ledger cursor and is retried after a bounded backoff; it is neither accepted nor rejected. |
 | Rejected | The behavior is wrong, brittle, parroting, branded, noisy, malformed, or otherwise not reusable. |
 | Excluded | A pre-review boundary detected private, credential, nonpublic, machine-specific, error, or empty material. Sensitive text is redacted from the audit. |
 
@@ -128,7 +129,7 @@ Automatic routing can therefore favor EngCoder more often only after its observe
 
 ## Visibility and audit
 
-The always-visible Activity strip shows queued live work, readiness of both authorized model families, the current review operation message, queued weight work, and the last completed operation. Fast operations remain visible until another activity begins.
+The always-visible Activity strip shows queued live work, readiness of both authorized model families, the current review operation message, user-taught reply count, queued neural-weight jobs, and the last completed operation. Fast operations remain visible until another activity begins. A retry-pending review remains named in the strip instead of disappearing into a generic ready state.
 
 The Training Library has a dedicated **Live Auto Training** source filter. It shows the full cleaned prompt and answer, decision, reason, source model, reviewer, confirmer, destination, and weight eligibility. Private exclusions show a redacted placeholder rather than the sensitive input.
 
@@ -139,7 +140,7 @@ Important persistent files:
 | `config/live-auto-training.txt` | Live interaction automation preference. |
 | `config/automatic-training.txt` | Separate idle seed/practice generation preference. |
 | `candidates/live-interactions.jsonl` | Append-only cleaned interaction ledger. |
-| `logs/live-training-attempts.jsonl` | Accepted, revised, needs-evidence, rejected, and excluded decisions. |
+| `logs/live-training-attempts.jsonl` | Accepted, revised, needs-evidence, retry-pending, rejected, and excluded decisions. |
 | `memory/episodes.jsonl` | Admitted retrieval and weight-eligible episodes. |
 | `experts/registry/*.ini` | Per-skill accepted counts, pending microbatch count, validation, and generations. |
 | `jobs/` and `candidates/` | Persistent shadow-training state and candidate artifacts. |
@@ -147,7 +148,7 @@ Important persistent files:
 ## Failure behavior
 
 - Missing Qwen or Nemotron: the candidate remains queued and Activity names the missing family.
-- Reviewer error or malformed JSON: the interaction is rejected into the audit; it is not trained.
+- Reviewer cancellation, endpoint error, or malformed JSON: the audit records **retry pending**, the ledger cursor does not advance, and the same interaction is retried after a 30-second backoff. It is not trained or counted as rejected.
 - Revision without a second confirmer: rejected.
 - Current fact without evidence: held as needs evidence.
 - Coding record without compiler and tests: held as needs evidence.

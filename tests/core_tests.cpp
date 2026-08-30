@@ -277,7 +277,8 @@ void test_immediate_memory_retrieval() {
     append_conversation("conversation-3", "When is ready?", "It is ready tomorrow.");
     require(!store.verified_match("Whan is ready?", "english-conversation").has_value(),
             "equally close approved prompts must be rejected as ambiguous");
-    require(store.human_acceptance_count_for_skill("english-conversation") == 3U,
+    require(store.human_acceptance_count_for_skill("english-conversation") == 3U &&
+                store.total_human_acceptance_count() == 4U,
             "human approval counts must be separate from reference and deterministic evidence");
     std::filesystem::remove_all(root);
 }
@@ -1263,16 +1264,21 @@ void test_targeted_and_custom_training_import() {
             threadspire::ai::learning::run_piggyback_foundry(live_request, service);
         require(live_without_reviewers.succeeded &&
                     live_without_reviewers.progress.examined == 1U &&
-                    live_without_reviewers.progress.rejected == 1U &&
+                    live_without_reviewers.progress.retry_pending == 1U &&
+                    live_without_reviewers.progress.rejected == 0U &&
                     live_without_reviewers.progress.stored == 0U &&
-                    live_without_reviewers.progress.next_seed_offset == 1U &&
-                    read_text_file(live_audit).find("distinct local reviewer") != std::string::npos,
-                "Live Auto Training must audit and reject an interaction when a distinct local reviewer is unavailable");
-        live_request.seed_offset = 1U;
-        const auto exhausted_live_ledger =
+                    live_without_reviewers.progress.next_seed_offset == 0U &&
+                    read_text_file(live_audit).find("\"auto_action\":\"retry-pending\"") !=
+                        std::string::npos,
+                "Live Auto Training must audit and retain an interaction when a distinct local reviewer is temporarily unavailable");
+        live_request.seed_offset = live_without_reviewers.progress.next_seed_offset;
+        const auto retained_live_ledger =
             threadspire::ai::learning::run_piggyback_foundry(live_request, service);
-        require(!exhausted_live_ledger.succeeded && exhausted_live_ledger.progress.examined == 0U,
-                "the live-interaction ledger must be consumed once and must never wrap old conversations into repeated weight");
+        require(retained_live_ledger.succeeded &&
+                    retained_live_ledger.progress.examined == 1U &&
+                    retained_live_ledger.progress.retry_pending == 1U &&
+                    retained_live_ledger.progress.next_seed_offset == 0U,
+                "a retryable review failure must leave the exact live interaction pending instead of silently consuming it");
         service.request_stop();
     }
     std::filesystem::remove_all(root);
@@ -1727,7 +1733,8 @@ void test_windows_ui_source_contract() {
                 ui.find("Segoe UI Variable Text") != std::string::npos &&
                 ui.find("CLEARTYPE_NATURAL_QUALITY") != std::string::npos &&
                 ui.find("WM_GETFONT") != std::string::npos &&
-                ui.find("scaled(600, dpi_)") != std::string::npos &&
+                ui.find("epochengine::gui_lib::make_splitter_layout(") != std::string::npos &&
+                ui.find(".split_fraction = 0.70f") != std::string::npos &&
                 ui.find("id::chat_setup_card") != std::string::npos &&
                 ui.find("SS_OWNERDRAW") != std::string::npos &&
                 ui.find("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW") == std::string::npos &&
@@ -1762,6 +1769,7 @@ void test_windows_ui_source_contract() {
                 ui.find("COMPLETED — ") != std::string::npos &&
                 ui.find("This result stays visible until another activity begins") != std::string::npos &&
                 ui.find("WAITING — ") != std::string::npos &&
+                ui.find("Last review: ") != std::string::npos &&
                 ui.find("ATTENTION — ") != std::string::npos &&
                 ui.find("READY — ") != std::string::npos,
             "one always-visible strip must report every foreground, setup, learning, add-on, cleanup, discovery, tool, and measurement activity");
@@ -2001,7 +2009,12 @@ void test_windows_ui_source_contract() {
                 page_host_layout != std::string::npos &&
                 leaf_layout_batch != std::string::npos &&
                 leaf_layout_batch > page_host_layout &&
-                ui.find("case WM_SIZE:\n        layout_controls();") != std::string::npos &&
+                ui.find("resize_layout_timer") != std::string::npos &&
+                ui.find("resize_layout_scheduled_") != std::string::npos &&
+                ui.find("::SetTimer(window_, resize_layout_timer, 33U") != std::string::npos &&
+                ui.find("std::unordered_map<HWND, epochengine::gui_lib::Rect> layout_bounds_cache") != std::string::npos &&
+                ui.find("layout_bounds_cache.insert_or_assign(control, desired_bounds)") != std::string::npos &&
+                ui.find("make_splitter_layout") != std::string::npos &&
                 ui.find("::InvalidateRect(window_, nullptr, FALSE)") != std::string::npos &&
                 ui.find("active_layout_page_host") != std::string::npos &&
                 ui.find("every hidden page on every drag event") != std::string::npos &&
@@ -2012,7 +2025,7 @@ void test_windows_ui_source_contract() {
                 ui.find("Commit every queued child move before showing a page") != std::string::npos &&
                 ui.find("page_windows_[static_cast<std::size_t>(page_)]") != std::string::npos &&
                 ui.find("RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW") == std::string::npos,
-            "live resizing must skip hidden and unchanged controls, avoid synchronous per-drag child-tree repaints, and perform one final dark-tree repaint");
+            "live resizing must use the EpochGui layout boundary, coalesce resize storms, skip hidden and unchanged controls, avoid synchronous per-drag child-tree repaints, and perform one final dark-tree repaint");
 
     const auto launcher = read_text_file(source / "build-and-run.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&
@@ -2062,8 +2075,10 @@ void test_windows_ui_source_contract() {
                 piggyback.find("document->find(\"prompt\")") != std::string::npos &&
                 piggyback.find("document->find(\"answer\")") != std::string::npos &&
                 piggyback.find("generate_verified_variations") != std::string::npos &&
+                piggyback.find("\"retry-pending\"") != std::string::npos &&
+                piggyback.find("The cursor intentionally remains on this record") != std::string::npos &&
                 piggyback.find("Diverse generation waits for a distinct verifier") != std::string::npos,
-            "automatic and custom learning must target one selected skill, rotate independently, and accept practical JSONL record shapes");
+            "automatic and custom learning must target one selected skill, retain interrupted live reviews, rotate independently, and accept practical JSONL record shapes");
 
     const auto custom_template = read_text_file(
         source / "resources/custom_training_template.jsonl");

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.2 — 2026-08-30 retained Live Auto review and EpochGui resize path
+
+- Changed transient reviewer failures and malformed reviewer output from permanent rejection to **Live Auto retry pending**. The ledger cursor stays on the interaction, the complete decision audit records why it is waiting, and the background loop retries after a 30-second backoff instead of losing the teaching or spinning.
+- Separated visible **user-taught replies** from coalesced **neural-weight jobs**. Three accepted replies can correctly appear as three teachings and one queued topic update; the job count is not presented as the number of lessons.
+- Vendored the clean backend-neutral EpochGui 0.89.30 subtree at exact tree 191badda3412f195b4a1cfc635b05b2f3df9584c, preserved its LicenseRef-MIT-NoSell license and provenance, and linked it as a C++23 static library without copying Epoch editor/runtime code.
+- Moved the Workspace conversation/activity split onto EpochGui layout primitives and added an EpochGui Rect bounds cache so repeated resize passes no longer query/remap every child HWND.
+- Coalesced resize storms to one layout pass every 33 ms, skipped hidden and unchanged controls, retained one deferred move batch per parent, and kept an exact final layout plus full dark-tree redraw at the end of a drag.
+- Added regression coverage for aggregate human-teaching counts, retained retry cursors, retry audit state, cached resize geometry, and the vendored EpochGui suite. The complete Release suite now contains 15 tests.
+
 ## 0.7.1 — 2026-08-29 Live Auto queue repair
 
 - Fixed Live Auto Training to read its own Workspace checkbox instead of the separate idle-practice setting.

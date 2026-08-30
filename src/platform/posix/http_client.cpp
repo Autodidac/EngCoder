@@ -248,7 +248,7 @@ struct ParsedUrl final {
     if (url.port != "80") {
         stream << ':' << url.port;
     }
-    stream << "\r\nUser-Agent: EngCoder/0.7.1\r\n"
+    stream << "\r\nUser-Agent: EngCoder/0.7.2\r\n"
            << "Connection: close\r\n";
 
     bool has_content_type = false;

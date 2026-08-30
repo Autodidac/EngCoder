@@ -108,6 +108,8 @@ The visible Training Library applies the same rule: it presents the correction a
 
 Weight learning is slower and more conservative. One human-approved phrase remains memory-only. Four distinct approvals for the skill, or independent compiler/test/reference evidence, are required before a record can enter a shadow candidate. Both the C++ admission service and Python data loaders enforce that rule, including for historical records. Turning off Live Auto or automatic idle learning stops only that source; already admitted evidence, queued candidates, explicit training, context, and memory remain independent.
 
+The interface reports two separate totals. **User-taught replies** is the number of durable human-approved or corrected examples. **Neural-weight jobs** is the number of coalesced topic updates in the persistent trainer queue. Job coalescing prevents redundant retraining; it never erases the individual teachings stored in memory/episodes.jsonl.
+
 ## Conversation, coding, and self-iteration
 
 EngCoder keeps these concerns separate without exposing sampler jargon in the interface:
@@ -122,6 +124,8 @@ The selected repository is never the build/repair workspace and is never hard-re
 ## Automatic teacher generation, Live Auto, and weight updates
 
 A connected external local LLM may propose examples. The internal model is never eligible to teach or verify itself. A distinct external verifier, trusted bundled reference, compiler, test suite, or user acceptance must establish positive evidence; otherwise generated output remains quarantined.
+
+A transient reviewer cancellation, endpoint failure, or malformed JSON response is not negative evidence. Live Auto records a retry-pending audit entry, leaves the ledger cursor on that interaction, waits 30 seconds, and tries again when Chat is idle. Permanent rejection is reserved for a completed decision that says the material is not reusable.
 
 A trusted or independently verified episode increments the corresponding skill's pending-evidence counter. The internal-base promotion microbatch is eight eligible episodes; external-base policy defaults to four. Duplicate queued requests for the same skill coalesce. The Live Auto and teacher loops pause while that queue or an active trainer exists, then resume after the weight work drains. The explicit retrain button can request a smaller nonempty pending batch.
 

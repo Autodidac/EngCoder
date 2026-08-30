@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{ed0f27a1-d4e8-46de-a540-e70b8de60c43}</UniqueIdentifier>
+      <Extensions>cpp;cxx;c;cc</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{d4211c3b-2e9d-4a5b-88b6-5e81c7102479}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Module Files">
+      <UniqueIdentifier>{c77ceac9-b8e4-41f3-a9f1-d0cf67fda1f2}</UniqueIdentifier>
+      <Extensions>ixx</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.font.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.image.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.tile_workspace.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.rounded_rect.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiModuleRoot)modules\epoch.gui.input.ixx">
+      <Filter>Module Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\dock_layout.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\dockable_window.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\floating_window.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\hierarchy_tree.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\image.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\input.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\panel_host.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\popup_layout.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\rounded_rect.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\text_control.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\text_editor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\tile_workspace.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\node_graph_workspace.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="$(EpochGuiSourceRoot)src\epochgui\system_workspace.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\dock_layout.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\dockable_window.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\floating_window.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\font.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\hierarchy_tree.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\layout_primitives.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\panel_host.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\popup_layout.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\text_control.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\text_editor.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\version.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\node_graph_workspace.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="$(EpochGuiSourceRoot)include\gui\system_workspace.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
