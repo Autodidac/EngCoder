@@ -4,6 +4,8 @@
 
 Live Auto Training turns ordinary conversation into conservative, visible training candidates without making the user approve every reply. It is not a second foreground answer route, a hidden fallback, or permission to copy connected-model weights.
 
+It also is not the one-time long-form foundation builder. **Build English Foundation** uses explicitly admitted source documents to construct the deep starting curriculum; Live Auto continues afterward and learns reusable conversational behavior from actual interactions. See [Autonomous Curriculum and Training](autonomous-curriculum-and-training.md).
+
 One routed AI answers the user. After that answer is complete and Chat is idle, two explicitly authorized local LM Studio models may inspect the cleaned interaction in the background:
 
 - `qwen/qwen3.8-27b`

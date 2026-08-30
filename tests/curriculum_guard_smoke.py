@@ -79,7 +79,8 @@ def main() -> int:
         assert parsed.anchors.is_file()
         assert "cpp23" not in parsed.seed_dataset.read_text(encoding="utf-8")
         assert parsed.episodes.read_text(encoding="utf-8") == ""
-        assert "```cpp" not in parsed.anchors.read_text(encoding="utf-8")
+        assert parsed.anchors == mixed
+        assert "```cpp" in parsed.anchors.read_text(encoding="utf-8")
 
         unrelated = argparse.Namespace(
             command="inspect-module",

@@ -147,6 +147,7 @@ private:
     void update_discovery_result();
     void update_mcp_result();
     void update_piggyback_result();
+    void update_foundation_result();
     void update_learning_report();
     void update_training_library();
     void update_user_memory_controls(std::string_view selected_id = {});
@@ -224,6 +225,9 @@ private:
     void handle_training_target_change();
     void browse_custom_training_data();
     void import_custom_training_data();
+    void browse_foundation_sources();
+    void start_foundation_build(bool rebuild = false);
+    void pause_foundation_build();
     void compile_and_train_model();
     void create_internal_model(bool bootstrap, bool automatic = false);
     void install_backend(bool automatic = false);
@@ -296,6 +300,7 @@ private:
     [[nodiscard]] std::optional<std::filesystem::path> choose_python() const;
     [[nodiscard]] std::optional<std::filesystem::path> choose_training_dataset() const;
     [[nodiscard]] std::vector<std::filesystem::path> choose_files() const;
+    [[nodiscard]] std::vector<std::filesystem::path> choose_foundation_source_files() const;
     [[nodiscard]] std::optional<std::filesystem::path> choose_directory(
         std::wstring_view title) const;
 
@@ -335,6 +340,7 @@ private:
     util::AsyncOperation discovery_operation_;
     util::AsyncOperation mcp_operation_;
     util::AsyncOperation piggyback_operation_;
+    util::AsyncOperation foundation_operation_;
     util::AsyncOperation chat_operation_;
     util::AsyncOperation long_horizon_operation_;
     util::AsyncOperation media_operation_;
@@ -350,6 +356,8 @@ private:
     std::optional<models::ProviderDiscoveryReport> pending_discovery_report_;
     std::optional<mcp::ConnectionResult> pending_mcp_result_;
     std::optional<learning::PiggybackResult> pending_piggyback_result_;
+    std::optional<learning::FoundationBuildResult> pending_foundation_result_;
+    learning::FoundationBuildProgress foundation_progress_;
     std::optional<long_horizon::Result> pending_long_horizon_result_;
     std::optional<backend::MediaResult> pending_media_result_;
     std::optional<runtime::StorageSnapshot> pending_storage_snapshot_;
@@ -392,6 +400,9 @@ private:
     bool active_piggyback_trusted_only_{false};
     bool active_piggyback_live_{false};
     bool live_training_pending_{false};
+    bool foundation_resume_requested_{false};
+    std::vector<std::filesystem::path> foundation_source_files_;
+    int foundation_rights_index_{0};
     std::string training_target_{"english-foundation"};
     std::string custom_training_skill_{"custom-skill"};
     std::filesystem::path custom_training_dataset_;

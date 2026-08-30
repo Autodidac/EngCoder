@@ -49,6 +49,12 @@ bootstrap_anchors.jsonl    320 held-out anchors
 
 They cover English, exact instruction following, multilingual-to-English reading, C++23, debugging, architecture, tests, and tool trajectories. They are a starting curriculum, not a mature language pretraining corpus.
 
+## Autonomous English foundation
+
+**Build English Foundation** is explicit, one-time, resumable, and separate from Live Auto and idle practice generation. Qwen maps licensed/user-owned long-form sources into competencies and difficult lessons. Nemotron expands train-partition lessons into short and medium variants. Qwen verifies Nemotron records and Nemotron verifies Qwen records; a model cannot approve its own output. Entire chapters or sections are assigned to training or held-out partitions before examples are generated.
+
+The accepted document holdouts are combined with the 320 bundled anchors. Initial foundation promotion evaluates the complete combined set and requires the structural-output, identity, privacy, readiness, and loss-regression gates. The initial optimizer scope is the complete internal model; later microbatches freeze shared weights and train bounded experts. See [Autonomous Curriculum and Training](autonomous-curriculum-and-training.md).
+
 ## Continual-training target control
 
 After bootstrap, the automatic continual-learning target starts on `english-foundation`. The initial bootstrap corpus still contains both language and coding material, but C++ specialization is no longer silently selected as the first continual target. The Learning page keeps target selection, automatic example generation, evidence source, and candidate queueing independent.

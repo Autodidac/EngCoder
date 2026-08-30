@@ -15,12 +15,13 @@ Connected AI applications remain separate. Locking one exact AI contacts only th
 
 ## What is bundled and what is learned
 
-The Training Library shows five sources independently:
+The Training Library shows six sources independently:
 
 - **Bundled curriculum:** 4,247 English and C++23 examples shipped with the executable. These are not user learning history.
 - **Your learning:** explicit approved replies, corrections, and rejected drafts. Repeated approval of the same prompt/reply does not add weight.
 - **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, retry-pending, rejected, and privacy-excluded decisions remain inspectable.
 - **Automatic teacher attempts:** candidate examples proposed by connected local AI servers and checked independently. Accepted, rejected, and failed attempts remain inspectable.
+- **Generated foundation curriculum:** licensed/user-owned long-form sources transformed by Qwen and Nemotron, independently cross-reviewed, and split by document section before examples are generated.
 - **Held-out checks:** 320 message-disjoint examples used only to evaluate candidates. They never train weights.
 
 Emoji and provider branding are removed at the training boundary. Error cards, private reasoning, corrupt drafts, and deterministic calculator results cannot become positive training data. Permanent personal memory is stored separately and never baked into weights.
@@ -33,6 +34,8 @@ EngCoder keeps four learning processes separate:
 - **Live Auto Training** cleans each successful live interaction, lets the authorized loopback Qwen and Nemotron models accept, revise, reject, or hold it for evidence, and automatically feeds only independently accepted reusable behavior into bounded weight batches.
 - **Automatic idle learning** separately gathers and verifies seed-curriculum practice examples while the app is idle.
 - **Neural weight retraining** is automatically queued when a verified microbatch fills. **Compile data and retrain model** can force a smaller pending batch. Training is serialized, resumable, checkpointed, and preempted by Chat.
+
+**Build English Foundation** is a fifth, explicit one-time curriculum action. Qwen 27B maps long-form English and creates difficult lessons, Nemotron 4B creates fast variants, and each verifies the other's output. It accepts only public-domain, permissively licensed, or user-owned material. The teachers provide evidence only: EngCoder trains its own token-level parameters with the separate Internal PyTorch Training pack.
 
 Initial neural setup uses adaptive targets of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. Each run stops at its bound with diagnostics. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
 
@@ -123,6 +126,7 @@ Useful documents:
 - [Custom training data](custom-training.md)
 - [Learning pipeline](docs/learning-pipeline.md)
 - [Live Auto Training design](docs/live-auto-training.md)
+- [Autonomous curriculum and training design](docs/autonomous-curriculum-and-training.md)
 - [Module boundaries](docs/module-abi.md)
 - [Current implementation queue](docs/unified-workbench-queue.md)
 - [Session verification report](docs/session-report-2026-08-26.md)
@@ -130,6 +134,7 @@ Useful documents:
 - [Live Auto Training verification report](docs/session-report-2026-08-29.md)
 - [Live Auto queue repair verification report](docs/session-report-2026-08-29-0.7.1.md)
 - [0.7.2 retained-review and EpochGui verification report](docs/session-report-2026-08-30-0.7.2.md)
+- [0.8.0 autonomous curriculum and training report](docs/session-report-2026-08-30-0.8.0.md)
 
 ## License
 

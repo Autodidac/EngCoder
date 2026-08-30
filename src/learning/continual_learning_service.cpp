@@ -637,6 +637,30 @@ void ContinualLearningService::set_base_model(std::string model) {
     settings_.base_model = std::move(model);
 }
 
+void ContinualLearningService::set_anchor_dataset(std::filesystem::path path) {
+    std::lock_guard lock(mutex_);
+    settings_.anchor_dataset = std::move(path);
+}
+
+bool ContinualLearningService::bind_untrained_skill_base(
+    const std::string_view skill,
+    const std::string_view base_model) {
+    std::lock_guard lock(mutex_);
+    auto& module = expert_registry_.ensure(skill, base_model);
+    const auto untrained = module.state == ExpertState::memory_only &&
+        module.generation == 0U && module.adapter_path.empty() && module.module_path.empty();
+    if (!untrained && module.base_model != base_model) {
+        return false;
+    }
+    if (untrained) {
+        module.base_model = std::string(base_model);
+        module.updated_unix_ms = memory::now_unix_ms();
+        expert_registry_.save(module);
+    }
+    settings_.base_model = std::string(base_model);
+    return true;
+}
+
 bool ContinualLearningService::rollback_skill(const std::string_view skill) {
     std::lock_guard promotion_lock(promotion_mutex_);
 

@@ -8,7 +8,8 @@ EngCoder keeps five kinds of data separate so the interface can say exactly what
 | Your learning | Replies you approve, edit, correct, or reject | Eligible under the diversity/evidence policy; the button can force a smaller pending batch |
 | Live Auto Training | Cleaned live interactions reviewed by the authorized local Qwen and Nemotron pair | Accepted reusable behavior enters the normal verified microbatch automatically |
 | Automatic teacher attempts | Separate seed/practice examples made by connected local AI apps while idle | Only after independent verification and admission |
-| Held-out checks | The 320 fixed evaluation examples | Never; they are tests, not training data |
+| Generated foundation curriculum | Qwen/Nemotron cross-reviewed examples derived from licensed or user-owned sources | Train-partition records only; held-out sections never train |
+| Held-out checks | The 320 fixed evaluation examples plus accepted document holdouts | Never; they are tests, not training data |
 
 The Training Library shows these sources separately. Its total is an audit-record count, not a count of examples already baked into weights.
 
@@ -38,6 +39,12 @@ Corrections supersede older positive answers for the same normalized prompt. The
 When **Create verified practice examples while the app is idle** is enabled, EngCoder may ask connected teacher models for diverse examples. A separate verifier must accept an example before it can enter approved evidence. Eligible evidence can fill the same automatic neural microbatch. Duplicate examples coalesce, Chat has priority, and collection never switches the selected AI.
 
 The two automatic controls are independent. Neither changes the foreground model or the no-fallback meaning of a manual model selection.
+
+## Build English Foundation
+
+Use this explicit one-time action for a deep English curriculum. Select public-domain, permissively licensed, or user-owned UTF-8 text/Markdown sources and record the correct rights category. Qwen creates competency maps and difficult long-context lessons; Nemotron creates fast conversational variants; each independently verifies the other's output. The action is resumable, yields to Chat, exposes every decision in the Training Library, and queues EngCoder's own full-weight internal candidate only after accepted document-held-out checks exist. Raw source files are never placed in weights or release packages.
+
+This is not phrase-table installation. Accepted examples are tokenized and used to adjust EngCoder's numeric parameters. Exact approved phrase retrieval remains a separate verified-memory facility.
 
 ## Neural weight retraining
 

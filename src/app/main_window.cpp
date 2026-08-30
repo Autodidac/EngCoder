@@ -311,6 +311,15 @@ constexpr int learning_session_label = 632;
 constexpr int learning_session_budget = 633;
 constexpr int learning_session_start = 634;
 constexpr int learning_advanced_sources = 635;
+constexpr int learning_foundation_header = 636;
+constexpr int learning_foundation_rights_label = 637;
+constexpr int learning_foundation_rights = 638;
+constexpr int learning_foundation_sources = 639;
+constexpr int learning_foundation_browse = 640;
+constexpr int learning_foundation_build = 641;
+constexpr int learning_foundation_pause = 642;
+constexpr int learning_foundation_status = 643;
+constexpr int learning_foundation_rebuild = 644;
 
 constexpr int horizon_repository_label = 700;
 constexpr int horizon_repository = 701;
@@ -2056,6 +2065,7 @@ struct TrainingLibraryRecord final {
         user_review,
         live_auto_training,
         automatic_teacher,
+        generated_foundation,
         held_out_check,
     };
 
@@ -2267,6 +2277,59 @@ void append_training_library_file(
             continue;
         }
 
+        const auto foundation_attempt = category == "Foundation curriculum";
+        if (foundation_attempt) {
+            TrainingLibraryRecord record;
+            record.origin = TrainingLibraryRecord::Origin::generated_foundation;
+            const auto decision = core::json::string_or(document->find("decision"), "unknown");
+            record.category = decision == "accepted"
+                ? (core::json::bool_or(document->find("revised"), false)
+                    ? "Foundation revised and accepted"
+                    : "Foundation accepted")
+                : (decision == "retry-pending"
+                    ? "Foundation retry pending"
+                    : "Foundation rejected");
+            record.identifier = core::json::string_or(document->find("id"), "foundation-attempt");
+            record.topic = core::json::string_or(document->find("skill"), "english-foundation");
+            record.provenance = core::json::string_or(
+                document->find("provenance"), "generated-foundation-curriculum");
+            record.prompt = core::json::string_or(document->find("cleaned_prompt"));
+            record.answer = core::json::string_or(document->find("cleaned_answer"));
+            const auto source_span = core::json::string_or(document->find("source_span"));
+            const auto split = core::json::string_or(document->find("source_split"));
+            const auto generator = core::json::string_or(document->find("generator"));
+            const auto verifier = core::json::string_or(document->find("verifier"));
+            const auto reason = core::json::string_or(
+                document->find("rejection_reason"),
+                core::json::string_or(document->find("verification_notes")));
+            const auto weight_eligible = core::json::bool_or(
+                document->find("weight_eligible"), false);
+            const auto candidate = core::json::string_or(
+                document->find("candidate_generation"), "none");
+            record.verification = "Decision: " + decision +
+                " • Generator: " + (generator.empty() ? "unknown" : generator) +
+                " • Independent verifier: " + (verifier.empty() ? "unknown" : verifier) +
+                " • Source span: " + (source_span.empty() ? "unknown" : source_span) +
+                " • Split: " + (split.empty() ? "unknown" : split) +
+                " • Weight training: " + (weight_eligible ? "eligible" : "no") +
+                " • Candidate generation: " + candidate;
+            if (!reason.empty()) {
+                record.verification += " • Reason: " + reason;
+            }
+            record.fingerprint = record.identifier;
+            record.normalized_prompt = lower_ascii(trim_ascii(record.prompt));
+            if (record.prompt.empty()) {
+                record.prompt = "[No usable generated prompt]";
+            }
+            if (record.answer.empty()) {
+                record.answer = decision == "retry-pending"
+                    ? "[Pending independent review]"
+                    : "[Excluded before positive training]";
+            }
+            records.push_back(std::move(record));
+            continue;
+        }
+
         const auto held_out = category == "Held-out check";
         const auto teacher_attempt = category == "Teacher attempt";
         const auto live_attempt = category == "Live Auto decision";
@@ -2469,6 +2532,11 @@ void append_training_library_file(
         records,
         unreadable_records);
     append_training_library_file(
+        paths.curriculum / "foundation-attempts.jsonl",
+        "Foundation curriculum",
+        records,
+        unreadable_records);
+    append_training_library_file(
         paths.bootstrap_anchors,
         "Held-out check",
         records,
@@ -2504,6 +2572,10 @@ void append_training_library_file(
     std::size_t live_rejected_count = 0;
     std::size_t live_evidence_count = 0;
     std::size_t live_retry_count = 0;
+    std::size_t foundation_accepted_count = 0;
+    std::size_t foundation_revised_count = 0;
+    std::size_t foundation_rejected_count = 0;
+    std::size_t foundation_retry_count = 0;
     std::size_t held_out_count = 0;
     for (const auto& record : records) {
         ++duplicate_counts[record.fingerprint];
@@ -2531,6 +2603,12 @@ void append_training_library_file(
             automatic_approved_count += approved ? 1U : 0U;
             automatic_rejected_count += rejected ? 1U : 0U;
             break;
+        case TrainingLibraryRecord::Origin::generated_foundation:
+            foundation_accepted_count += record.category == "Foundation accepted" ? 1U : 0U;
+            foundation_revised_count += record.category == "Foundation revised and accepted" ? 1U : 0U;
+            foundation_rejected_count += record.category == "Foundation rejected" ? 1U : 0U;
+            foundation_retry_count += record.category == "Foundation retry pending" ? 1U : 0U;
+            break;
         case TrainingLibraryRecord::Origin::held_out_check:
             ++held_out_count;
             break;
@@ -2556,6 +2634,8 @@ void append_training_library_file(
             (source_filter == 5 &&
              record.origin == TrainingLibraryRecord::Origin::automatic_teacher) ||
             (source_filter == 6 &&
+             record.origin == TrainingLibraryRecord::Origin::generated_foundation) ||
+            (source_filter == 7 &&
              record.origin == TrainingLibraryRecord::Origin::held_out_check);
         if (!source_matches) {
             continue;
@@ -2587,6 +2667,11 @@ void append_training_library_file(
                    << (automatic_approved_count + automatic_rejected_count)
                    << L" (" << automatic_approved_count << L" accepted, "
                    << automatic_rejected_count << L" rejected)"
+                   << L" • generated foundation: "
+                   << foundation_accepted_count << L" accepted, "
+                   << foundation_revised_count << L" revised, "
+                   << foundation_rejected_count << L" rejected, "
+                   << foundation_retry_count << L" retry pending"
                    << L" • bundled curriculum: " << bundled_count
                    << L" • held-out checks: " << held_out_count
                    << L" • " << records.size() << L" audit records";
@@ -2620,6 +2705,7 @@ void append_training_library_file(
             case TrainingLibraryRecord::Origin::user_review: return L"Your review";
             case TrainingLibraryRecord::Origin::live_auto_training: return L"Live Auto Training";
             case TrainingLibraryRecord::Origin::automatic_teacher: return L"Automatic teacher attempt";
+            case TrainingLibraryRecord::Origin::generated_foundation: return L"Generated foundation curriculum";
             case TrainingLibraryRecord::Origin::held_out_check: return L"Held-out check";
             }
             return L"Unknown";
@@ -2735,6 +2821,26 @@ MainWindow::MainWindow(const HINSTANCE instance)
     if (!std::filesystem::is_regular_file(custom_training_dataset_)) {
         custom_training_dataset_ = paths_.custom_training_template;
     }
+    {
+        std::istringstream saved_sources(read_text(
+            paths_.root / "config" / "foundation-sources.txt"));
+        std::string saved_path;
+        while (std::getline(saved_sources, saved_path)) {
+            saved_path = trim_line_endings(std::move(saved_path));
+            if (saved_path.empty()) {
+                continue;
+            }
+            auto path = std::filesystem::path(widen(saved_path)).lexically_normal();
+            if (std::filesystem::is_regular_file(path)) {
+                foundation_source_files_.push_back(std::move(path));
+            }
+        }
+        const auto saved_rights = trim_line_endings(read_text(
+            paths_.root / "config" / "foundation-rights.txt"));
+        foundation_rights_index_ = saved_rights == "permissive-license" ? 1 :
+            (saved_rights == "user-owned" ? 2 : 0);
+        foundation_progress_ = learning::read_english_foundation_progress(paths_.curriculum);
+    }
     const auto curriculum_marker =
         paths_.root / "state" / "english-first-curriculum-v1.txt";
     if (!std::filesystem::is_regular_file(curriculum_marker)) {
@@ -2822,6 +2928,7 @@ MainWindow::~MainWindow() {
     discovery_operation_.cancel();
     mcp_operation_.cancel();
     piggyback_operation_.cancel();
+    foundation_operation_.cancel();
     chat_operation_.cancel();
     long_horizon_operation_.cancel();
     media_operation_.cancel();
@@ -2833,6 +2940,7 @@ MainWindow::~MainWindow() {
     discovery_operation_.wait();
     mcp_operation_.wait();
     piggyback_operation_.wait();
+    foundation_operation_.wait();
     chat_operation_.wait();
     long_horizon_operation_.wait();
     media_operation_.wait();
@@ -3825,6 +3933,61 @@ void MainWindow::create_learning_page() {
         0, id::learning_advanced_sources, parent);
 
     create_control(
+        L"STATIC", L"Build English Foundation — explicit, one-time, resumable",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_foundation_header, parent);
+    create_control(
+        L"STATIC", L"Source rights",
+        WS_CHILD | WS_VISIBLE, 0, id::learning_foundation_rights_label, parent);
+    const auto foundation_rights = create_control(
+        L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, id::learning_foundation_rights, parent);
+    for (const auto* option : {
+             L"Public domain",
+             L"Permissive license",
+             L"I own it / have permission"}) {
+        static_cast<void>(::SendMessageW(
+            foundation_rights, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(option)));
+    }
+    static_cast<void>(::SendMessageW(
+        foundation_rights, CB_SETCURSEL, foundation_rights_index_, 0));
+    std::wstring foundation_source_caption{L"No source files selected"};
+    if (!foundation_source_files_.empty()) {
+        foundation_source_caption = std::to_wstring(foundation_source_files_.size()) +
+            L" saved source file" + (foundation_source_files_.size() == 1U ? L"" : L"s");
+    }
+    const auto foundation_sources = create_control(
+        L"EDIT", foundation_source_caption.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+        0, id::learning_foundation_sources, parent);
+    static_cast<void>(::SendMessageW(
+        foundation_sources,
+        EM_SETCUEBANNER,
+        TRUE,
+        reinterpret_cast<LPARAM>(L"Select UTF-8 text or Markdown books/documents")));
+    create_control(
+        L"BUTTON", L"Select sources…",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_foundation_browse, parent);
+    create_control(
+        L"BUTTON", L"Build / resume",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_foundation_build, parent);
+    create_control(
+        L"BUTTON", L"Pause",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_foundation_pause, parent);
+    create_control(
+        L"BUTTON", L"Rebuild from source",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, id::learning_foundation_rebuild, parent);
+    create_control(
+        L"STATIC",
+        L"Idle • Qwen builds the deep competency map; Nemotron creates fast variants; each checks the other.",
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL,
+        0, id::learning_foundation_status, parent);
+
+    create_control(
         L"STATIC", L"Improve",
         WS_CHILD | WS_VISIBLE, 0, id::learning_skill_label, parent);
     const auto target = create_control(
@@ -3953,6 +4116,7 @@ void MainWindow::create_learning_page() {
              L"Your rejected evidence",
              L"Live Auto Training",
              L"Automatic teacher attempts",
+             L"Generated foundation curriculum",
              L"Held-out checks"}) {
         static_cast<void>(::SendMessageW(
             library_source,
@@ -5064,6 +5228,75 @@ void MainWindow::layout_controls() {
         row);
     learning_y += row + gap;
 
+    move_control(control(id::learning_foundation_header), 0, learning_y, width, row);
+    learning_y += row + gap;
+    const auto rights_label_width = scaled(105, dpi_);
+    const auto rights_width = scaled(190, dpi_);
+    const auto select_width = scaled(135, dpi_);
+    const auto build_width = scaled(125, dpi_);
+    const auto pause_width = scaled(78, dpi_);
+    const auto rebuild_width = scaled(155, dpi_);
+    if (width >= scaled(980, dpi_)) {
+        move_control(control(id::learning_foundation_rights_label), 0, learning_y, rights_label_width, row);
+        move_control(control(id::learning_foundation_rights), rights_label_width + gap, learning_y,
+            rights_width, row + scaled(100, dpi_));
+        auto foundation_x = rights_label_width + rights_width + gap * 2;
+        const auto fixed_foundation_width =
+            select_width + build_width + pause_width + rebuild_width + gap * 4;
+        const auto sources_width = std::max(1, width - foundation_x - fixed_foundation_width);
+        move_control(control(id::learning_foundation_sources), foundation_x, learning_y, sources_width, row);
+        foundation_x += sources_width + gap;
+        move_control(control(id::learning_foundation_browse), foundation_x, learning_y, select_width, row);
+        foundation_x += select_width + gap;
+        move_control(control(id::learning_foundation_build), foundation_x, learning_y, build_width, row);
+        foundation_x += build_width + gap;
+        move_control(control(id::learning_foundation_pause), foundation_x, learning_y, pause_width, row);
+        foundation_x += pause_width + gap;
+        move_control(control(id::learning_foundation_rebuild), foundation_x, learning_y,
+            std::max(1, width - foundation_x), row);
+        learning_y += row + gap;
+    } else {
+        move_control(control(id::learning_foundation_rights_label), 0, learning_y, rights_label_width, row);
+        move_control(control(id::learning_foundation_rights), rights_label_width + gap, learning_y,
+            rights_width, row + scaled(100, dpi_));
+        if (width >= scaled(580, dpi_)) {
+            const auto source_x = rights_label_width + rights_width + gap * 2;
+            const auto source_width = std::max(1, width - source_x - select_width - gap);
+            move_control(control(id::learning_foundation_sources), source_x, learning_y, source_width, row);
+            move_control(control(id::learning_foundation_browse), source_x + source_width + gap,
+                learning_y, select_width, row);
+        } else {
+            learning_y += row + gap;
+            const auto source_width = std::max(1, width - select_width - gap);
+            move_control(control(id::learning_foundation_sources), 0, learning_y, source_width, row);
+            move_control(control(id::learning_foundation_browse), source_width + gap,
+                learning_y, select_width, row);
+        }
+        learning_y += row + gap;
+        const auto action_total = build_width + pause_width + rebuild_width + gap * 2;
+        const auto action_scale = action_total > width
+            ? static_cast<double>(std::max(3, width - gap * 2)) /
+                static_cast<double>(build_width + pause_width + rebuild_width)
+            : 1.0;
+        const auto responsive_build = std::max(1, static_cast<int>(build_width * action_scale));
+        const auto responsive_pause = std::max(1, static_cast<int>(pause_width * action_scale));
+        move_control(control(id::learning_foundation_build), 0, learning_y, responsive_build, row);
+        move_control(control(id::learning_foundation_pause), responsive_build + gap, learning_y,
+            responsive_pause, row);
+        move_control(control(id::learning_foundation_rebuild),
+            responsive_build + responsive_pause + gap * 2, learning_y,
+            std::max(1, width - responsive_build - responsive_pause - gap * 2), row);
+        learning_y += row + gap;
+    }
+    const auto foundation_status_height = row * 4;
+    move_control(
+        control(id::learning_foundation_status),
+        0,
+        learning_y,
+        width,
+        foundation_status_height);
+    learning_y += foundation_status_height + gap;
+
     const auto advanced_sources = checked(id::learning_advanced_sources);
     constexpr std::array advanced_source_controls{
         id::learning_skill_label,
@@ -5795,6 +6028,18 @@ void MainWindow::handle_command(const int identifier) {
         break;
     case id::learning_dataset_template:
         open_path(paths_.custom_training_template);
+        break;
+    case id::learning_foundation_browse:
+        browse_foundation_sources();
+        break;
+    case id::learning_foundation_build:
+        start_foundation_build(false);
+        break;
+    case id::learning_foundation_pause:
+        pause_foundation_build();
+        break;
+    case id::learning_foundation_rebuild:
+        start_foundation_build(true);
         break;
     case id::learning_library_refresh:
         update_training_library();
@@ -7659,6 +7904,13 @@ void MainWindow::send_request(const RequestSurface surface) {
             id::chat_learning_status,
             L"Background teacher generation is yielding to this request.");
     }
+    if (!deterministic_calculation && foundation_operation_.running()) {
+        foundation_resume_requested_ = true;
+        foundation_operation_.cancel();
+        set_control_text(
+            id::learning_foundation_status,
+            L"PAUSING • Chat requested the teacher lane; the foundation build will resume from its durable chunk checkpoint.");
+    }
 
     auto snapshot = runtime_model_snapshot();
     apply_model_choice_filter(snapshot);
@@ -9058,6 +9310,164 @@ void MainWindow::import_custom_training_data() {
     generate_piggyback(false, true);
 }
 
+void MainWindow::browse_foundation_sources() {
+    auto selected = choose_foundation_source_files();
+    if (selected.empty()) {
+        return;
+    }
+    foundation_source_files_ = std::move(selected);
+    std::wostringstream summary;
+    summary << foundation_source_files_.size() << L" source file"
+            << (foundation_source_files_.size() == 1U ? L"" : L"s") << L": ";
+    for (std::size_t index = 0U; index < foundation_source_files_.size(); ++index) {
+        if (index > 0U) {
+            summary << L"; ";
+        }
+        summary << foundation_source_files_[index].filename().wstring();
+    }
+    set_control_text(id::learning_foundation_sources, summary.str());
+    try {
+        std::string saved;
+        for (const auto& path : foundation_source_files_) {
+            saved += narrow(path.wstring()) + "\n";
+        }
+        write_text(paths_.root / "config" / "foundation-sources.txt", saved);
+    } catch (...) {
+    }
+    set_status(L"Foundation sources selected; confirm the rights category, then Build / resume");
+}
+
+void MainWindow::start_foundation_build(const bool rebuild) {
+    if (foundation_operation_.running()) {
+        set_status(L"The English foundation build is already running; Pause it before changing course");
+        return;
+    }
+    if (foundation_source_files_.empty()) {
+        set_status(L"Select one or more UTF-8 text or Markdown foundation sources first");
+        return;
+    }
+    auto snapshot = runtime_model_snapshot();
+    std::optional<models::ModelProfile> qwen;
+    std::optional<models::ModelProfile> nemotron;
+    for (const auto& model : snapshot.models()) {
+        if (!model.enabled || models::is_internal_model(model) ||
+            !models::has_capability(model, "chat")) {
+            continue;
+        }
+        const auto family = live_training_model_family(model);
+        if (family == 1 && (!qwen.has_value() || model.quality > qwen->quality)) {
+            qwen = model;
+        } else if (family == 2 && (!nemotron.has_value() || model.tokens_per_second > nemotron->tokens_per_second)) {
+            nemotron = model;
+        }
+    }
+    if (!qwen.has_value() || !nemotron.has_value()) {
+        set_status(
+            L"Build English Foundation needs both loopback LM Studio teachers: Qwen 3.8 27B and Nemotron 3 Nano 4B");
+        return;
+    }
+    const auto rights_index = static_cast<int>(::SendMessageW(
+        control(id::learning_foundation_rights), CB_GETCURSEL, 0, 0));
+    const auto rights = rights_index == 0
+        ? learning::CurriculumRights::public_domain
+        : (rights_index == 1
+            ? learning::CurriculumRights::permissive_license
+            : learning::CurriculumRights::user_owned);
+    foundation_rights_index_ = std::clamp(rights_index, 0, 2);
+    try {
+        write_text(
+            paths_.root / "config" / "foundation-rights.txt",
+            std::string(learning::to_string(rights)) + "\n");
+    } catch (...) {
+    }
+    std::vector<learning::CurriculumSourceInput> sources;
+    sources.reserve(foundation_source_files_.size());
+    for (const auto& path : foundation_source_files_) {
+        sources.push_back(learning::CurriculumSourceInput{
+            .path = path,
+            .title = path.stem().string(),
+            .origin = path.string(),
+            .permission = std::string(learning::to_string(rights)),
+            .rights = rights,
+            .redistribution_permitted = rights != learning::CurriculumRights::user_owned,
+        });
+    }
+    const auto request = learning::FoundationBuildRequest{
+        .curriculum_root = paths_.curriculum,
+        .base_anchor_dataset = paths_.bootstrap_anchors,
+        .sources = std::move(sources),
+        .qwen = *qwen,
+        .nemotron = *nemotron,
+        .internal_base_url = backend_server_.running() ? backend_server_.base_url() : std::string{},
+        .completion = {},
+        .nemotron_parallelism = 4U,
+        .qwen_parallelism = 1U,
+        .variants_per_lesson = 4U,
+        .maximum_source_chunks = 0U,
+        .minimum_verifier_score = 0.88,
+        .rebuild = rebuild,
+    };
+    if (piggyback_operation_.running()) {
+        piggyback_operation_.cancel();
+    }
+    foundation_resume_requested_ = false;
+    learning_service_->set_interactive_busy(true);
+    const auto started = foundation_operation_.start(
+        [this, request](const std::stop_token token) {
+            struct BusyReset final {
+                learning::ContinualLearningService* service;
+                ~BusyReset() { service->set_interactive_busy(false); }
+            } reset{learning_service_.get()};
+            auto result = learning::run_english_foundation_build(
+                request,
+                *learning_service_,
+                [this](const learning::FoundationBuildProgress& progress) {
+                    {
+                        std::lock_guard lock(result_mutex_);
+                        foundation_progress_ = progress;
+                    }
+                    foundation_operation_.set_message(progress.operation + " — " + progress.message);
+                },
+                token);
+            {
+                std::lock_guard lock(result_mutex_);
+                foundation_progress_ = result.progress;
+                pending_foundation_result_ = result;
+            }
+            return util::OperationResult{
+                .state = result.succeeded
+                    ? util::OperationState::succeeded
+                    : (result.cancelled
+                        ? util::OperationState::cancelled
+                        : util::OperationState::failed),
+                .exit_code = result.succeeded ? 0 : 1,
+                .message = result.succeeded ? "English foundation curriculum compiled" :
+                    (result.cancelled ? "English foundation build paused" : result.error),
+            };
+        },
+        rebuild ? "rebuilding the English foundation from admitted sources" :
+            "building or resuming the English foundation");
+    if (!started) {
+        learning_service_->set_interactive_busy(false);
+        set_status(L"Unable to schedule the English foundation build");
+        return;
+    }
+    set_control_text(
+        id::learning_foundation_status,
+        L"STARTING • Qwen: deep curriculum • Nemotron: fast variants • independent cross-review • Chat has priority");
+    set_status(L"English foundation build started; every source, example, review, and checkpoint remains visible");
+}
+
+void MainWindow::pause_foundation_build() {
+    if (!foundation_operation_.running()) {
+        set_status(L"No English foundation build is running");
+        return;
+    }
+    foundation_resume_requested_ = false;
+    foundation_operation_.cancel();
+    set_status(L"Pausing the English foundation at its next durable chunk boundary…");
+}
+
 void MainWindow::generate_piggyback(
     const bool automatic,
     const bool trusted_only,
@@ -9065,6 +9475,12 @@ void MainWindow::generate_piggyback(
     if (piggyback_operation_.running()) {
         if (!automatic) {
             set_status(L"A teacher or dataset-import batch is already running");
+        }
+        return;
+    }
+    if (foundation_operation_.running()) {
+        if (!automatic) {
+            set_status(L"Build English Foundation is using the teacher pair; pause it before starting another example pass");
         }
         return;
     }
@@ -10149,6 +10565,7 @@ void MainWindow::drive_automatic_lifecycle() {
     const auto reserved_bootstrap_lease = bootstrap_priority_lease_ ? 1U : 0U;
     if (chat_operation_.running() || media_operation_.running() ||
         long_horizon_operation_.running() || piggyback_operation_.running() ||
+        foundation_operation_.running() ||
         learning_service_->interactive_lease_count() > reserved_bootstrap_lease) {
         return;
     }
@@ -10369,6 +10786,14 @@ void MainWindow::update_global_activity() {
         }
         active_work.push_back(std::move(label));
     }
+    if (foundation_operation_.running()) {
+        const auto operation = foundation_operation_.snapshot();
+        auto label = std::wstring{L"Building the English foundation"};
+        if (!operation.message.empty()) {
+            label += L" — " + widen(operation.message);
+        }
+        active_work.push_back(std::move(label));
+    }
 
     const auto pipeline = learning_service_->pipeline_snapshot();
     const auto user_taught_replies =
@@ -10495,6 +10920,7 @@ void MainWindow::update_periodic_state() {
     update_discovery_result();
     update_mcp_result();
     update_piggyback_result();
+    update_foundation_result();
     update_long_horizon_result();
     update_storage_cleanup_result();
     update_capability_pack_result();
@@ -10564,6 +10990,17 @@ void MainWindow::update_periodic_state() {
         set_control_text(
             id::chat_learning_status,
             L"Creating media now. Live Auto Training is waiting.");
+    } else if (foundation_operation_.running()) {
+        learning::FoundationBuildProgress progress;
+        {
+            std::lock_guard lock(result_mutex_);
+            progress = foundation_progress_;
+        }
+        std::wostringstream status;
+        status << L"Build English Foundation: " << widen(std::string(learning::to_string(progress.stage)))
+               << L" • " << progress.chunk_index << L"/" << progress.chunk_count << L" chunks"
+               << L" • Qwen/Nemotron cross-review • Chat has priority";
+        set_control_text(id::chat_learning_status, status.str());
     } else if (piggyback_operation_.running()) {
         set_control_text(
             id::chat_learning_status,
@@ -10625,12 +11062,22 @@ void MainWindow::update_periodic_state() {
     if ((run_live_pass || run_practice_pass) &&
         helper_ready &&
         !piggyback_operation_.running() &&
+        !foundation_operation_.running() &&
         !example_pass_blocked &&
         !chat_operation_.running() &&
         !long_horizon_operation_.running() &&
         !media_operation_.running() &&
         std::chrono::steady_clock::now() >= next_piggyback_at_) {
         generate_piggyback(true, false, run_live_pass);
+    }
+
+    if (foundation_resume_requested_ &&
+        !chat_operation_.running() &&
+        !media_operation_.running() &&
+        !long_horizon_operation_.running() &&
+        !foundation_operation_.running()) {
+        foundation_resume_requested_ = false;
+        start_foundation_build(false);
     }
 
     update_global_activity();
@@ -11105,6 +11552,135 @@ void MainWindow::update_piggyback_result() {
     update_skill_report();
 }
 
+void MainWindow::update_foundation_result() {
+    std::optional<learning::FoundationBuildResult> result;
+    learning::FoundationBuildProgress progress;
+    {
+        std::lock_guard lock(result_mutex_);
+        progress = foundation_progress_;
+        if (pending_foundation_result_.has_value()) {
+            result = std::move(pending_foundation_result_);
+            pending_foundation_result_.reset();
+            progress = result->progress;
+        }
+    }
+    const auto running = foundation_operation_.running();
+    static_cast<void>(::EnableWindow(control(id::learning_foundation_browse), !running));
+    static_cast<void>(::EnableWindow(control(id::learning_foundation_rights), !running));
+    static_cast<void>(::EnableWindow(control(id::learning_foundation_build), !running));
+    static_cast<void>(::EnableWindow(control(id::learning_foundation_rebuild), !running));
+    static_cast<void>(::EnableWindow(control(id::learning_foundation_pause), running));
+
+    if (progress.stage == learning::FoundationStage::idle && !running && !result.has_value()) {
+        return;
+    }
+    const auto internal = runtime::inspect_internal_model_state(paths_);
+    if (!internal.generation.empty()) {
+        const auto generation_root = paths_.root / "models" / "internal" /
+            "generations" / internal.generation;
+        std::string parse_error;
+        const auto manifest = core::json::try_parse(
+            read_text(generation_root / "manifest.json"), parse_error);
+        if (manifest.has_value()) {
+            const auto weights_name = core::json::string_or(
+                manifest->find("weights_file"), "weights.safetensors");
+            const std::filesystem::path component(weights_name);
+            if (!weights_name.empty() && component.filename() == component) {
+                std::error_code size_error;
+                progress.model_bytes = std::filesystem::file_size(
+                    generation_root / component, size_error);
+                if (size_error) {
+                    progress.model_bytes = 0U;
+                }
+            }
+        }
+    }
+    const auto pipeline = learning_service_->pipeline_snapshot();
+    progress.queued_weight_jobs = std::max(progress.queued_weight_jobs, pipeline.queued_updates);
+    const auto candidates = learning_service_->candidate_snapshot();
+    const auto foundation_candidate = std::ranges::max_element(
+        candidates,
+        {},
+        [](const learning::CandidateRecord& candidate) {
+            return candidate.skill == "english-foundation"
+                ? candidate.updated_unix_ms
+                : std::numeric_limits<std::int64_t>::min();
+        });
+    if (foundation_candidate != candidates.end() &&
+        foundation_candidate->skill == "english-foundation") {
+        progress.active_candidate = foundation_candidate->id + " — " +
+            std::string(learning::to_string(foundation_candidate->state));
+        if (foundation_candidate->state == learning::CandidateState::promoted) {
+            progress.stage = learning::FoundationStage::completed;
+            progress.promotion_result = "promoted; validation " +
+                std::to_string(foundation_candidate->validation_score) +
+                ", regression " + std::to_string(foundation_candidate->regression_score);
+        } else if (foundation_candidate->state == learning::CandidateState::rejected) {
+            progress.promotion_result = "rejected; the working model stayed active — " +
+                foundation_candidate->message;
+        } else if (foundation_candidate->state == learning::CandidateState::interrupted) {
+            progress.promotion_result = "checkpointed/interrupted; the same candidate remains resumable";
+        } else {
+            progress.promotion_result = foundation_candidate->message;
+        }
+    }
+    std::wostringstream status;
+    status << widen(std::string(learning::to_string(progress.stage)))
+           << L" • " << (progress.operation.empty() ? L"foundation curriculum" : widen(progress.operation));
+    if (!progress.teacher.empty()) {
+        status << L" • teacher: " << widen(progress.teacher);
+    }
+    if (!progress.verifier.empty()) {
+        status << L" • verifier: " << widen(progress.verifier);
+    }
+    if (!progress.source.empty()) {
+        status << L" • source: " << widen(progress.source);
+    }
+    status << L"\r\nGenerated " << progress.generated
+           << L" • accepted " << progress.accepted
+           << L" • revised " << progress.revised
+           << L" • rejected " << progress.rejected
+           << L" • retry pending " << progress.retry_pending
+           << L" • held out " << progress.held_out
+           << L" • chunks " << progress.chunk_index << L"/" << progress.chunk_count
+           << L" • tokens " << progress.prompt_tokens << L" in + "
+           << progress.completion_tokens << L" out"
+           << L" • queued weight jobs " << progress.queued_weight_jobs
+           << L" • active neural weights " << format_bytes_compact(progress.model_bytes);
+    if (!progress.checkpoint.empty()) {
+        status << L"\r\nCheckpoint: " << widen(progress.checkpoint);
+    }
+    if (!progress.active_candidate.empty()) {
+        status << L" • candidate: " << widen(progress.active_candidate);
+    }
+    if (!progress.promotion_result.empty()) {
+        status << L" • promotion: " << widen(progress.promotion_result);
+    }
+    if (!progress.message.empty()) {
+        status << L"\r\n" << widen(progress.message);
+    }
+    set_control_text(id::learning_foundation_status, status.str());
+
+    if (!result.has_value()) {
+        return;
+    }
+    if (result->succeeded) {
+        active_activity_summary_ = L"English foundation curriculum compiled; isolated candidate queued behind all evaluation gates";
+        set_status(L"English foundation curriculum completed; the working model remains unchanged until promotion checks pass");
+    } else if (result->cancelled) {
+        active_activity_summary_ = foundation_resume_requested_
+            ? L"English foundation paused for Chat and will resume automatically"
+            : L"English foundation paused at a durable chunk checkpoint";
+        set_status(foundation_resume_requested_
+            ? L"English foundation yielded to Chat; automatic resume is armed"
+            : L"English foundation paused; Build / resume continues from the checkpoint");
+    } else {
+        active_activity_summary_ = L"English foundation needs attention — " + widen(result->error);
+        set_status(L"English foundation stopped safely; rejected and retry-pending evidence remains in the Training Library");
+    }
+    update_training_library();
+}
+
 void MainWindow::update_skill_report() {
     const auto internal = runtime::inspect_internal_model_state(paths_);
     const auto pipeline = learning_service_->pipeline_snapshot();
@@ -11129,7 +11705,9 @@ void MainWindow::update_skill_report() {
 
     std::wostringstream learning_status;
     learning_status << L"AUTOMATIC IMPROVEMENT\r\n";
-    if (active_piggyback_live_ && piggyback_operation_.running()) {
+    if (foundation_operation_.running()) {
+        learning_status << L"Build English Foundation — Qwen and Nemotron are compiling independently verified curriculum";
+    } else if (active_piggyback_live_ && piggyback_operation_.running()) {
         learning_status << L"Live Auto Training — Qwen and Nemotron are reviewing the interaction";
     } else if (pipeline.active_job.has_value()) {
         learning_status << L"Working safely in the background — "
@@ -11721,6 +12299,12 @@ void MainWindow::update_learning_report() {
     const auto settings = learning_service_->settings_snapshot();
     const auto pipeline = learning_service_->pipeline_snapshot();
     const auto foundry = piggyback_operation_.snapshot();
+    const auto foundation = foundation_operation_.snapshot();
+    learning::FoundationBuildProgress foundation_progress;
+    {
+        std::lock_guard lock(result_mutex_);
+        foundation_progress = foundation_progress_;
+    }
     const auto automatic_teacher = checked(id::learning_auto);
     const auto live_auto = checked(id::chat_auto_learning);
     const auto model_snapshot = runtime_model_snapshot();
@@ -11742,7 +12326,13 @@ void MainWindow::update_learning_report() {
     const auto selected_evidence =
         learning_service_->memory_store().training_count_for_skill(selected_skill);
     std::wostringstream learning_summary;
-    if (piggyback_operation_.running()) {
+    if (foundation_operation_.running()) {
+        learning_summary << L"Build English Foundation: "
+                         << widen(std::string(learning::to_string(foundation_progress.stage)))
+                         << L"; chunk " << foundation_progress.chunk_index
+                         << L"/" << foundation_progress.chunk_count
+                         << L"; Chat has priority";
+    } else if (piggyback_operation_.running()) {
         learning_summary << (active_piggyback_live_
             ? L"Live Auto Training: reviewing live interactions; Chat has priority"
             : L"Automatic idle learning: verifying separate practice examples; Chat has priority");
@@ -11790,6 +12380,26 @@ void MainWindow::update_learning_report() {
            << L"  Compute ceiling: the bounded model, curated replay set, checkpoints, evaluation, and promotion are designed to complete within 12 hours on the target hardware; this is not a countdown\r\n"
            << L"  Controlled software self-improvement: separate, evidence-gated, and never started by learning controls\r\n"
            << L"  Retained verified examples for the selected topic: " << selected_evidence
+           << L"\r\n\r\nENGLISH FOUNDATION BUILD\r\n"
+           << L"  State: " << widen(std::string(learning::to_string(foundation_progress.stage)))
+           << (foundation.message.empty() ? L"" : L" — " + widen(foundation.message)) << L"\r\n"
+           << L"  Source: " << (foundation_progress.source.empty() ? L"none selected" : widen(foundation_progress.source))
+           << L"; source " << foundation_progress.source_index << L"/" << foundation_progress.source_count
+           << L"; chunk " << foundation_progress.chunk_index << L"/" << foundation_progress.chunk_count << L"\r\n"
+           << L"  Teacher: " << (foundation_progress.teacher.empty() ? L"idle" : widen(foundation_progress.teacher))
+           << L"; independent verifier: " << (foundation_progress.verifier.empty() ? L"idle" : widen(foundation_progress.verifier)) << L"\r\n"
+           << L"  Generated: " << foundation_progress.generated
+           << L"; accepted: " << foundation_progress.accepted
+           << L"; revised: " << foundation_progress.revised
+           << L"; rejected: " << foundation_progress.rejected
+           << L"; retry pending: " << foundation_progress.retry_pending
+           << L"; held out: " << foundation_progress.held_out << L"\r\n"
+           << L"  Token progress: " << foundation_progress.prompt_tokens << L" input + "
+           << foundation_progress.completion_tokens << L" output; queued weight jobs: "
+           << std::max(foundation_progress.queued_weight_jobs, pipeline.queued_updates) << L"\r\n"
+           << L"  Checkpoint: " << (foundation_progress.checkpoint.empty() ? L"none yet" : widen(foundation_progress.checkpoint)) << L"\r\n"
+           << L"  Candidate: " << (foundation_progress.active_candidate.empty() ? L"none" : widen(foundation_progress.active_candidate)) << L"\r\n"
+           << L"  Promotion: " << (foundation_progress.promotion_result.empty() ? L"not attempted" : widen(foundation_progress.promotion_result))
            << L"\r\n\r\n"
            << L"WHAT CAN CHANGE\r\n"
            << L"  Verified memory: active immediately; no weight update required\r\n"
@@ -11831,7 +12441,8 @@ void MainWindow::update_learning_report() {
 
     if (((live_auto && live_training_pending_ && live_models_ready) ||
          (automatic_teacher && teacher_available)) &&
-        !piggyback_operation_.running()) {
+        !piggyback_operation_.running() &&
+        !foundation_operation_.running()) {
         if (now >= next_piggyback_at_) {
             report << L"Next verified teacher pass: ready as soon as inference and weight training are idle.\r\n\r\n";
         } else {
@@ -12071,6 +12682,7 @@ void MainWindow::update_storage_report(const bool force) {
         } else if (long_horizon_operation_.running()) {
             memory_activity = L"repository work";
         } else if (piggyback_operation_.running() ||
+                   foundation_operation_.running() ||
                    learning_pipeline.active_job.has_value() ||
                    (lifecycle_action_ == LifecycleAction::bootstrap_model &&
                     backend_operation_.running())) {
@@ -12575,6 +13187,54 @@ std::vector<std::filesystem::path> MainWindow::choose_files() const {
                 PWSTR raw = nullptr;
                 if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) &&
                     raw != nullptr) {
+                    selected.emplace_back(raw);
+                    ::CoTaskMemFree(raw);
+                }
+                item->Release();
+            }
+            items->Release();
+        }
+    }
+    dialog->Release();
+    return selected;
+}
+
+std::vector<std::filesystem::path> MainWindow::choose_foundation_source_files() const {
+    std::vector<std::filesystem::path> selected;
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(::CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&dialog)))) {
+        return selected;
+    }
+    COMDLG_FILTERSPEC filters[]{
+        {L"UTF-8 text and Markdown", L"*.txt;*.md;*.markdown"},
+        {L"Text files", L"*.txt"},
+        {L"Markdown files", L"*.md;*.markdown"},
+    };
+    static_cast<void>(dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters));
+    static_cast<void>(dialog->SetFileTypeIndex(1));
+    DWORD options = 0;
+    static_cast<void>(dialog->GetOptions(&options));
+    static_cast<void>(dialog->SetOptions(
+        options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST |
+        FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT));
+    static_cast<void>(dialog->SetTitle(
+        L"Select public-domain, permissively licensed, or owned English sources"));
+    if (SUCCEEDED(dialog->Show(window_))) {
+        IShellItemArray* items = nullptr;
+        if (SUCCEEDED(dialog->GetResults(&items)) && items != nullptr) {
+            DWORD count = 0;
+            static_cast<void>(items->GetCount(&count));
+            for (DWORD index = 0; index < std::min<DWORD>(count, 32U); ++index) {
+                IShellItem* item = nullptr;
+                if (FAILED(items->GetItemAt(index, &item)) || item == nullptr) {
+                    continue;
+                }
+                PWSTR raw = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw != nullptr) {
                     selected.emplace_back(raw);
                     ::CoTaskMemFree(raw);
                 }

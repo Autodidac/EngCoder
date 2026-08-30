@@ -106,6 +106,10 @@ public:
     void request_stop();
     void set_python_executable(std::filesystem::path path);
     void set_base_model(std::string model);
+    void set_anchor_dataset(std::filesystem::path path);
+    [[nodiscard]] bool bind_untrained_skill_base(
+        std::string_view skill,
+        std::string_view base_model);
     [[nodiscard]] bool rollback_skill(std::string_view skill);
 
     [[nodiscard]] bool interactive_busy() const noexcept;

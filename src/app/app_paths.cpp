@@ -111,6 +111,7 @@ AppPaths make_app_paths() {
     paths.bootstrap_anchors = paths.data / "bootstrap-anchors.jsonl";
     paths.custom_training_template = paths.data / "custom-training-template.jsonl";
     paths.trajectories = paths.root / "trajectories";
+    paths.curriculum = paths.root / "curriculum";
     return paths;
 }
 
@@ -127,6 +128,7 @@ void initialize_base_resources(const AppPaths& paths) {
     std::filesystem::create_directories(paths.memory);
     std::filesystem::create_directories(paths.data);
     std::filesystem::create_directories(paths.trajectories);
+    std::filesystem::create_directories(paths.curriculum);
     std::filesystem::create_directories(paths.ready_file.parent_path());
     std::error_code stale_marker_error;
     for (const auto marker : {"inference.server", "inference.priority", "training.active", "training.requested"}) {

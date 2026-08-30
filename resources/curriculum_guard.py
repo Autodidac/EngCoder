@@ -373,13 +373,9 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
                 purpose="episodes",
                 required=False,
             )
-        if getattr(namespace, "anchors", None) is not None:
-            namespace.anchors = filter_dataset(
-                namespace.anchors,
-                data_root,
-                purpose="anchors",
-                required=False,
-            )
+        # Anchors are evaluation-only. Preserve the complete disjoint suite so
+        # the English foundation must not regress planning/coding behavior even
+        # though only English records provide gradients during this stage.
         os.environ["ENGCODER_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
         os.environ["ENGCODER_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
 

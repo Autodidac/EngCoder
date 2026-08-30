@@ -30,6 +30,7 @@ struct AppPaths final {
     std::filesystem::path bootstrap_anchors;
     std::filesystem::path custom_training_template;
     std::filesystem::path trajectories;
+    std::filesystem::path curriculum;
 };
 
 [[nodiscard]] AppPaths make_app_paths();

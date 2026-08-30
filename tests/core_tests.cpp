@@ -1,11 +1,15 @@
 
 #include <chrono>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 import threadspire.core;
 import threadspire.learning;
@@ -1684,6 +1688,15 @@ void test_windows_ui_source_contract() {
                 ui.find("result->progress.accepted_source_models") != std::string::npos &&
                 ui.find("model_registry_.record_feedback(model_id, true)") != std::string::npos,
             "Live Auto Training must remain a separate visible control, use only the two authorized loopback models, redact private exclusions, stage skills, and require evidence plus two-model confirmation");
+    require(ui.find("Build English Foundation — explicit, one-time, resumable") != std::string::npos &&
+                ui.find("L\"Build / resume\"") != std::string::npos &&
+                ui.find("L\"Rebuild from source\"") != std::string::npos &&
+                ui.find("foundation_operation_.cancel()") != std::string::npos &&
+                ui.find("foundation_resume_requested_ = true") != std::string::npos &&
+                ui.find("Generated foundation curriculum") != std::string::npos &&
+                ui.find("foundation-attempts.jsonl") != std::string::npos &&
+                ui.find("active neural weights") != std::string::npos,
+            "the one-time foundation build must be explicit, resumable, foreground-preemptible, persistently visible, and fully auditable");
     require(ui.find("if (!deterministic_result && checked(id::chat_auto_learning))") != std::string::npos &&
                 ui.find("(!live_candidates && pipeline.queued_updates > 0U)") != std::string::npos &&
                 ui.find("(!run_live_pass && learning_pipeline.queued_updates > 0U)") != std::string::npos &&
@@ -2149,6 +2162,15 @@ void test_worker_and_resource_contract() {
     require(internal_model.find("filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]") != std::string::npos &&
                 internal_model.find("token_id in {EOS_ID, SEPARATOR_ID}") != std::string::npos,
             "generation must honor the supervised end-of-answer separator instead of forcing correct answers to continue as garbage");
+    require(internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                internal_model.find("foundation_anchor_gate") != std::string::npos &&
+                internal_model.find("len(anchors) >= 320") != std::string::npos &&
+                internal_model.find("None if requested_scope == \"english-foundation\" else scope_filter") != std::string::npos &&
+                internal_model.find("limit=None if anchors else 32") != std::string::npos &&
+                internal_model.find("structural_output_gate_passed") != std::string::npos &&
+                internal_model.find("identity_gate_passed") != std::string::npos &&
+                internal_model.find("privacy_gate_passed") != std::string::npos,
+            "foundation promotion must evaluate every held-out anchor and expose structural, identity, and privacy gates");
     require(lifecycle_ui.find("automatic_bootstrap_targets{24000U, 36000U, 50000U}") != std::string::npos &&
                 lifecycle_ui.find("adaptive_bootstrap_target") != std::string::npos &&
                 lifecycle_ui.find("saved_learning_steps(progress) >= automatic_bootstrap_targets.back()") != std::string::npos &&
@@ -2175,7 +2197,7 @@ void test_worker_and_resource_contract() {
                 internal_model.find("path_values = [Path(path_value) for path_value in paths]") != std::string::npos &&
                 internal_model.find("_threadspire_curriculum_guard.english_record(record)") != std::string::npos &&
                 internal_model.find("curriculum-state.json") != std::string::npos,
-            "English-first training must preserve Path values, avoid global argparse mutation, filter every evidence path, reject code-shaped records at the loader, map the UI target to english-core, and persist the gate state");
+            "English-first training must preserve Path values, avoid global argparse mutation, filter gradient evidence, retain complete evaluation anchors, reject code-shaped training records, map the UI target to english-core, and persist the gate state");
 
     const auto continual = read_text_file(
         source / "src/learning/continual_learning_service.cpp");
@@ -2215,7 +2237,7 @@ void test_worker_and_resource_contract() {
                 streaming_heartbeat != std::string::npos &&
                 streaming_dataset != std::string::npos &&
                 streaming_dataset - streaming_heartbeat < 256U &&
-                internal_model.find("verified-hybrid-conversation-v6") != std::string::npos &&
+                internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
                 internal_model.find("trusted_dataset=trusted_dataset") != std::string::npos &&
                 internal_model.find("vague-question-repair") != std::string::npos &&
                 internal_model.find("grounded-summary") != std::string::npos &&
@@ -2289,6 +2311,432 @@ void test_seed_material_counts() {
     require(bootstrap_anchor_count >= 300, "internal model needs broad held-out anchors");
 }
 
+void test_autonomous_english_foundation_pipeline() {
+    namespace learning = threadspire::ai::learning;
+    namespace models = threadspire::ai::models;
+    const auto root = temporary_root();
+    const auto source = root / "owned-book.md";
+    {
+        std::ofstream stream(source, std::ios::binary);
+        stream << "# Chapter One\nA careful speaker asks a concise question before acting on an ambiguous request.\n\n"
+                  "The answer should preserve the request's constraints and avoid inventing missing facts.\n"
+                  "# Chapter Two\nA useful summary keeps the central claim, the evidence, and the important limitation.\n"
+                  "# Chapter Three\nA natural dialogue varies wording while keeping meaning and tone consistent.\n";
+    }
+    const auto input = learning::CurriculumSourceInput{
+        .path = source,
+        .title = "Owned English fixture",
+        .origin = "unit-test fixture",
+        .permission = "owned by test author",
+        .rights = learning::CurriculumRights::user_owned,
+        .redistribution_permitted = false,
+    };
+    const auto denied = learning::prepare_english_foundation_sources(
+        {learning::CurriculumSourceInput{.path = source}}, root / "denied", true);
+    require(!denied.succeeded && denied.error.find("rights") != std::string::npos,
+            "unknown source rights must never enter the foundation corpus");
+    const auto prepared = learning::prepare_english_foundation_sources(
+        {input}, root / "prepared", true);
+    require(prepared.succeeded && prepared.sources.size() == 1U &&
+                prepared.sources.front().sections == 3U &&
+                std::ranges::any_of(prepared.chunks, [](const auto& chunk) { return chunk.held_out; }) &&
+                std::ranges::any_of(prepared.chunks, [](const auto& chunk) { return !chunk.held_out; }),
+            "owned long-form material must be sectioned and split before example generation");
+    require(std::filesystem::is_regular_file(root / "prepared" / "sources.jsonl") &&
+                std::filesystem::is_regular_file(root / "prepared" / "chunks.jsonl"),
+            "source rights, hashes, spans, and split metadata must be durable");
+    const auto prepared_again = learning::prepare_english_foundation_sources(
+        {input}, root / "prepared", false);
+    const auto line_count = [](const std::filesystem::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        return static_cast<std::size_t>(std::ranges::count(
+            std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>(), '\n'));
+    };
+    require(prepared_again.succeeded &&
+                line_count(root / "prepared" / "sources.jsonl") == prepared_again.sources.size() &&
+                line_count(root / "prepared" / "chunks.jsonl") == prepared_again.chunks.size(),
+            "resuming source preparation must rewrite current manifests instead of duplicating them");
+    const auto first_document = root / "first.txt";
+    const auto second_document = root / "second.txt";
+    {
+        std::ofstream(first_document) << "The first complete document provides training behavior.";
+        std::ofstream(second_document) << "The second complete document remains evaluation material.";
+    }
+    const auto whole_documents = learning::prepare_english_foundation_sources(
+        {
+            learning::CurriculumSourceInput{
+                .path = first_document, .rights = learning::CurriculumRights::user_owned},
+            learning::CurriculumSourceInput{
+                .path = second_document, .rights = learning::CurriculumRights::user_owned},
+        },
+        root / "whole-documents",
+        true);
+    require(whole_documents.succeeded && whole_documents.chunks.size() == 2U &&
+                !whole_documents.chunks.front().held_out &&
+                whole_documents.chunks.back().held_out,
+            "single-section sources must stay whole and split by document without train/evaluation leakage");
+
+    learning::LearningSettings settings;
+    settings.python_executable = root / "missing-python.exe";
+    settings.worker_script = root / "missing-worker.py";
+    settings.state_root = root / "state";
+    settings.base_model = "threadspire://coder";
+    settings.policy.lora_microbatch = 100U;
+    settings.initial_interactive_priority = true;
+    learning::ContinualLearningService service(std::move(settings));
+    const models::ModelProfile qwen{
+        .id = "qwen-27b", .display_name = "Qwen 27B", .model_name = "qwen/qwen3.8-27b",
+        .capabilities = {"chat"}, .teacher = true, .verifier = true,
+    };
+    const models::ModelProfile nemotron{
+        .id = "nemotron-4b", .display_name = "Nemotron 4B", .model_name = "nvidia/nemotron-3-nano-4b",
+        .capabilities = {"chat"}, .teacher = true, .verifier = true,
+    };
+    std::mutex calls_mutex;
+    std::vector<std::pair<learning::CurriculumTeacherRole, std::string>> calls;
+    std::atomic<int> active_nemotron{0};
+    std::atomic<int> peak_nemotron{0};
+    std::atomic<int> active_qwen{0};
+    std::atomic<int> peak_qwen{0};
+    const learning::CurriculumCompletion completion =
+        [&calls_mutex, &calls, &active_nemotron, &peak_nemotron, &active_qwen, &peak_qwen](
+            const learning::CurriculumTeacherRole role,
+            const models::ModelProfile& model,
+            const std::string_view,
+            const std::string_view request_prompt,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            {
+                std::lock_guard lock(calls_mutex);
+                calls.emplace_back(role, model.id);
+            }
+            struct ActiveCall final {
+                std::atomic<int>* active{};
+                ~ActiveCall() { if (active != nullptr) --*active; }
+            } active_qwen_guard;
+            if (role == learning::CurriculumTeacherRole::independent_verifier &&
+                model.id == "qwen-27b") {
+                const auto active = ++active_qwen;
+                auto peak = peak_qwen.load();
+                while (active > peak && !peak_qwen.compare_exchange_weak(peak, active)) {
+                }
+                active_qwen_guard.active = &active_qwen;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (role == learning::CurriculumTeacherRole::independent_verifier) {
+                return learning::CurriculumTeacherResponse{
+                    .succeeded = true,
+                    .content = R"({"action":"accept","score":0.97,"answer":"","reason":"grounded and reusable"})",
+                    .prompt_tokens = 14U,
+                    .completion_tokens = 7U,
+                };
+            }
+            struct ActiveNemotron final {
+                std::atomic<int>* active{};
+                ~ActiveNemotron() { if (active != nullptr) --*active; }
+            } active_guard;
+            if (role == learning::CurriculumTeacherRole::nemotron_generator) {
+                const auto active = ++active_nemotron;
+                auto peak = peak_nemotron.load();
+                while (active > peak && !peak_nemotron.compare_exchange_weak(peak, active)) {
+                }
+                active_guard.active = &active_nemotron;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            const auto section = request_prompt.find(":section-3") != std::string_view::npos
+                ? "third section"
+                : (request_prompt.find(":section-2") != std::string_view::npos
+                    ? "second section"
+                    : "first section");
+            const auto prompt = role == learning::CurriculumTeacherRole::qwen_architect
+                ? "How should a careful assistant handle the " + std::string(section) + " of an ambiguous request?"
+                : "What should you do for the " + std::string(section) + " when a request is unclear?";
+            return learning::CurriculumTeacherResponse{
+                .succeeded = true,
+                .content = std::string{"{\"skill\":\"english-foundation\",\"lesson\":\"clarification\","
+                    "\"difficulty\":\"medium\",\"prompt\":\""} + prompt +
+                    "\",\"answer\":\"Ask one concise clarifying question before acting.\"}",
+                .prompt_tokens = 20U,
+                .completion_tokens = 12U,
+            };
+        };
+    const auto built = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "curriculum",
+            .base_anchor_dataset = std::filesystem::path(THREADSPIRE_SOURCE_DIR) /
+                "resources" / "bootstrap_anchors.jsonl",
+            .sources = {input},
+            .qwen = qwen,
+            .nemotron = nemotron,
+            .completion = completion,
+            .nemotron_parallelism = 4U,
+            .qwen_parallelism = 1U,
+            .variants_per_lesson = 4U,
+            .maximum_source_chunks = 0U,
+            .rebuild = true,
+        },
+        service);
+    require(built.succeeded && built.training_queued && built.progress.accepted >= 1U,
+            "cross-verified foundation records must compile and queue EngCoder's internal candidate: " +
+                built.error + "; accepted=" + std::to_string(built.progress.accepted) +
+                "; rejected=" + std::to_string(built.progress.rejected));
+    require(peak_nemotron.load() >= 2,
+            "Nemotron foundation variants must use bounded parallel generation when capacity allows");
+    require(peak_qwen.load() == 1,
+            "Qwen verification must honor its independent one-request default even while Nemotron fans out");
+    require(built.progress.prompt_tokens > 0U && built.progress.completion_tokens > 0U,
+            "foundation progress must account for architect, generator, and verifier tokens");
+    require(std::filesystem::is_regular_file(root / "curriculum" / "foundation-attempts.jsonl") &&
+                std::filesystem::is_regular_file(root / "curriculum" / "foundation-state.json") &&
+                std::filesystem::is_regular_file(root / "curriculum" / "foundation-evaluation.jsonl"),
+            "every curriculum decision and resumable checkpoint must remain inspectable");
+    require(line_count(root / "curriculum" / "foundation-evaluation.jsonl") > 320U &&
+                service.settings_snapshot().anchor_dataset ==
+                    root / "curriculum" / "foundation-evaluation.jsonl",
+            "the 320 bundled anchors and generated document holdouts must form the active candidate evaluation set");
+    const auto foundation_experts = service.expert_snapshot();
+    require(std::ranges::any_of(foundation_experts, [](const auto& expert) {
+                return expert.skill == "english-foundation" &&
+                    expert.base_model == "threadspire://coder";
+            }),
+            "foundation training must bind to EngCoder's internal transformer rather than external PEFT");
+    require(std::ranges::any_of(calls, [](const auto& call) {
+                return call.first == learning::CurriculumTeacherRole::qwen_architect && call.second == "qwen-27b";
+            }) && std::ranges::any_of(calls, [](const auto& call) {
+                return call.first == learning::CurriculumTeacherRole::nemotron_generator && call.second == "nemotron-4b";
+            }) && std::ranges::any_of(calls, [](const auto& call) {
+                return call.first == learning::CurriculumTeacherRole::independent_verifier;
+            }),
+            "Qwen must architect, Nemotron must expand, and independent cross-review must execute");
+    const auto calls_after_first_build = calls.size();
+    const auto already_built = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "curriculum", .sources = {input},
+            .qwen = qwen, .nemotron = nemotron, .completion = completion,
+            .rebuild = false,
+        }, service);
+    require(already_built.succeeded && calls.size() == calls_after_first_build,
+            "the explicit one-time foundation action must not silently regenerate after completion");
+
+    std::stop_source pause_source;
+    pause_source.request_stop();
+    const auto paused = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "resume", .sources = {input},
+            .qwen = qwen, .nemotron = nemotron, .completion = completion,
+            .rebuild = true,
+        }, service, {}, pause_source.get_token());
+    require(paused.cancelled && paused.progress.stage == learning::FoundationStage::paused &&
+                paused.progress.chunk_index == 0U,
+            "foreground preemption must leave a durable resumable chunk checkpoint");
+    const auto resumed = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "resume", .sources = {input},
+            .qwen = qwen, .nemotron = nemotron, .completion = completion,
+            .rebuild = false,
+        }, service);
+    require(resumed.succeeded && resumed.training_queued &&
+                learning::read_english_foundation_progress(root / "resume").stage ==
+                    learning::FoundationStage::queued_training,
+            "a paused foundation build must resume from durable state and reach candidate compilation");
+    const auto bounded = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "bounded", .sources = {input},
+            .qwen = qwen, .nemotron = nemotron, .completion = completion,
+            .maximum_source_chunks = 1U, .rebuild = true,
+        }, service);
+    require(bounded.cancelled && !bounded.training_queued &&
+                bounded.progress.stage == learning::FoundationStage::paused &&
+                bounded.progress.chunk_index == 1U,
+            "a bounded partial foundation pass must checkpoint instead of queuing incomplete training");
+    const auto bounded_resume = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "bounded", .sources = {input},
+            .qwen = qwen, .nemotron = nemotron, .completion = completion,
+            .rebuild = false,
+        }, service);
+    require(bounded_resume.succeeded && bounded_resume.training_queued,
+            "a bounded partial pass must resume from its saved chunk and compile only after completion");
+
+    const auto fresh_learning_settings = [&root](const std::string_view name) {
+        learning::LearningSettings fresh;
+        fresh.python_executable = root / "missing-python.exe";
+        fresh.worker_script = root / "missing-worker.py";
+        fresh.state_root = root / std::string(name);
+        fresh.base_model = "threadspire://coder";
+        fresh.policy.lora_microbatch = 100U;
+        fresh.initial_interactive_priority = true;
+        return fresh;
+    };
+    std::atomic<bool> revision_issued{false};
+    const learning::CurriculumCompletion revision_completion =
+        [&revision_issued](
+            const learning::CurriculumTeacherRole role,
+            const models::ModelProfile& model,
+            const std::string_view,
+            const std::string_view request_prompt,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            if (role == learning::CurriculumTeacherRole::independent_verifier) {
+                if (model.id == "nemotron-4b" && !revision_issued.exchange(true)) {
+                    return learning::CurriculumTeacherResponse{
+                        .succeeded = true,
+                        .content = R"({"action":"revise","score":0.91,"answer":"Ask one concise question that identifies the missing constraint before acting.","reason":"useful after one precise revision"})",
+                    };
+                }
+                return learning::CurriculumTeacherResponse{
+                    .succeeded = true,
+                    .content = R"({"action":"accept","score":0.96,"answer":"","reason":"independently confirmed"})",
+                };
+            }
+            const auto section = request_prompt.find(":section-3") != std::string_view::npos
+                ? "third"
+                : (request_prompt.find(":section-2") != std::string_view::npos ? "second" : "first");
+            const auto prompt = role == learning::CurriculumTeacherRole::qwen_architect
+                ? "How should EngCoder resolve the " + std::string(section) + " underspecified request?"
+                : "What is a useful first response to the " + std::string(section) + " unclear request?";
+            return learning::CurriculumTeacherResponse{
+                .succeeded = true,
+                .content = std::string{"{\"skill\":\"english-foundation\",\"lesson\":\"clarification\","}
+                    + "\"difficulty\":\"medium\",\"prompt\":\"" + prompt +
+                    "\",\"answer\":\"Ask one targeted clarification before acting.\"}",
+            };
+        };
+    learning::ContinualLearningService revision_service(fresh_learning_settings("revision-state"));
+    const auto revised = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "revision",
+            .base_anchor_dataset = std::filesystem::path(THREADSPIRE_SOURCE_DIR) /
+                "resources" / "bootstrap_anchors.jsonl",
+            .sources = {input}, .qwen = qwen, .nemotron = nemotron,
+            .completion = revision_completion, .rebuild = true,
+        }, revision_service);
+    require(revised.succeeded && revised.progress.revised >= 1U &&
+                read_text_file(root / "revision" / "foundation-attempts.jsonl").find(
+                    "\"revised\":true") != std::string::npos,
+            "one useful weak record must be revised once and independently confirmed before admission: " +
+                revised.error + "; accepted=" + std::to_string(revised.progress.accepted) +
+                "; revised=" + std::to_string(revised.progress.revised));
+    revision_service.request_stop();
+
+    std::atomic<bool> transient_review{true};
+    const learning::CurriculumCompletion retry_completion =
+        [&completion, &transient_review](
+            const learning::CurriculumTeacherRole role,
+            const models::ModelProfile& model,
+            const std::string_view system,
+            const std::string_view prompt,
+            const std::size_t tokens,
+            const double temperature,
+            const std::stop_token token) {
+            if (role == learning::CurriculumTeacherRole::independent_verifier &&
+                model.id == "qwen-27b" && transient_review.exchange(false)) {
+                return learning::CurriculumTeacherResponse{
+                    .succeeded = true,
+                    .content = "not-json",
+                };
+            }
+            return completion(role, model, system, prompt, tokens, temperature, token);
+        };
+    learning::ContinualLearningService retry_service(fresh_learning_settings("retry-state"));
+    const auto retry_first = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "retry",
+            .base_anchor_dataset = std::filesystem::path(THREADSPIRE_SOURCE_DIR) /
+                "resources" / "bootstrap_anchors.jsonl",
+            .sources = {input}, .qwen = qwen, .nemotron = nemotron,
+            .completion = retry_completion, .rebuild = true,
+        }, retry_service);
+    require(!retry_first.succeeded && retry_first.progress.retry_pending == 1U &&
+                read_text_file(root / "retry" / "foundation-attempts.jsonl").find(
+                    "\"decision\":\"retry-pending\"") != std::string::npos,
+            "a malformed independent review must remain retry-pending at the durable chunk");
+    const auto retry_resumed = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "retry",
+            .base_anchor_dataset = std::filesystem::path(THREADSPIRE_SOURCE_DIR) /
+                "resources" / "bootstrap_anchors.jsonl",
+            .sources = {input}, .qwen = qwen, .nemotron = nemotron,
+            .completion = retry_completion, .rebuild = false,
+        }, retry_service);
+    require(retry_resumed.succeeded && retry_resumed.progress.retry_pending == 0U,
+            "a successful resume must clear the active retry count while retaining the failed audit record");
+    const auto unique_dataset_ids = [](const std::filesystem::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        std::unordered_set<std::string> ids;
+        std::size_t records = 0U;
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            ++records;
+            std::string error;
+            const auto record = threadspire::ai::core::json::try_parse(line, error);
+            if (record.has_value()) {
+                ids.insert(threadspire::ai::core::json::string_or(record->find("id")));
+            }
+        }
+        return records == ids.size();
+    };
+    require(unique_dataset_ids(root / "retry" / "foundation-training.jsonl") &&
+                unique_dataset_ids(root / "retry" / "foundation-heldout.jsonl"),
+            "resuming a partially reviewed chunk must not duplicate token-training or held-out rows");
+    const auto retained_attempts = line_count(root / "retry" / "foundation-attempts.jsonl");
+    const auto rebuilt_manifests = learning::prepare_english_foundation_sources(
+        {input}, root / "retry", true);
+    require(rebuilt_manifests.succeeded &&
+                line_count(root / "retry" / "foundation-attempts.jsonl") == retained_attempts,
+            "an explicit rebuild must reset current datasets without destroying the append-only decision audit");
+    retry_service.request_stop();
+
+    const learning::CurriculumCompletion unsafe_completion =
+        [](const learning::CurriculumTeacherRole role,
+           const models::ModelProfile&,
+           const std::string_view,
+           const std::string_view,
+           const std::size_t,
+           const double,
+           const std::stop_token) {
+            if (role == learning::CurriculumTeacherRole::independent_verifier) {
+                return learning::CurriculumTeacherResponse{
+                    .succeeded = true,
+                    .content = R"({"action":"accept","score":0.99,"answer":"","reason":"accepted"})",
+                };
+            }
+            return learning::CurriculumTeacherResponse{
+                .succeeded = true,
+                .content = R"({"skill":"english-foundation","lesson":"unsafe","difficulty":"easy","prompt":"What is the latest private API key?","answer":"The secret key is user-private."})",
+            };
+        };
+    learning::ContinualLearningService unsafe_service(fresh_learning_settings("unsafe-state"));
+    const auto unsafe = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "unsafe",
+            .sources = {input}, .qwen = qwen, .nemotron = nemotron,
+            .completion = unsafe_completion, .rebuild = true,
+        }, unsafe_service);
+    require(!unsafe.succeeded && unsafe.progress.accepted == 0U &&
+                unsafe_service.pipeline_snapshot().queued_updates == 0U &&
+                (!std::filesystem::is_regular_file(root / "unsafe" / "foundation-training.jsonl") ||
+                 line_count(root / "unsafe" / "foundation-training.jsonl") == 0U),
+            "private, credential-like, and volatile material must remain visible rejection audit only and never enter weights");
+    unsafe_service.request_stop();
+
+    const auto self_review = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "self-review",
+            .sources = {input}, .qwen = qwen, .nemotron = qwen,
+            .completion = completion, .maximum_source_chunks = 1U, .rebuild = true,
+        }, service);
+    require(!self_review.succeeded && self_review.error.find("distinct") != std::string::npos,
+            "a teacher must never approve its own foundation output");
+    service.request_stop();
+    std::filesystem::remove_all(root);
+}
+
 } // namespace
 
 int main() {
@@ -2327,6 +2775,7 @@ int main() {
         test_windows_ui_source_contract();
         test_worker_and_resource_contract();
         test_seed_material_counts();
+        test_autonomous_english_foundation_pipeline();
         std::cout << "All EngCoder core tests passed.\n";
         return 0;
     } catch (const std::exception& exception) {

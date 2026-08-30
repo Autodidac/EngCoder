@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.4)
 
 project(
     EngCoder
-    VERSION 0.7.2
+    VERSION 0.8.0
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -39,6 +39,7 @@ set(THREADSPIRE_AI_CORE_SOURCES
     src/learning/training_state_machine.cpp
     src/learning/atomic_promotion.cpp
     src/learning/piggyback_foundry.cpp
+    src/learning/english_foundation.cpp
     src/backend/completion_client.cpp
     src/backend/agent_orchestrator.cpp
     src/backend/unified_provider_router.cpp

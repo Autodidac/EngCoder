@@ -54,6 +54,12 @@ The first reviewer returns `accept`, `revise`, `reject`, or `needs-evidence`; th
 
 Conversation, planning, and coding open in measured stages. Accepted or rejected original replies also update the existing routing-quality metric, so the internal model earns automatic conversational traffic through demonstrated results rather than a forced switch.
 
+## 2.4 Autonomous English foundation boundary
+
+The explicit one-time foundation builder is independent of Live Auto. It admits only public-domain, permissively licensed, or user-owned UTF-8 text/Markdown sources, records provenance and a stable content hash, and assigns whole chapters or sections to training or held-out partitions before any lesson is generated.
+
+Qwen 27B acts as the deep curriculum architect while Nemotron 4B produces high-volume conversational variants. Every generated record is verified by the other model; neither may approve itself. Accepted material trains EngCoder's own compact transformer through the Internal PyTorch Training pack. Raw source documents stay outside weights and release packages. The full contract is in [Autonomous Curriculum and Training](docs/autonomous-curriculum-and-training.md).
+
 ## 3. Internal neural architecture
 
 ### 3.1 Token ABI
@@ -162,7 +168,7 @@ The model cannot mark its own prose correct and train on it automatically.
 4. Mix bootstrap replay with verified episodes.
 5. Train a shadow model.
 6. Save exact-resume state periodically.
-7. Evaluate disjoint anchors.
+7. Evaluate every disjoint anchor; the initial foundation includes all 320 bundled anchors plus generated document holdouts.
 8. Write a new checksum-verified generation.
 9. Promote only when the candidate passes and its parent is still active.
 
@@ -220,7 +226,7 @@ It cannot silently become the internal source. Its generated output is data with
 
 ## 8. Evaluation
 
-Initial internal promotion uses held-out loss because the model begins from random weights. Code-specialist promotion should additionally require executable benchmarks:
+Initial internal promotion requires held-out loss, all 320 bundled anchors, generated document holdouts, deterministic structural-output canaries, and explicit identity and privacy canaries because the model begins from random weights. Code-specialist promotion additionally requires executable benchmarks:
 
 - MSVC C++23 compilation;
 - public and hidden tests;
