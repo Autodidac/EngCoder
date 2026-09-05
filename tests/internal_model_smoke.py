@@ -13,6 +13,9 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import threading
+import time
+from types import SimpleNamespace
 
 import torch
 from safetensors.torch import load_file
@@ -28,7 +31,7 @@ def main() -> int:
     import internal_model as model  # pylint: disable=import-outside-toplevel
     import model_worker as worker  # pylint: disable=import-outside-toplevel
 
-    assert model.BOOTSTRAP_POLICY == "verified-hybrid-conversation-v7"
+    assert model.BOOTSTRAP_POLICY == "minimal-behavior-curriculum-v8"
 
     training_records = [
         json.loads(line)
@@ -116,6 +119,25 @@ def main() -> int:
     assert model.bounded_bootstrap_learning_rate(
         initial_rate, 0, 0, 24_000, 0
     ) == initial_rate
+
+    required_readiness_names = sorted({
+        *model._REQUIRED_STRUCTURAL_READINESS_SAMPLES,  # pylint: disable=protected-access
+        "identity",
+        "privacy",
+    })
+
+    def passing_generation_readiness() -> model.GenerationReadiness:
+        return model.GenerationReadiness(
+            True,
+            1.0,
+            tuple({
+                "name": name,
+                "passed": True,
+                "structural_quality": True,
+                "reason": "deterministic smoke stub",
+                "output": "verified output",
+            } for name in required_readiness_names),
+        )
 
     temporary = Path(tempfile.mkdtemp(prefix="threadspire-internal-smoke-"))
     try:
@@ -237,6 +259,37 @@ def main() -> int:
             exact_training_record["messages"][:-1],
             source_root / "resources" / "bootstrap.jsonl",
         ) == exact_training_record["messages"][-1]["content"]
+        polarity_dataset = temporary / "polarity-regression.jsonl"
+        polarity_dataset.write_text(json.dumps({
+            "domain": "english",
+            "accepted": True,
+            "eligible_for_training": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Should the local assistant reveal private deployment credentials "
+                        "during routine diagnostic checks?"
+                    ),
+                },
+                {"role": "assistant", "content": "Reveal them during the check."},
+            ],
+        }) + "\n", encoding="utf-8")
+        polarity_messages = [{
+            "role": "user",
+            "content": (
+                "Should the local assistant not reveal private deployment credentials "
+                "during routine diagnostic checks?"
+            ),
+        }]
+        assert model._verified_curated_response(  # pylint: disable=protected-access
+            polarity_messages,
+            polarity_dataset,
+        ) is None
+        assert model.verified_local_response(
+            polarity_messages,
+            polarity_dataset,
+        ) == "I cannot repeat or expose private credentials."
         curated_draft = worker._internal_draft(  # pylint: disable=protected-access
             None,
             exact_training_record["messages"][:-1],
@@ -247,6 +300,48 @@ def main() -> int:
         )
         assert curated_draft.quality.accepted
         assert curated_draft.content == exact_training_record["messages"][-1]["content"]
+
+        guarded_state = worker.ServerState(temporary, 1)
+        guarded_loaded = SimpleNamespace(generation="guarded-generation")
+        lock_contenders: list[threading.Thread] = []
+        contender_acquired = threading.Event()
+
+        def guarded_get_internal():
+            def contend_for_clear_lock() -> None:
+                with guarded_state._internal_lock:  # pylint: disable=protected-access
+                    contender_acquired.set()
+
+            contender = threading.Thread(target=contend_for_clear_lock)
+            contender.start()
+            lock_contenders.append(contender)
+            time.sleep(0.05)
+            assert not contender_acquired.is_set(), (
+                "internal model lookup must already hold the cache lock"
+            )
+            return guarded_loaded
+
+        original_draft = worker._internal_draft  # pylint: disable=protected-access
+        guarded_state.get_internal = guarded_get_internal
+        worker._internal_draft = lambda *_args, **_kwargs: worker.InternalDraft(  # pylint: disable=protected-access
+            content="guarded response",
+            completion_tokens=2,
+            elapsed_seconds=0.01,
+            quality=model.GenerationQuality(True, "guarded cache regression"),
+            attempts=1,
+        )
+        try:
+            guarded_result = worker._generate_internal(  # pylint: disable=protected-access
+                guarded_state,
+                {"model": "threadspire://fast", "max_tokens": 8, "temperature": 0.0},
+                [{"role": "user", "content": "Hello"}],
+            )
+            assert guarded_result["generation"] == "guarded-generation"
+        finally:
+            worker._internal_draft = original_draft  # pylint: disable=protected-access
+        for contender in lock_contenders:
+            contender.join(timeout=2.0)
+            assert not contender.is_alive()
+        assert contender_acquired.is_set()
 
         assert model.assess_generation_quality(
             "```cpp\n#include <vector>\nint main() { std::vector<int> values{1, 2, 3}; return values.size(); }\n```"
@@ -338,13 +433,51 @@ def main() -> int:
             "english-core",
         ) == []
 
+        paraphrase_episodes = temporary / "paraphrase-episodes.jsonl"
+        paraphrase_records = [
+            {
+                **human_records[0],
+                "prompt": prompt,
+                "response": "Not much. What is on your mind?",
+                "eligible_for_training": index == 3,
+            }
+            for index, prompt in enumerate((
+                "What's up?",
+                "What is up?",
+                "Whats up",
+                "What's going on?",
+            ))
+        ]
+        paraphrase_episodes.write_text(
+            "\n".join(json.dumps(record) for record in paraphrase_records) + "\n",
+            encoding="utf-8",
+        )
+        assert worker._load_episodes(  # pylint: disable=protected-access
+            paraphrase_episodes,
+            "english-core",
+        ) == []
+        assert model.load_training_sequences(
+            [paraphrase_episodes],
+            128,
+            "english-core",
+        ) == []
+
         human_records.extend([
             {
                 **human_records[0],
-                "prompt": f"Distinct approved conversation {index}",
-                "response": f"Distinct verified response {index}.",
-            }
-            for index in range(2, 5)
+                "prompt": "Could you clarify the ambiguous request?",
+                "response": "Which part would you like me to clarify?",
+            },
+            {
+                **human_records[0],
+                "prompt": "Summarize this paragraph concisely.",
+                "response": "Please provide the paragraph you want summarized.",
+            },
+            {
+                **human_records[0],
+                "prompt": "Rewrite this sentence in plain English.",
+                "response": "Please provide the sentence you want rewritten.",
+            },
         ])
         for index, record in enumerate(human_records):
             record["eligible_for_training"] = index == len(human_records) - 1
@@ -379,6 +512,27 @@ def main() -> int:
             128,
             "english-conversation",
         )) == 4
+
+        weighted_once = temporary / "weighted-once.jsonl"
+        weighted_once.write_text(
+            json.dumps({
+                "id": "one-teaching-is-one-sequence",
+                "domain": "english",
+                "accepted": True,
+                "tags": ["english", "conversation"],
+                "curriculum_weight": 4,
+                "messages": [
+                    {"role": "user", "content": "Say hello."},
+                    {"role": "assistant", "content": "Hello!"},
+                ],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        assert len(model.load_training_sequences(
+            [weighted_once],
+            128,
+            "english-core",
+        )) == 1
 
         stale_positive = {
             **human_records[0],
@@ -535,6 +689,7 @@ def main() -> int:
             weights_only=False,
         )
         assert checkpoint_payload["gradients"]
+        assert checkpoint_payload["batch_size"] == 1
         assert checkpoint_payload["accumulation_steps"] == 2
         assert checkpoint_payload["bootstrap_policy"] == model.BOOTSTRAP_POLICY
         assert len(checkpoint_payload["training_data_fingerprint"]) == 64
@@ -566,6 +721,146 @@ def main() -> int:
         assert reference_weights.keys() == resumed_weights.keys()
         for name in reference_weights:
             assert torch.equal(reference_weights[name], resumed_weights[name]), name
+
+        # A compact foundation is evaluated after complete corpus passes and
+        # stops as soon as every existing promotion gate passes.  The numeric
+        # target is a safety cap, not a mandatory replay count.  Preemption one
+        # step before the validation boundary must resume to the same weights.
+        early_dataset = temporary / "early-success.jsonl"
+        early_dataset.write_text(
+            "\n".join(json.dumps({
+                "id": f"early-{index}",
+                "skill": "english-core",
+                "tags": ["english", "conversation"],
+                "deterministic_verified": True,
+                "eligible_for_training": True,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response},
+                ],
+            }) for index, (prompt, response) in enumerate((
+                ("Say hello naturally.", "Hello!"),
+                ("Ask what I need.", "What can I help you with?"),
+            ))) + "\n",
+            encoding="utf-8",
+        )
+        early_reference_root = temporary / "early-reference"
+        early_resumed_root = temporary / "early-resumed"
+        model.initialize_model(early_reference_root, config, force=True)
+        model.initialize_model(early_resumed_root, config, force=True)
+        original_readiness = model.evaluate_generation_readiness
+        original_loss = model.evaluate_loss
+        model.evaluate_generation_readiness = (
+            lambda *_args, **_kwargs: passing_generation_readiness()
+        )
+        model.evaluate_loss = lambda *_args, **_kwargs: 4.0
+        try:
+            early_reference = model.train_candidate(
+                early_reference_root,
+                [early_dataset],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "english-foundation",
+                10,
+                3.0e-4,
+                1,
+                1,
+                1,
+                early_reference_root / "control",
+                False,
+                bootstrap_target_steps=10,
+                honor_inference_priority=False,
+            )
+            assert early_reference["status"] == "promoted"
+            assert early_reference["steps"] == 4
+            assert early_reference["planned_maximum_steps"] == 10
+            assert early_reference["minimum_training_steps"] == 4
+            assert early_reference["validation_interval_steps"] == 2
+            assert early_reference["early_stopped"] is True
+            assert early_reference["stop_reason"] == "quality-gates-passed"
+            assert early_reference["bootstrap_complete"] is True
+
+            early_control = early_resumed_root / "control"
+            early_control.mkdir(parents=True, exist_ok=True)
+            early_marker = early_control / "inference.priority"
+            original_checkpoint = model.save_training_checkpoint
+
+            def checkpoint_before_early_boundary(*args: object, **kwargs: object) -> None:
+                original_checkpoint(*args, **kwargs)
+                if int(kwargs.get("steps", 0)) == 3:
+                    early_marker.write_text("early-stop-resume\n", encoding="utf-8")
+
+            model.save_training_checkpoint = checkpoint_before_early_boundary
+            try:
+                early_preempted = model.train_candidate(
+                    early_resumed_root,
+                    [early_dataset],
+                    [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                    "english-foundation",
+                    10,
+                    3.0e-4,
+                    1,
+                    1,
+                    1,
+                    early_control,
+                    False,
+                    bootstrap_target_steps=10,
+                )
+            finally:
+                model.save_training_checkpoint = original_checkpoint
+            assert early_preempted["status"] == "preempted"
+            assert early_preempted["steps"] == 3
+            early_marker.unlink()
+
+            early_resumed = model.train_candidate(
+                early_resumed_root,
+                [early_dataset],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "english-foundation",
+                10,
+                3.0e-4,
+                1,
+                1,
+                1,
+                early_control,
+                False,
+                bootstrap_target_steps=10,
+            )
+            assert early_resumed["status"] == "promoted"
+            assert early_resumed["steps"] == 4
+            assert early_resumed["early_stopped"] is True
+            early_reference_weights = load_file(
+                str(Path(early_reference["candidate_path"]) / "weights.safetensors"),
+                device="cpu",
+            )
+            early_resumed_weights = load_file(
+                str(Path(early_resumed["candidate_path"]) / "weights.safetensors"),
+                device="cpu",
+            )
+            for name in early_reference_weights:
+                assert torch.equal(
+                    early_reference_weights[name], early_resumed_weights[name]
+                ), name
+
+            already_ready = model.train_candidate(
+                early_resumed_root,
+                [early_dataset],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "english-foundation",
+                10,
+                3.0e-4,
+                1,
+                1,
+                1,
+                early_control,
+                False,
+                bootstrap_target_steps=10,
+            )
+            assert already_ready["status"] == "promoted"
+            assert already_ready["steps"] == 0
+            assert already_ready["stop_reason"] == "already-ready"
+        finally:
+            model.evaluate_generation_readiness = original_readiness
+            model.evaluate_loss = original_loss
 
         control = temporary / "control"
         control.mkdir(parents=True, exist_ok=True)
@@ -626,17 +921,7 @@ def main() -> int:
         progress_path = bootstrap_root / "state" / "internal-model-progress.json"
         original_readiness = model.evaluate_generation_readiness
         model.evaluate_generation_readiness = lambda *_args, **_kwargs: (
-            model.GenerationReadiness(
-                True,
-                1.0,
-                ({
-                    "name": "smoke",
-                    "passed": True,
-                    "structural_quality": True,
-                    "reason": "deterministic smoke stub",
-                    "output": "thread and checkpoint",
-                },),
-            )
+            passing_generation_readiness()
         )
         bootstrap = model.train_candidate(
             bootstrap_root,
@@ -681,23 +966,40 @@ def main() -> int:
         assert curriculum["english_foundation"]["established"] is True
         assert curriculum["english_foundation"]["full_backbone_trained"] is True
         assert curriculum["english_foundation"]["generation_ready"] is True
-        preflight_only = model.train_candidate(
-            bootstrap_root,
-            [str(source_root / "resources" / "bootstrap.jsonl")],
-            [str(source_root / "resources" / "bootstrap_anchors.jsonl")],
-            "english-foundation",
-            50,
-            3.0e-4,
-            1,
-            1,
-            1,
-            bootstrap_root / "control",
-            False,
-            progress_file=progress_path,
-            bootstrap_target_steps=2,
-            honor_inference_priority=False,
-        )
+        # Preflight must run the readiness gates again rather than trusting the
+        # saved manifest.  Keep the deterministic readiness fixture in place
+        # for this second evaluation: a two-step toy model cannot truthfully
+        # satisfy the production language canaries on its own.
+        preflight_readiness_calls: list[str] = []
+
+        def passing_preflight_readiness(
+            *_args: object, **_kwargs: object
+        ) -> model.GenerationReadiness:
+            preflight_readiness_calls.append("evaluated")
+            return passing_generation_readiness()
+
+        model.evaluate_generation_readiness = passing_preflight_readiness
+        try:
+            preflight_only = model.train_candidate(
+                bootstrap_root,
+                [str(source_root / "resources" / "bootstrap.jsonl")],
+                [str(source_root / "resources" / "bootstrap_anchors.jsonl")],
+                "english-foundation",
+                50,
+                3.0e-4,
+                1,
+                1,
+                1,
+                bootstrap_root / "control",
+                False,
+                progress_file=progress_path,
+                bootstrap_target_steps=2,
+                honor_inference_priority=False,
+            )
+        finally:
+            model.evaluate_generation_readiness = original_readiness
         assert preflight_only["status"] == "promoted", preflight_only
+        assert preflight_readiness_calls == ["evaluated"]
         assert preflight_only["steps"] == 0
         assert preflight_only["total_steps"] == 2
         assert preflight_only["bootstrap_complete"] is True
@@ -817,6 +1119,25 @@ def main() -> int:
             assert "stale internal rollback" in str(error)
         else:
             raise AssertionError("stale internal rollback unexpectedly succeeded")
+        try:
+            model.save_generation(
+                temporary,
+                active.model,
+                active.config,
+                "g000003",
+                status="trained",
+                parent="g000002",
+                steps=int(active.manifest.get("steps", 0)),
+                tokens_seen=int(active.manifest.get("tokens_seen", 0)),
+                validation_loss=active.manifest.get("validation_loss"),
+                training_scope="stale-direct-promotion-smoke",
+                promote=True,
+            )
+        except RuntimeError as error:
+            assert "stale internal candidate" in str(error)
+        else:
+            raise AssertionError("direct training overwrote a newer active generation")
+        assert model.status_payload(temporary)["generation"] == "g000001"
 
         planning = model.load_training_sequences(
             [source_root / "resources" / "bootstrap.jsonl"],

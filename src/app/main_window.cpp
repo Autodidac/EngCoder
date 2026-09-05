@@ -781,7 +781,7 @@ void apply_transcript_tail_inset(
     const auto visible_lines = edit_visible_line_capacity(handle);
     viewport.follow_tail =
         viewport.selection_start == viewport.selection_end &&
-        viewport.first_visible_line + visible_lines >= line_count - 1;
+        viewport.first_visible_line + visible_lines >= line_count;
     return viewport;
 }
 
@@ -1263,14 +1263,14 @@ void draw_page_background(HWND page, HDC device_context) noexcept;
         : state.steps;
     std::wostringstream stream;
     if (progress.available && terminal_learning_phase(progress.phase)) {
-        stream << L"Built-in AI failed quality checks at "
-               << completed << L"/" << target;
+        stream << L"Built-in AI failed quality checks after "
+               << completed << L" steps (safety cap " << target << L")";
     } else {
         stream << L"Built-in AI learning setup: ";
         if (progress_active && completed == 0U) {
             stream << L"starting";
         } else {
-            stream << completed << L"/" << target;
+            stream << completed << L" steps (safety cap " << target << L")";
         }
     }
     stream << L" • saved automatically • not used for answers until every check passes";
@@ -1361,6 +1361,71 @@ struct LearningProgress final {
     double elapsed_seconds{0.0};
     std::optional<double> eta_seconds;
 };
+
+struct CurriculumSelectionProgress final {
+    bool available{false};
+    std::size_t source_rows{0};
+    std::size_t parsed_records{0};
+    std::size_t eligible_records{0};
+    std::size_t behavior_clusters{0};
+    std::size_t selected_records{0};
+    std::size_t selected_tokens{0};
+    std::size_t delta_records{0};
+    std::size_t replay_records{0};
+    std::size_t exact_duplicates{0};
+    std::size_t behavior_duplicates{0};
+    std::size_t answer_duplicates{0};
+    std::size_t heldout_overlaps{0};
+    std::string hash;
+};
+
+[[nodiscard]] CurriculumSelectionProgress read_curriculum_selection(
+    const std::filesystem::path& path) {
+    CurriculumSelectionProgress progress;
+    if (!std::filesystem::is_regular_file(path)) {
+        return progress;
+    }
+    std::string parse_error;
+    const auto document = core::json::try_parse(read_text(path), parse_error);
+    if (!document.has_value() || !document->is_object()) {
+        return progress;
+    }
+    const auto* counts = document->find("counts");
+    const auto* reasons = document->find("reasons");
+    const auto hash = core::json::string_or(document->find("hash"));
+    const auto valid_hash = hash.size() == 64U && std::ranges::all_of(
+        hash,
+        [](const char character) {
+            return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+        });
+    if (core::json::number_or(document->find("schema_version"), -1.0) != 1.0 ||
+        core::json::string_or(document->find("policy")) !=
+            "engcoder-minimal-curriculum-v1" ||
+        !valid_hash || counts == nullptr || !counts->is_object() ||
+        reasons == nullptr || !reasons->is_object()) {
+        return progress;
+    }
+    const auto count = [](const core::json::Value* object, const std::string_view key) {
+        return static_cast<std::size_t>(std::max(
+            0.0,
+            object == nullptr ? 0.0 : core::json::number_or(object->find(key))));
+    };
+    progress.available = true;
+    progress.source_rows = count(counts, "input_lines");
+    progress.parsed_records = count(counts, "parsed_records");
+    progress.eligible_records = count(counts, "eligible_records");
+    progress.behavior_clusters = count(counts, "behavior_clusters");
+    progress.selected_records = count(counts, "selected_records");
+    progress.selected_tokens = count(counts, "selected_supervised_tokens");
+    progress.delta_records = count(counts, "delta_selected");
+    progress.replay_records = count(counts, "replay_selected");
+    progress.exact_duplicates = count(reasons, "exact_duplicate");
+    progress.behavior_duplicates = count(reasons, "canonical_duplicate");
+    progress.answer_duplicates = count(reasons, "answer_duplicate");
+    progress.heldout_overlaps = count(reasons, "anchor_overlap");
+    progress.hash = hash;
+    return progress;
+}
 
 [[nodiscard]] LearningProgress read_learning_progress(
     const std::filesystem::path& path) {
@@ -1507,21 +1572,34 @@ public:
                     move.height,
                     move.flags);
             }
-            if (batch != nullptr) {
-                static_cast<void>(::EndDeferWindowPos(batch));
+            if (batch != nullptr && ::EndDeferWindowPos(batch) != FALSE) {
+                for (const auto& move : moves) {
+                    layout_bounds_cache.insert_or_assign(
+                        move.control,
+                        epochengine::gui_lib::Rect{
+                            {static_cast<float>(move.x), static_cast<float>(move.y)},
+                            {static_cast<float>(move.width), static_cast<float>(move.height)}});
+                }
                 continue;
             }
-            // A failed deferred group is abandoned by Win32. Replay that
-            // parent's complete group directly so no controls retain stale bounds.
+            // A failed deferred group, including a failed final commit, is
+            // abandoned by Win32. Replay that parent's complete group directly
+            // and cache only moves Win32 actually accepted.
             for (const auto& move : moves) {
-                static_cast<void>(::SetWindowPos(
+                if (::SetWindowPos(
                     move.control,
                     nullptr,
                     move.x,
                     move.y,
                     move.width,
                     move.height,
-                    move.flags));
+                    move.flags) != FALSE) {
+                    layout_bounds_cache.insert_or_assign(
+                        move.control,
+                        epochengine::gui_lib::Rect{
+                            {static_cast<float>(move.x), static_cast<float>(move.y)},
+                            {static_cast<float>(move.width), static_cast<float>(move.height)}});
+                }
             }
         }
     }
@@ -1597,8 +1675,6 @@ void move_control(
         cached->second.size.y == desired_bounds.size.y) {
         return;
     }
-    layout_bounds_cache.insert_or_assign(control, desired_bounds);
-
     constexpr auto flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOCOPYBITS;
     if (active_layout_batch != nullptr) {
         active_layout_batch->queue(
@@ -1612,14 +1688,16 @@ void move_control(
         return;
     }
 
-    static_cast<void>(::SetWindowPos(
+    if (::SetWindowPos(
         control,
         nullptr,
         safe_x,
         safe_y,
         safe_width,
         safe_height,
-        flags));
+        flags) != FALSE) {
+        layout_bounds_cache.insert_or_assign(control, desired_bounds);
+    }
 }
 
 void draw_workspace_card(
@@ -2672,7 +2750,7 @@ void append_training_library_file(
                    << foundation_revised_count << L" revised, "
                    << foundation_rejected_count << L" rejected, "
                    << foundation_retry_count << L" retry pending"
-                   << L" • bundled curriculum: " << bundled_count
+                   << L" • bundled evidence pool: " << bundled_count
                    << L" • held-out checks: " << held_out_count
                    << L" • " << records.size() << L" audit records";
     if (visible.size() != records.size()) {
@@ -2685,12 +2763,12 @@ void append_training_library_file(
 
     std::wostringstream output;
     output << L"WHAT ENGCODER CAN TRAIN ON\r\n"
-           << L"Bundled curriculum is shipped with the app; it is not your learning history. "
+           << L"The bundled evidence pool is shipped with the app; it is not your learning history and it is not copied wholesale into weights. "
            << L"Your reviews, Live Auto decisions, and idle teacher attempts are counted separately above. "
            << L"Approved results say whether they are memory-only or eligible for a future weight update. "
            << L"Rejected results are negative evidence and never positive training. Held-out checks never "
            << L"train the model; they only decide whether a candidate is safe to use. Superseded results are "
-           << L"audit history only. No prompt or answer below is shortened.\r\n\r\n";
+           << L"audit history only. Before every weight job, equivalent behaviors collapse to one authoritative representative; only a fresh delta and bounded regression replay are selected. No prompt or answer below is shortened.\r\n\r\n";
     if (visible.empty()) {
         output << L"No records match this view.";
         return output.str();
@@ -4087,7 +4165,7 @@ void MainWindow::create_learning_page() {
         L"1. Automatic idle learning gathers only approved or independently verified examples.\r\n"
         L"2. Compile data and retrain model turns approved learning into a separate test model.\r\n"
         L"3. Chat always keeps using the last working AI while the candidate trains and is checked.\r\n"
-        L"4. The bounded model and dataset are designed for a complete cycle within 12 hours; there is no countdown session.\r\n"
+        L"4. Supervised-token, replay, step, and resource ceilings keep each candidate finite; there is no wall-clock session.\r\n"
         L"5. Controlled software self-improvement is separate and requires its own evidence and approval.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL,
         0,
@@ -7120,7 +7198,7 @@ std::wstring MainWindow::runtime_summary(
         std::wostringstream value;
         value << L"NOT READY — learning automatically; training copy is not used";
         if (target > 0U) {
-            value << L" (" << completed << L"/" << target << L")";
+            value << L" (" << completed << L" steps; safety cap " << target << L")";
         }
         built_in_status = value.str();
     } else if (host_starting) {
@@ -9905,7 +9983,7 @@ void MainWindow::create_internal_model(
     }
 
     const auto state = runtime::inspect_internal_model_state(paths_);
-    // Automatic setup starts with the smallest profile and its 24k quality target.
+    // Automatic setup starts with the smallest profile and a 24k-step safety cap.
     // Existing models keep their recorded profile; backup controls may explicitly choose another.
     const auto selected_index = automatic
         ? 0
@@ -9943,7 +10021,7 @@ void MainWindow::create_internal_model(
     }
     if (bootstrap && automatic_learning_limit_reached(paths_, state)) {
         lifecycle_last_error_ =
-            "Built-in AI reached its bounded learning target without passing every quality check; "
+            "Built-in AI reached its bounded training safety cap without passing every quality check; "
             "no unapproved model was activated.";
         set_status(L"Built-in AI reached its quality limit. The unapproved result was not activated.");
         return;
@@ -10497,6 +10575,9 @@ void MainWindow::update_long_horizon_result() {
     if (!result.has_value()) {
         return;
     }
+    pending_completed_activity_summaries_.emplace_back(
+        "repository",
+        L"Repository task: " + widen(result->operation.message));
 
     std::wostringstream report;
     report << L"State: " << widen(util::to_string(result->operation.state))
@@ -10618,6 +10699,9 @@ void MainWindow::handle_lifecycle_completion() {
 
     const auto completed_action = lifecycle_action_;
     lifecycle_action_ = LifecycleAction::none;
+    pending_completed_activity_summaries_.emplace_back(
+        "backend",
+        widen(result.message.empty() ? std::string{"Built-in AI operation completed"} : result.message));
     if (result.state == util::OperationState::succeeded) {
         lifecycle_failures_ = 0U;
         lifecycle_last_error_.clear();
@@ -10751,7 +10835,7 @@ void MainWindow::drive_automatic_lifecycle() {
 
     if (automatic_learning_limit_reached(paths_, state)) {
         lifecycle_last_error_ =
-            "Built-in AI reached its bounded learning target without passing every quality check; "
+            "Built-in AI reached its bounded training safety cap without passing every quality check; "
             "no unapproved model was activated.";
         return;
     }
@@ -10812,7 +10896,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
             ? progress.bootstrap_target_steps
             : target;
         if (progress_target > 0U) {
-            detail << L" • " << completed << L"/" << progress_target;
+            detail << L" • " << completed << L" steps • safety cap " << progress_target;
         } else if (progress.maximum_steps > 0U) {
             detail << L" • " << progress.step << L"/" << progress.maximum_steps;
         }
@@ -10847,7 +10931,7 @@ void MainWindow::update_internal_model_lifecycle_ui() {
     } else if (state.bootstrap_complete && backend_server_.running()) {
         detail << L"Built-in AI is ready and running. EngCoder will keep it available automatically.";
     } else if (backend_server_.running()) {
-        detail << L"Built-in EngCoder is serving the bundled 4,247-example native curriculum with 0 B of neural weights. Your approved learning, automatic teacher attempts, and trained weights are counted separately.";
+        detail << L"Built-in EngCoder is using native retrieval from a 4,247-record evidence pool with 0 B of neural weights. Weight training compiles only the smallest useful behavior set; it never treats the whole audit pool as a required dataset.";
     } else if (automatic_learning_limit_reached(paths_, state)) {
         detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
     } else if (!setup_files_ready && setup_source_ready) {
@@ -10865,23 +10949,28 @@ void MainWindow::update_internal_model_lifecycle_ui() {
 }
 
 void MainWindow::update_global_activity() {
-    std::vector<std::wstring> active_work;
+    struct ActivityEntry final {
+        std::string key;
+        std::wstring label;
+    };
+    std::vector<ActivityEntry> active_work;
     active_work.reserve(10);
     const auto add_running = [&active_work](
         const util::AsyncOperation& operation,
+        std::string key,
         std::wstring label) {
         if (operation.running()) {
-            active_work.push_back(std::move(label));
+            active_work.push_back({std::move(key), std::move(label)});
         }
     };
 
-    add_running(chat_operation_, L"Answering your message");
-    add_running(long_horizon_operation_, L"Working on a repository task");
-    add_running(media_operation_, L"Creating image or audio output");
-    add_running(storage_cleanup_operation_, L"Cleaning application storage safely");
-    add_running(capability_pack_operation_, L"Changing an optional add-on");
-    add_running(discovery_operation_, L"Finding AI apps on this computer");
-    add_running(mcp_operation_, L"Connecting optional tools");
+    add_running(chat_operation_, "chat", L"Answering your message");
+    add_running(long_horizon_operation_, "repository", L"Working on a repository task");
+    add_running(media_operation_, "media", L"Creating image or audio output");
+    add_running(storage_cleanup_operation_, "storage-cleanup", L"Cleaning application storage safely");
+    add_running(capability_pack_operation_, "capability-pack", L"Changing an optional add-on");
+    add_running(discovery_operation_, "discovery", L"Finding AI apps on this computer");
+    add_running(mcp_operation_, "mcp", L"Connecting optional tools");
 
     if (backend_operation_.running()) {
         std::wstring backend_work;
@@ -10906,7 +10995,7 @@ void MainWindow::update_global_activity() {
                 : progress.maximum_steps;
             if (target > 0U) {
                 backend_work += L" — " + std::to_wstring(completed) +
-                    L"/" + std::to_wstring(target);
+                    L" steps, safety cap " + std::to_wstring(target);
             }
             if (progress.eta_seconds.has_value()) {
                 backend_work += L", about " +
@@ -10918,7 +11007,7 @@ void MainWindow::update_global_activity() {
             backend_work = L"Managing the built-in AI";
             break;
         }
-        active_work.push_back(std::move(backend_work));
+        active_work.push_back({"backend", std::move(backend_work)});
     }
 
     if (piggyback_operation_.running()) {
@@ -10931,7 +11020,7 @@ void MainWindow::update_global_activity() {
         if (!operation.message.empty()) {
             label += L" — " + widen(operation.message);
         }
-        active_work.push_back(std::move(label));
+        active_work.push_back({"piggyback", std::move(label)});
     }
     if (foundation_operation_.running()) {
         const auto operation = foundation_operation_.snapshot();
@@ -10939,7 +11028,7 @@ void MainWindow::update_global_activity() {
         if (!operation.message.empty()) {
             label += L" — " + widen(operation.message);
         }
-        active_work.push_back(std::move(label));
+        active_work.push_back({"foundation", std::move(label)});
     }
 
     const auto pipeline = learning_service_->pipeline_snapshot();
@@ -10951,30 +11040,66 @@ void MainWindow::update_global_activity() {
         if (!pipeline.active_job->skill.empty()) {
             label += L" — " + widen(pipeline.active_job->skill);
         }
-        active_work.push_back(std::move(label));
+        active_work.push_back({"weight-job:" + pipeline.active_job->id, std::move(label)});
     }
     const auto storage_measurement_running = storage_operation_.running();
 
-    // Routine five-second storage sampling is still visible, but it is not a
-    // user-meaningful operation and must never replace the last training,
-    // response, setup, or cleanup result.
-    if (!active_work.empty()) {
-        active_activity_summary_ = active_work.front();
-    } else if (!active_activity_summary_.empty()) {
-        last_completed_activity_summary_ = std::move(active_activity_summary_);
-        active_activity_summary_.clear();
+    const auto remember_completed = [this](std::wstring summary) {
+        if (summary.empty()) {
+            return;
+        }
+        completed_activity_summaries_.insert(
+            completed_activity_summaries_.begin(), std::move(summary));
+        constexpr std::size_t maximum_completed_summaries = 3U;
+        if (completed_activity_summaries_.size() > maximum_completed_summaries) {
+            completed_activity_summaries_.resize(maximum_completed_summaries);
+        }
+        last_completed_activity_summary_ = completed_activity_summaries_.front();
+    };
+    const auto is_still_running = [&active_work](const std::string_view key) {
+        return std::ranges::any_of(active_work, [key](const ActivityEntry& activity) {
+            return activity.key == key;
+        });
+    };
+    const auto has_pending_completion = [this](const std::string_view key) {
+        return std::ranges::any_of(
+            pending_completed_activity_summaries_,
+            [key](const auto& completion) { return completion.first == key; });
+    };
+    for (auto iterator = running_activity_summaries_.begin();
+         iterator != running_activity_summaries_.end();) {
+        if (is_still_running(iterator->first)) {
+            ++iterator;
+            continue;
+        }
+        if (!has_pending_completion(iterator->first)) {
+            remember_completed(iterator->second);
+        }
+        iterator = running_activity_summaries_.erase(iterator);
     }
+    for (const auto& activity : active_work) {
+        running_activity_summaries_.insert_or_assign(activity.key, activity.label);
+    }
+    for (auto& [key, summary] : pending_completed_activity_summaries_) {
+        static_cast<void>(key);
+        remember_completed(std::move(summary));
+    }
+    pending_completed_activity_summaries_.clear();
+
+    // Routine five-second storage sampling is still visible, but it is not a
+    // user-meaningful operation and must never replace the bounded completion
+    // history for training, responses, setup, or cleanup.
 
     std::wostringstream text;
     if (!active_work.empty()) {
-        text << L"WORKING — " << active_work.front() << L"\r\n";
+        text << L"WORKING — " << active_work.front().label << L"\r\n";
         if (active_work.size() > 1U) {
             text << L"Also running: ";
             for (std::size_t index = 1; index < active_work.size(); ++index) {
                 if (index > 1U) {
                     text << L" • ";
                 }
-                text << active_work[index];
+                text << active_work[index].label;
             }
         } else if (chat_operation_.running() || media_operation_.running() ||
                    long_horizon_operation_.running()) {
@@ -11044,8 +11169,20 @@ void MainWindow::update_global_activity() {
             text << L"ATTENTION — Built-in AI stopped at its verified quality limit\r\n"
                  << L"No failed candidate replaced the working AI; details remain on the Activity page.";
         } else if (!last_completed_activity_summary_.empty()) {
-            text << L"COMPLETED — " << last_completed_activity_summary_ << L"\r\n"
-                 << L"No work is running. This result stays visible until another activity begins; full history remains on the Activity page.";
+            text << L"COMPLETED — " << last_completed_activity_summary_ << L"\r\n";
+            if (completed_activity_summaries_.size() > 1U) {
+                text << L"Earlier: ";
+                for (std::size_t index = 1U;
+                     index < completed_activity_summaries_.size(); ++index) {
+                    if (index > 1U) {
+                        text << L" • ";
+                    }
+                    text << completed_activity_summaries_[index];
+                }
+                text << L" • Full history remains on the Activity page.";
+            } else {
+                text << L"No work is running. This result stays visible until another activity begins; full history remains on the Activity page.";
+            }
         } else {
             const auto registry = runtime_model_snapshot();
             const auto other_ai_count = std::ranges::count_if(
@@ -11290,6 +11427,11 @@ void MainWindow::update_chat_result() {
     if (!result.has_value()) {
         return;
     }
+    pending_completed_activity_summaries_.emplace_back(
+        "chat",
+        result->succeeded
+            ? L"Reply completed"
+            : (result->error == "generation cancelled" ? L"Reply cancelled" : L"Reply failed"));
 
     flush_stream_text();
     const auto workspace = is_workspace_surface(surface);
@@ -11505,6 +11647,15 @@ void MainWindow::update_media_result() {
     if (!result.has_value()) {
         return;
     }
+    pending_completed_activity_summaries_.emplace_back(
+        "media",
+        result->succeeded
+            ? (result->kind == backend::MediaKind::image
+                ? L"Image generated and saved"
+                : L"Audio generated and saved")
+            : (result->error == "media generation cancelled"
+                ? L"Media generation cancelled"
+                : L"Media generation failed"));
     media_result_pending_ = false;
     if (!result->succeeded) {
         workspace_transcript_ += "ERROR — MEDIA GENERATION\r\n\r\n" +
@@ -11547,6 +11698,12 @@ void MainWindow::update_discovery_result() {
     if (!report.has_value()) {
         return;
     }
+    pending_completed_activity_summaries_.emplace_back(
+        "discovery",
+        report->models.empty()
+            ? L"AI discovery completed; no local provider answered"
+            : L"AI discovery completed; " + std::to_wstring(report->models.size()) +
+                L" model" + (report->models.size() == 1U ? L" connected" : L"s connected"));
 
     {
         std::lock_guard lock(model_mutex_);
@@ -11594,6 +11751,11 @@ void MainWindow::update_mcp_result() {
     if (!result.has_value()) {
         return;
     }
+    pending_completed_activity_summaries_.emplace_back(
+        "mcp",
+        result->succeeded
+            ? L"Optional tools connected"
+            : L"Optional tools connection failed");
     if (!result->succeeded) {
         set_control_text(id::models_mcp_status, widen("Failed: " + result->error));
         set_control_text(
@@ -11699,26 +11861,39 @@ void MainWindow::update_piggyback_result() {
         next_piggyback_at_ = now + std::chrono::minutes(5);
     }
     if (live_candidates && result->progress.retry_pending > 0U) {
-        active_activity_summary_ =
+        pending_completed_activity_summaries_.emplace_back(
+            "piggyback",
             L"Live Auto review paused; " +
             std::to_wstring(result->progress.retry_pending) +
             L" interaction" +
             (result->progress.retry_pending == 1U ? L"" : L"s") +
-            L" retained for automatic retry";
+            L" retained for automatic retry");
     } else if (live_candidates) {
-        active_activity_summary_ =
+        pending_completed_activity_summaries_.emplace_back(
+            "piggyback",
             L"Live Auto pass: " +
             std::to_wstring(result->progress.verified) + L" accepted, " +
             std::to_wstring(result->progress.revised) + L" revised, " +
             std::to_wstring(result->progress.needs_evidence) + L" need evidence, " +
             std::to_wstring(result->progress.excluded) + L" excluded, " +
-            std::to_wstring(result->progress.rejected) + L" rejected";
+            std::to_wstring(result->progress.rejected) + L" rejected");
     } else if (measured_gap_analysis) {
-        active_activity_summary_ =
+        pending_completed_activity_summaries_.emplace_back(
+            "piggyback",
             L"Measured-gap pass: " +
             std::to_wstring(result->progress.deep_gap_verified) + L" repaired and verified, " +
             std::to_wstring(result->progress.retry_pending) + L" retry pending, " +
-            std::to_wstring(result->progress.rejected) + L" rejected";
+            std::to_wstring(result->progress.rejected) + L" rejected");
+    } else {
+        pending_completed_activity_summaries_.emplace_back(
+            "piggyback",
+            result->succeeded
+                ? (trusted_only
+                    ? L"Verified training data import completed"
+                    : L"Verified practice example pass completed")
+                : (trusted_only
+                    ? L"Verified training data import failed"
+                    : L"Verified practice example pass failed"));
     }
     set_status(result->succeeded
         ? (trusted_only
@@ -11859,17 +12034,23 @@ void MainWindow::update_foundation_result() {
         return;
     }
     if (result->succeeded) {
-        active_activity_summary_ = L"English foundation curriculum compiled; isolated candidate queued behind all evaluation gates";
+        pending_completed_activity_summaries_.emplace_back(
+            "foundation",
+            L"English foundation curriculum compiled; isolated candidate queued behind all evaluation gates");
         set_status(L"English foundation curriculum completed; the working model remains unchanged until promotion checks pass");
     } else if (result->cancelled) {
-        active_activity_summary_ = foundation_resume_requested_
-            ? L"English foundation paused for Chat and will resume automatically"
-            : L"English foundation paused at a durable chunk checkpoint";
+        pending_completed_activity_summaries_.emplace_back(
+            "foundation",
+            foundation_resume_requested_
+                ? L"English foundation paused for Chat and will resume automatically"
+                : L"English foundation paused at a durable chunk checkpoint");
         set_status(foundation_resume_requested_
             ? L"English foundation yielded to Chat; automatic resume is armed"
             : L"English foundation paused; Build / resume continues from the checkpoint");
     } else {
-        active_activity_summary_ = L"English foundation needs attention — " + widen(result->error);
+        pending_completed_activity_summaries_.emplace_back(
+            "foundation",
+            L"English foundation needs attention — " + widen(result->error));
         set_status(L"English foundation stopped safely; rejected and retry-pending evidence remains in the Training Library");
     }
     update_training_library();
@@ -12322,6 +12503,8 @@ void MainWindow::update_capability_pack_result() {
         refresh_capability_pack_controls();
         set_control_text(id::skills_pack_status, status.str());
         set_status(status.str());
+        pending_completed_activity_summaries_.emplace_back(
+            "capability-pack", status.str());
         update_skill_report();
         return;
     }
@@ -12343,6 +12526,8 @@ void MainWindow::update_capability_pack_result() {
     }
     set_control_text(id::skills_pack_status, status.str());
     set_status(status.str());
+    pending_completed_activity_summaries_.emplace_back(
+        "capability-pack", status.str());
     static_cast<void>(::EnableWindow(control(id::skills_pack_install), TRUE));
     update_storage_report(true);
     if (install_result->succeeded) {
@@ -12524,6 +12709,8 @@ void MainWindow::update_learning_report() {
     const auto selected_dataset = selected_training_dataset();
     const auto selected_evidence =
         learning_service_->memory_store().training_count_for_skill(selected_skill);
+    const auto curriculum_selection = read_curriculum_selection(
+        paths_.root / "state" / "curriculum-selection.json");
     std::wostringstream learning_summary;
     if (foundation_operation_.running()) {
         learning_summary << L"Build English Foundation: "
@@ -12580,12 +12767,36 @@ void MainWindow::update_learning_report() {
            << L"  Automatic idle learning: " << (automatic_teacher ? L"enabled" : L"disabled") << L"\r\n"
            << L"  Teacher roles: Nemotron produces routine high-throughput variants; after 3 independently reviewed conversation failures, Qwen repairs measured gaps one at a time and Nemotron verifies them\r\n"
            << L"  Neural weight retraining: automatically queued after a verified microbatch; Compile data and retrain model can force a smaller pending batch\r\n"
+           << L"  Dataset minimization: append-only evidence is clustered by behavior; only authoritative representatives, the fresh delta, and bounded regression replay can reach weights\r\n"
+           << L"  Repetition rule: one admitted teaching is one gradient sequence; row weights and paraphrase counts never multiply it silently\r\n"
            << L"  Foreground rule: one routed AI answers; Qwen and Nemotron cooperate only in the background review pass\r\n"
            << L"  Curriculum rule: conversation first, planning after measured competence, then coding with compiler and test evidence\r\n"
            << L"  Information rule: private/personal data, branding, emoji noise, errors, and unsupported current facts never enter weights\r\n"
-           << L"  Compute ceiling: the bounded model, curated replay set, checkpoints, evaluation, and promotion are designed to complete within 12 hours on the target hardware; this is not a countdown\r\n"
+           << L"  Last weight curriculum: ";
+    if (curriculum_selection.available) {
+        report << curriculum_selection.source_rows << L" source rows ("
+               << curriculum_selection.parsed_records << L" parsed, "
+               << curriculum_selection.eligible_records << L" eligible) -> "
+               << curriculum_selection.behavior_clusters << L" behavior clusters -> "
+               << curriculum_selection.selected_records << L" selected records / "
+               << curriculum_selection.selected_tokens << L" supervised byte tokens"
+               << L" (fresh " << curriculum_selection.delta_records
+               << L", replay " << curriculum_selection.replay_records
+               << L", exact duplicates " << curriculum_selection.exact_duplicates
+               << L", redundant behaviors " << curriculum_selection.behavior_duplicates
+               << L", repeated answer templates " << curriculum_selection.answer_duplicates
+               << L", held-out overlaps " << curriculum_selection.heldout_overlaps << L")";
+        if (!curriculum_selection.hash.empty()) {
+            report << L"; SHA-256 " << widen(curriculum_selection.hash.substr(0U, 12U));
+        }
+        report << L"\r\n";
+    } else {
+        report << L"not compiled yet; the evidence pool has not been sent to weights\r\n";
+    }
+    report
+           << L"  Candidate bounds: supervised-token, replay, step, and resource ceilings keep each compile, training, evaluation, and promotion attempt finite; there is no wall-clock promise or countdown\r\n"
            << L"  Controlled software self-improvement: separate, evidence-gated, and never started by learning controls\r\n"
-           << L"  Retained verified examples for the selected topic: " << selected_evidence
+           << L"  Unique trainable behavior evidence for the selected topic: " << selected_evidence
            << L"\r\n\r\nENGLISH FOUNDATION BUILD\r\n"
            << L"  State: " << widen(std::string(learning::to_string(foundation_progress.stage)))
            << (foundation.message.empty() ? L"" : L" — " + widen(foundation.message)) << L"\r\n"
@@ -12619,7 +12830,7 @@ void MainWindow::update_learning_report() {
            << L"; audio engine: " << (audio_installed ? L"installed" : L"not installed")
            << L"; neither is trained by this text-weight workflow\r\n\r\n"
            << L"SELECTED TRAINING TARGET: " << widen(selected_skill)
-           << L"\r\nTrainable verified evidence for this target: " << selected_evidence
+           << L"\r\nUnique trainable behaviors for this target: " << selected_evidence
            << L"\r\nAutomatic source: bundled seed.jsonl, filtered to this target"
            << L"\r\nCustom import file: " << selected_dataset.wstring()
            << L"\r\nAutomatic idle learning never changes the selected target.\r\n\r\n"
@@ -12641,7 +12852,7 @@ void MainWindow::update_learning_report() {
     report << L"\r\nWeight updates queued: " << pipeline.queued_updates
            << L"\r\nAutomatic promotion cadence: every "
            << std::max<std::size_t>(1U, settings.policy.lora_microbatch)
-           << L" independently accepted training episode"
+           << L" independently accepted behavior cluster"
            << (settings.policy.lora_microbatch == 1U ? L"" : L"s")
            << L"\r\nPressing the retrain button can compile any smaller pending verified batch.\r\n\r\n";
 
@@ -12668,7 +12879,7 @@ void MainWindow::update_learning_report() {
         for (const auto& module : modules) {
             report << L"  " << widen(module.skill)
                    << L": " << module.episodes_since_update << L"/" << threshold
-                   << L" eligible episode" << (module.episodes_since_update == 1U ? L"" : L"s")
+                   << L" eligible behavior" << (module.episodes_since_update == 1U ? L"" : L"s")
                    << L" since the last promoted update; "
                    << module.accepted_episodes << L" accepted total.\r\n";
         }
@@ -12821,6 +13032,8 @@ void MainWindow::update_storage_cleanup_result() {
         set_status(summary.str());
     }
     storage_cleanup_summary_ = summary.str();
+    pending_completed_activity_summaries_.emplace_back(
+        "storage-cleanup", storage_cleanup_summary_);
     update_storage_report(true);
 }
 

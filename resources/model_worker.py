@@ -33,8 +33,10 @@ from typing import Any, Callable, Iterable
 
 try:
     from . import curriculum_guard as curriculum
+    from . import curriculum_compiler as curriculum_compiler
 except ImportError:
     import curriculum_guard as curriculum
+    import curriculum_compiler as curriculum_compiler
 
 import internal_model as internal
 
@@ -108,6 +110,15 @@ def parse_args() -> argparse.Namespace:
     train_internal.add_argument("--seed-dataset", type=Path, required=True)
     train_internal.add_argument("--episodes", type=Path)
     train_internal.add_argument("--anchors", type=Path)
+    train_internal.add_argument(
+        "--delta-limit",
+        type=int,
+        default=0,
+        help=(
+            "Number of newest authoritative live episodes in this candidate. "
+            "The curriculum compiler adds only bounded representative replay."
+        ),
+    )
     train_internal.add_argument("--scope", default="all")
     train_internal.add_argument("--max-steps", type=int, default=500)
     train_internal.add_argument("--learning-rate", type=float, default=3.0e-4)
@@ -823,17 +834,19 @@ def _generate_internal(state: ServerState, payload: dict[str, Any], messages: li
     lane = _internal_lane(model_name)
     maximum = max(1, min(int(payload.get("max_tokens", 256)), 2048))
     temperature = max(0.0, min(float(payload.get("temperature", 0.2)), 2.0))
-    loaded = state.get_internal()
     prompt_tokens = len(internal.ByteTokenizer.prompt_tokens(messages))
-    with state._internal_lock, state.generation_slots:
-        draft = _internal_draft(
-            loaded,
-            messages,
-            lane,
-            maximum,
-            temperature,
-            trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
-        )
+    with state._internal_lock:
+        loaded = state.get_internal()
+        served_generation = loaded.generation
+        with state.generation_slots:
+            draft = _internal_draft(
+                loaded,
+                messages,
+                lane,
+                maximum,
+                temperature,
+                trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
+            )
     accepted = draft.quality.accepted
     content = draft.content if accepted else ""
     finish_reason = "stop" if accepted else "low_confidence"
@@ -849,7 +862,7 @@ def _generate_internal(state: ServerState, payload: dict[str, Any], messages: li
         "created": int(time.time()),
         "model": model_name,
         "source": "threadspire-internal",
-        "generation": loaded.generation,
+        "generation": served_generation,
         "origin": "random-initialized-local-model",
         "external_base_weights": False,
         "choices": [{
@@ -889,7 +902,6 @@ def _stream_internal(
     state.begin_inference()
     try:
         state.wait_for_training_yield()
-        loaded = state.get_internal()
         handler.send_response(int(HTTPStatus.OK))
         handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
         handler.send_header("Cache-Control", "no-cache")
@@ -902,16 +914,19 @@ def _stream_internal(
             )
             handler.wfile.flush()
 
-        with state._internal_lock, state.generation_slots:
-            draft = _internal_draft(
-                loaded,
-                messages,
-                lane,
-                maximum,
-                temperature,
-                heartbeat,
-                trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
-            )
+        with state._internal_lock:
+            loaded = state.get_internal()
+            served_generation = loaded.generation
+            with state.generation_slots:
+                draft = _internal_draft(
+                    loaded,
+                    messages,
+                    lane,
+                    maximum,
+                    temperature,
+                    heartbeat,
+                    trusted_dataset=state.state_root / "data" / "bootstrap.jsonl",
+                )
 
         if draft.quality.accepted:
             for offset in range(0, len(draft.content), 64):
@@ -922,7 +937,7 @@ def _stream_internal(
                     "created": int(time.time()),
                     "model": model_name,
                     "source": "threadspire-internal",
-                    "generation": loaded.generation,
+                    "generation": served_generation,
                     "origin": "random-initialized-local-model",
                     "external_base_weights": False,
                     "choices": [{
@@ -949,7 +964,7 @@ def _stream_internal(
             "created": int(time.time()),
             "model": model_name,
             "source": "threadspire-internal",
-            "generation": loaded.generation,
+            "generation": served_generation,
             "origin": "random-initialized-local-model",
             "external_base_weights": False,
             "choices": [{
@@ -1068,7 +1083,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "EngCoder/0.9.0"
+    server_version = "EngCoder/0.9.1"
 
     @property
     def state(self) -> ServerState:
@@ -1271,7 +1286,7 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
     if skill not in _WEIGHT_TRAINING_SKILLS:
         return []
     records: list[dict[str, Any]] = []
-    diverse_human_prompts: set[str] = set()
+    diverse_human_behaviors: set[str] = set()
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             if not line.strip():
@@ -1283,7 +1298,9 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
             human_only = _human_only_training_record(record)
             hard_correction = _hard_correction_record(record)
             if (human_only or hard_correction) and normalized_prompt:
-                diverse_human_prompts.add(normalized_prompt)
+                diverse_human_behaviors.add(
+                    curriculum_compiler.behavior_signature(record)
+                )
             if not record.get("eligible_for_training", False) and not hard_correction and not human_only:
                 continue
             if not hard_correction and not (
@@ -1337,7 +1354,31 @@ def _load_episodes(path: Path, skill: str) -> list[dict[str, Any]]:
             ).hexdigest()
         unique[fingerprint] = record
     records = list(unique.values())
-    if len(diverse_human_prompts) < _MINIMUM_DIVERSE_HUMAN_APPROVALS:
+    behavior_unique: dict[str, dict[str, Any]] = {}
+    for record in records:
+        signature = curriculum_compiler.behavior_signature(record)
+        existing = behavior_unique.get(signature)
+        if existing is None:
+            behavior_unique[signature] = record
+            continue
+        rank = (
+            int(bool(record.get("hard_correction", False))),
+            int(bool(record.get("human_accepted", False))),
+            int(bool(record.get("reference_verified", False))),
+            int(bool(record.get("deterministic_verified", False))),
+            -len(str(record.get("response", ""))),
+        )
+        existing_rank = (
+            int(bool(existing.get("hard_correction", False))),
+            int(bool(existing.get("human_accepted", False))),
+            int(bool(existing.get("reference_verified", False))),
+            int(bool(existing.get("deterministic_verified", False))),
+            -len(str(existing.get("response", ""))),
+        )
+        if rank > existing_rank:
+            behavior_unique[signature] = record
+    records = [behavior_unique[key] for key in sorted(behavior_unique)]
+    if len(diverse_human_behaviors) < _MINIMUM_DIVERSE_HUMAN_APPROVALS:
         records = [
             record
             for record in records
@@ -2390,7 +2431,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "EngCoder", "version": "0.9.0"},
+                    "clientInfo": {"name": "EngCoder", "version": "0.9.1"},
                 },
             },
         )

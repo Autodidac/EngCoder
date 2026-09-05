@@ -2,7 +2,7 @@
 
 ## Purpose
 
-EngCoder 0.9.0 separates four operations that had previously been easy to confuse:
+EngCoder 0.9.1 separates four operations that had previously been easy to confuse:
 
 1. **Build English Foundation** is an explicit, one-time, resumable curriculum build. Qwen designs the deep curriculum, Nemotron supplies breadth, and each model verifies material produced by the other.
 2. **Live Auto Training** continuously reviews successful conversations and turns reusable behavior into verified microbatches.
@@ -25,6 +25,33 @@ EngCoder also keeps an exact verified-memory layer. That layer deliberately stor
 - queued weight jobs;
 - trained neural-weight generations;
 - rejected and retry-pending audit material.
+
+## Minimal curriculum architecture
+
+Collection is intentionally broad so decisions stay explainable; training is intentionally narrow. EngCoder does not treat its Training Library as a monolithic dataset.
+
+```text
+append-only evidence and audit pool
+  -> safety, rights, scope, and eligibility filters
+  -> exact duplicate collapse
+  -> canonical behavior clusters and repeated-answer cap
+  -> one authoritative representative per cluster
+  -> candidate snapshot: fresh delta + bounded balanced replay
+  -> neural gradients
+
+held-out anchors and document holdouts
+  -------------------------------------> evaluation only
+```
+
+The evidence pool preserves accepted, corrected, rejected, superseded, generated, privacy-excluded, and retry-pending records. The compact canonical curriculum is a deterministic, replaceable view of that evidence. Each training candidate receives an immutable snapshot, so records arriving during a run cannot silently change its inputs.
+
+Canonical behavior signatures normalize surface variation such as case, punctuation, contractions, polite filler, supported intent synonyms, numeric operands, paths, identifiers, and quoted payload slots. Constraint polarity and safety-sensitive answer polarity remain part of the signature. This collapses paraphrases without merging opposing instructions. A separate cap limits repeated identical answer targets while preserving distinct competency coverage. Hard corrections supersede earlier positives before clustering.
+
+Selection prefers authoritative and concise evidence: hard correction, human acceptance, reference verification, deterministic verification, compiler/test evidence, then lower supervised-token cost. A single behavior can contribute at most one representative under the default policy. Four paraphrases of the same request are one behavior for human-diversity admission; they cannot masquerade as four independent teachings.
+
+Historical `curriculum_weight` values are removed from compiled records. One selected record is one physical gradient sequence. Incremental candidates prioritize the newest admitted delta, then add only a bounded coverage-balanced replay set for regression resistance. They do not rescan the full ledger into every candidate.
+
+This makes training evidence smaller and less repetitive, but it does not resize a fixed model architecture. Tensor-file size is determined mainly by parameter count, precision or quantization, pruning, and expert design. Curriculum minimization instead reduces unnecessary memorization pressure, redundant updates, training time, and the amount of knowledge EngCoder is asked to encode.
 
 ## One-time foundation build
 
@@ -61,7 +88,7 @@ Admission also checks source grounding, rights, deduplication, EngCoder identity
 
 ## Durable files and audit
 
-Foundation state lives under `%LOCALAPPDATA%\EngCoder\curriculum`:
+Foundation source state lives under `%LOCALAPPDATA%\EngCoder\curriculum`. Derived selection artifacts use the explicit state or candidate-relative paths shown below:
 
 | File | Purpose |
 |---|---|
@@ -73,8 +100,11 @@ Foundation state lives under `%LOCALAPPDATA%\EngCoder\curriculum`:
 | `foundation-heldout.jsonl` | accepted document-held-out material |
 | `foundation-evaluation.jsonl` | fixed anchors plus generated document holdouts |
 | `foundation-state.json` | operation, cursor, counts, tokens, checkpoint, candidate, and promotion state |
+| `state/curriculum-selection.json` | latest compact-selection counts, IDs, reasons, coverage, budgets, and hashes |
+| candidate `dataset/minimal-training.jsonl` | immutable gradient records selected for one candidate |
+| candidate `dataset/curriculum-selection.json` | immutable selection manifest for that candidate |
 
-The attempt ledger records cleaned prompt and answer, exact source span, generator, verifier, decision, revision state, rejection reason, weight eligibility, and candidate generation. Resuming rewrites deterministic source/chunk manifests instead of duplicating them and continues from the durable chunk boundary.
+The attempt ledger records cleaned prompt and answer, exact source span, generator, verifier, decision, revision state, rejection reason, weight eligibility, and candidate generation. Resuming rewrites deterministic source/chunk manifests instead of duplicating them and continues from the durable chunk boundary. The curriculum compiler never edits these ledgers. It atomically replaces only the derived minimal-training view and manifest after verifying that its source hashes did not change during compilation.
 
 ## Neural training and promotion
 
@@ -82,16 +112,18 @@ The **Internal PyTorch Training** pack is EngCoder's custom-model trainer. The s
 
 The first English foundation candidate:
 
-1. compiles accepted training records into token sequences;
-2. combines all 320 bundled anchors with independently accepted document-held-out records;
-3. loads a random-initialized or repair-generation EngCoder model;
-4. trains the complete shared backbone and experts in an isolated candidate;
-5. checkpoints the model, optimizer, pending gradients, data cursor, and random state;
-6. yields at a safe boundary whenever Chat requests resources;
-7. evaluates every anchor record, not a small sample;
-8. requires loss, structural-output, identity, privacy, and deterministic readiness gates;
-9. saves a rejected or repair candidate without touching the active generation when any gate fails;
-10. atomically promotes only a passing candidate whose parent is still current.
+1. filters the accepted evidence pool by rights, safety, identity, skill scope, and weight eligibility;
+2. reserves all 320 bundled anchors and independently accepted document holdouts for evaluation only and removes exact normalized prompt overlap from training;
+3. compiles at most one authoritative representative per remaining behavior under the foundation token budget;
+4. freezes the selected JSONL and its complete selection manifest inside the isolated candidate;
+5. loads a random-initialized or repair-generation EngCoder model;
+6. trains the complete shared backbone and experts in that candidate;
+7. checkpoints the model, optimizer, pending gradients, data cursor, and random state;
+8. yields at a safe boundary whenever Chat requests resources;
+9. evaluates every anchor record, not a small sample;
+10. requires loss, structural-output, identity, privacy, and deterministic readiness gates;
+11. saves a rejected or repair candidate without touching the active generation when any gate fails;
+12. atomically promotes only a passing candidate whose parent is still current.
 
 After the foundation is promoted, shared weights are frozen by default and bounded skill experts receive verified microbatches. This is scoped full-weight expert training, not LoRA. Qwen returns for an explicit rebuild, measured coverage gap, or difficult long-context lesson; Nemotron remains the normal conversational generator.
 
@@ -122,6 +154,8 @@ The foundation panel always exposes:
 - current promoted neural-weight size;
 - promotion result.
 
+The learning report also exposes the actual selection funnel: evidence rows, eligible records, behavior clusters and repeated answer targets, selected records and supervised tokens, fresh-delta versus replay counts, held-out prompt-overlap exclusions, exact/canonical/answer duplicate exclusions, stripped legacy row weights, and the compiled-output hash. These numbers are distinct from the Training Library total and from the neural weight-file size.
+
 Build, Pause, Resume, and Rebuild are explicit. A Chat request pauses the foundation at a safe boundary and arms automatic resume. A user-initiated Pause stays paused. Live Auto remains an independent checkbox next to the manual per-reply controls and continues after the foundation build.
 
 ## Failure rules
@@ -131,7 +165,11 @@ Build, Pause, Resume, and Rebuild are explicit. A Chat request pauses the founda
 - Partial bounded pass: pause at its checkpoint; never queue an incomplete curriculum.
 - Missing independent review: retry pending; never accept by timeout.
 - No accepted document holdouts: do not queue weights.
+- No safe non-held-out behavior survives compilation: fail the candidate preparation; never train an empty or contaminated dataset.
+- Evidence ledger changes during compilation: discard the derived output and retry from stable source hashes.
 - Missing internal trainer: preserve evidence and show the pending job while weights remain 0 B.
 - Measured-gap teacher/reviewer failure: leave that bounded batch retry-pending and keep its durable cursor; never treat the failed answer as a reference.
 - Failed evaluation or host check: preserve the current working model and retain the candidate/audit result.
 - Foreground Chat: checkpoint and yield; resume the same candidate afterward.
+
+The exact compiler policy and manifest fields are documented in [Minimal Curriculum Compiler](minimal-curriculum-compiler.md).

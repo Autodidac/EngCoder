@@ -619,6 +619,55 @@ void test_service_reconciles_one_durable_job_per_interrupted_candidate() {
             "restart reconciliation must never leave a duplicate candidate-keyed job behind");
     std::filesystem::remove_all(root);
 }
+
+void test_service_recovers_interrupted_internal_promotion_transaction() {
+    using namespace threadspire::ai::learning;
+    const auto root = temporary_root();
+    const auto registry_file = root / "experts" / "registry" / "english-core.ini";
+    std::string previous_registry;
+    {
+        ExpertRegistry registry(root / "experts" / "registry");
+        registry.load();
+        auto& module = registry.ensure("english-core", "threadspire://coder");
+        registry.save(module);
+        previous_registry = read_text(registry_file);
+        module.state = ExpertState::full_rank_active;
+        module.module_path = root / "models" / "internal" / "generations" / "g2";
+        module.promoted_candidate_id = "candidate-g2";
+        ++module.generation;
+        registry.save(module);
+    }
+    const auto transaction = root / "state" / "internal-promotion-transaction";
+    write_text(transaction / "expert-before.ini", previous_registry);
+    write_text(
+        transaction / "pending.json",
+        R"({"candidate_generation":"g2","parent_generation":"g1","registry_file":"english-core.ini","had_registry":true})");
+    write_text(root / "models" / "internal" / "active.json", R"({"generation":"g1"})");
+
+    LearningSettings settings;
+    settings.python_executable = root / "missing-python.exe";
+    settings.worker_script = root / "missing-worker.py";
+    settings.state_root = root;
+    settings.base_model = "threadspire://coder";
+    settings.initial_interactive_priority = true;
+    settings.require_cuda = false;
+    settings.automatic_consolidation = false;
+    {
+        ContinualLearningService service(std::move(settings));
+        const auto experts = service.expert_snapshot();
+        const auto recovered = std::ranges::find(experts, "english-core", &ExpertModule::skill);
+        require(recovered != experts.end() &&
+                    recovered->state == ExpertState::memory_only &&
+                    recovered->generation == 0U &&
+                    recovered->module_path.empty(),
+                "startup must restore the prior registry when a crash occurs before pointer commit");
+        require(!std::filesystem::exists(transaction),
+                "a recovered internal promotion transaction must be cleared");
+        service.request_stop();
+    }
+    std::filesystem::remove_all(root);
+}
+
 void test_atomic_promotion_keeps_working_host_until_candidate_passes() {
     using namespace threadspire::ai::learning;
     const auto root = temporary_root();
@@ -895,6 +944,7 @@ void test_named_module_and_native_base_contract() {
     require(resources.find("model_worker.py") == std::string::npos &&
                 resources.find("internal_model.py") == std::string::npos &&
                 resources.find("curriculum_guard.py") == std::string::npos &&
+                resources.find("curriculum_compiler.py") == std::string::npos &&
                 resource_ids.find("IDR_MODEL_WORKER") == std::string::npos &&
                 app_paths.find("write_resource(IDR_MODEL_WORKER") == std::string::npos,
             "the base executable must not embed Python training programs");
@@ -950,6 +1000,7 @@ int main() {
         test_persistent_queue_survives_concurrent_readers();
         test_service_recovers_serialized_job_before_candidate_creation();
         test_service_reconciles_one_durable_job_per_interrupted_candidate();
+        test_service_recovers_interrupted_internal_promotion_transaction();
         test_atomic_promotion_keeps_working_host_until_candidate_passes();
         test_storage_cards_growth_projections_quotas_and_cleanup();
         test_safe_reset_path_validation();

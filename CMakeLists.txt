@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.4)
 
 project(
     EngCoder
-    VERSION 0.9.0
+    VERSION 0.9.1
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -290,6 +290,12 @@ if(THREADSPIRE_AI_BUILD_TESTS)
             COMMAND
                 "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/curriculum_guard_smoke.py"
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        add_test(
+            NAME engcoder_curriculum_compiler_smoke
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/curriculum_compiler_smoke.py"
                 --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
         execute_process(
             COMMAND "${Python3_EXECUTABLE}" -c "import torch, safetensors"

@@ -15,9 +15,9 @@ Connected AI applications remain separate. Locking one exact AI contacts only th
 
 ## What is bundled and what is learned
 
-The Training Library shows six sources independently:
+The Training Library shows six evidence sources independently:
 
-- **Bundled curriculum:** 4,247 English and C++23 examples shipped with the executable. These are not user learning history.
+- **Bundled curriculum:** 4,247 English and C++23 source records shipped with the executable. These are not user learning history, and they are not copied wholesale into every neural training run.
 - **Your learning:** explicit approved replies, corrections, and rejected drafts. Repeated approval of the same prompt/reply does not add weight.
 - **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, retry-pending, rejected, privacy-excluded, and measured-gap decisions remain inspectable.
 - **Automatic teacher attempts:** candidate examples proposed by connected local AI servers and checked independently. Accepted, rejected, and failed attempts remain inspectable.
@@ -25,6 +25,14 @@ The Training Library shows six sources independently:
 - **Held-out checks:** 320 message-disjoint examples used only to evaluate candidates. They never train weights.
 
 Emoji and provider branding are removed at the training boundary. Error cards, private reasoning, corrupt drafts, and deterministic calculator results cannot become positive training data. Permanent personal memory is stored separately and never baked into weights.
+
+Before a neural job starts, EngCoder keeps three different artifacts:
+
+1. the **append-only evidence pool**, which preserves accepted, corrected, rejected, superseded, and retry-pending records for inspection;
+2. a **compact canonical curriculum**, which collapses exact duplicates and paraphrases into authoritative behavior representatives, then caps repeated identical answer targets under a supervised-token budget; and
+3. an **immutable candidate snapshot**, which contains the newest eligible delta plus a small coverage-balanced replay set.
+
+Held-out anchors remain evaluation-only, and any exact normalized prompt overlap is removed from the training selection. They are never copied into the gradient dataset. This separation lets EngCoder remember why a decision was made without repeatedly training on every saved phrase.
 
 ## Learning and retraining
 
@@ -37,7 +45,11 @@ EngCoder keeps four learning processes separate:
 
 **Build English Foundation** is a fifth, explicit one-time curriculum action. Qwen 27B maps long-form English and creates difficult lessons, Nemotron 4B creates fast variants, and each verifies the other's output. It accepts only public-domain, permissively licensed, or user-owned material. The teachers provide evidence only: EngCoder trains its own token-level parameters with the separate Internal PyTorch Training pack.
 
-Initial neural setup uses adaptive targets of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. Each run stops at its bound with diagnostics. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
+Initial neural setup uses adaptive safety ceilings of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. The trainer checks the full held-out and identity/privacy gate set at optimizer-aligned corpus boundaries and stops at the first passing boundary; reaching a ceiling without passing preserves the working model. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
+
+The curriculum compiler selects at most one authoritative record per behavior cluster, caps repeated identical answer targets while preserving competency coverage, gives hard corrections precedence, and prefers independently verified, concise records. Human diversity gates count distinct behaviors, not four phrasings of one behavior. Historical `curriculum_weight` values are stripped: one selected record produces one gradient sequence rather than silently multiplying itself. Incremental jobs train the fresh delta with bounded replay instead of replaying the entire accumulated ledger.
+
+Curriculum minimization does **not** by itself make a fixed architecture's weight file smaller. Parameter count, numeric precision, quantization, pruning, and expert design determine tensor size. The minimal curriculum instead limits what the model is asked to encode, reduces redundant gradient pressure and memorization risk, and keeps retraining bounded.
 
 The visible counts are intentionally different. **User-taught replies** counts durable approved or corrected examples. **Neural-weight jobs** counts coalesced topic updates, so three teachings may legitimately be stored behind one queued job. With no optional trainer installed, the teachings still work through verified memory while neural weights remain exactly 0 B.
 
@@ -45,7 +57,7 @@ The visible counts are intentionally different. **User-taught replies** counts d
 
 The base application is C++23 and does not require Python or PyTorch. Python, PyTorch, Transformers/PEFT, image engines, and audio engines belong only to explicit capability packs. Installing or inspecting a pack never changes the selected AI, starts a task, or interrupts Chat.
 
-The native installed base, excluding models and optional packs, must remain at or below 100 MiB. Activity reports the native executable, neural weights, curriculum/learning data, optional software packs, outputs/cache, total disk use, free disk, and EngCoder-owned RAM separately.
+The native installed base—including the bundled compact native inference helper and required license notices, but excluding user-installed model weights and heavyweight capability packs—must remain at or below 100 MiB. Activity reports the native executable, neural weights, curriculum/learning data, optional software packs, outputs/cache, total disk use, free disk, and EngCoder-owned RAM separately.
 
 ## Unified interface
 
@@ -127,6 +139,7 @@ Useful documents:
 - [Learning pipeline](docs/learning-pipeline.md)
 - [Live Auto Training design](docs/live-auto-training.md)
 - [Autonomous curriculum and training design](docs/autonomous-curriculum-and-training.md)
+- [Minimal curriculum compiler](docs/minimal-curriculum-compiler.md)
 - [Module boundaries](docs/module-abi.md)
 - [Current implementation queue](docs/unified-workbench-queue.md)
 - [Session verification report](docs/session-report-2026-08-26.md)
@@ -136,6 +149,7 @@ Useful documents:
 - [0.7.2 retained-review and EpochGui verification report](docs/session-report-2026-08-30-0.7.2.md)
 - [0.8.0 autonomous curriculum and training report](docs/session-report-2026-08-30-0.8.0.md)
 - [0.9.0 measured-gap autonomy and durable-training report](docs/session-report-2026-09-05-0.9.0.md)
+- [0.9.1 minimal-curriculum validation report](docs/session-report-2026-09-05-0.9.1.md)
 
 ## License
 

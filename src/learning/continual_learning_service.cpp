@@ -10,6 +10,7 @@ module;
 #include <utility>
 
 module threadspire.learning;
+import threadspire.core;
 import threadspire.platform;
 
 namespace threadspire::ai::learning {
@@ -316,6 +317,77 @@ void publish_file(
         std::istreambuf_iterator<char>()};
 }
 
+[[nodiscard]] std::filesystem::path internal_promotion_transaction_root(
+    const std::filesystem::path& state_root) {
+    return state_root / "state" / "internal-promotion-transaction";
+}
+
+void clear_internal_promotion_transaction(const std::filesystem::path& state_root) noexcept {
+    std::error_code error;
+    std::filesystem::remove_all(internal_promotion_transaction_root(state_root), error);
+}
+
+void begin_internal_promotion_transaction(
+    const std::filesystem::path& state_root,
+    const std::string_view skill,
+    const std::string_view candidate_generation,
+    const std::string_view parent_generation) {
+    const auto transaction = internal_promotion_transaction_root(state_root);
+    const auto registry_file = normalize_skill(skill) + ".ini";
+    const auto registry_path = state_root / "experts" / "registry" / registry_file;
+    const auto backup_path = transaction / "expert-before.ini";
+    const auto had_registry = std::filesystem::is_regular_file(registry_path);
+    std::filesystem::create_directories(transaction);
+    if (had_registry) {
+        publish_file(backup_path, read_file_bytes(registry_path));
+    } else {
+        std::error_code error;
+        std::filesystem::remove(backup_path, error);
+    }
+    const auto marker = core::json::stringify(core::json::Value(core::json::Value::Object{
+        {"candidate_generation", std::string(candidate_generation)},
+        {"parent_generation", std::string(parent_generation)},
+        {"registry_file", registry_file},
+        {"had_registry", had_registry},
+    }));
+    publish_file(transaction / "pending.json", marker + '\n');
+}
+
+void recover_internal_promotion_transaction(const std::filesystem::path& state_root) {
+    const auto transaction = internal_promotion_transaction_root(state_root);
+    const auto marker_path = transaction / "pending.json";
+    if (!std::filesystem::is_regular_file(marker_path)) {
+        return;
+    }
+    std::string parse_error;
+    const auto marker = core::json::try_parse(read_file_bytes(marker_path), parse_error);
+    if (!marker.has_value()) {
+        throw std::runtime_error(
+            "internal promotion transaction is unreadable: " + parse_error);
+    }
+    const auto candidate_generation = core::json::string_or(
+        marker->find("candidate_generation"));
+    const auto registry_file = core::json::string_or(marker->find("registry_file"));
+    const std::filesystem::path registry_component(registry_file);
+    if (candidate_generation.empty() || registry_file.empty() ||
+        registry_component.filename() != registry_component ||
+        registry_component.extension() != ".ini") {
+        throw std::runtime_error("internal promotion transaction contains unsafe identifiers");
+    }
+    const auto active_generation = read_string_metric(
+        state_root / "models" / "internal" / "active.json", "generation");
+    if (active_generation != candidate_generation) {
+        const auto registry_path = state_root / "experts" / "registry" / registry_component;
+        if (core::json::bool_or(marker->find("had_registry"), false)) {
+            publish_file(registry_path, read_file_bytes(transaction / "expert-before.ini"));
+        } else {
+            std::error_code error;
+            std::filesystem::remove(registry_path, error);
+        }
+    }
+    clear_internal_promotion_transaction(state_root);
+}
+
 [[nodiscard]] std::string freeze_training_file(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
@@ -370,6 +442,7 @@ ContinualLearningService::ContinualLearningService(LearningSettings settings)
       interactive_leases_(settings_.initial_interactive_priority ? 1U : 0U) {
     std::filesystem::create_directories(settings_.state_root / "jobs");
     std::filesystem::create_directories(settings_.state_root / "control");
+    recover_internal_promotion_transaction(settings_.state_root);
     expert_registry_.load();
     candidate_registry_.load();
     try {
@@ -1319,13 +1392,17 @@ bool ContinualLearningService::run_internal_update(
             const auto anchor_hash = freeze_training_file(anchor_source, frozen_anchors, true);
             std::ostringstream manifest;
             manifest << "{\n"
-                     << "  \"format\": \"engcoder.candidate-dataset.v1\",\n"
+                     << "  \"format\": \"engcoder.candidate-source-pool.v2\",\n"
                      << "  \"skill\": \"" << active_module.skill << "\",\n"
                      << "  \"full_foundation\": " << (full_foundation ? "true" : "false") << ",\n"
                      << "  \"bootstrap_target_steps\": " << bootstrap_target_steps << ",\n"
-                     << "  \"training_content_hash\": \"" << seed_hash << "\",\n"
-                     << "  \"episode_content_hash\": \"" << episode_hash << "\",\n"
-                     << "  \"evaluation_content_hash\": \"" << anchor_hash << "\"\n"
+                     << "  \"delta_episode_limit\": "
+                     << (full_foundation ? 0U : candidate.training_episode_count) << ",\n"
+                     << "  \"source_training_pool_hash\": \"" << seed_hash << "\",\n"
+                     << "  \"source_episode_audit_hash\": \"" << episode_hash << "\",\n"
+                     << "  \"evaluation_content_hash\": \"" << anchor_hash << "\",\n"
+                     << "  \"effective_curriculum\": \"curriculum-selection.json\",\n"
+                     << "  \"note\": \"source pools are append-only evidence; the worker trains only the compact selected curriculum\"\n"
                      << "}\n";
             publish_file(snapshot_directory / "manifest.json", manifest.str());
         } catch (const std::exception& exception) {
@@ -1412,6 +1489,8 @@ bool ContinualLearningService::run_internal_update(
     if (!full_foundation && std::filesystem::file_size(frozen_episodes) > 0U) {
         arguments.emplace_back("--episodes");
         arguments.emplace_back(frozen_episodes.string());
+        arguments.emplace_back("--delta-limit");
+        arguments.emplace_back(std::to_string(candidate.training_episode_count));
     }
     if (full_foundation) {
         arguments.emplace_back("--bootstrap-target-steps");
@@ -1509,7 +1588,37 @@ bool ContinualLearningService::run_internal_update(
         0.0) > 0.5;
     if (!passed_evaluation) {
         candidate.state = CandidateState::rejected;
-        candidate.message = "internal candidate did not improve its held-out loss";
+        const auto loss_gate_passed = read_metric(
+            metrics_path, "loss_gate_passed", 0.0) > 0.5;
+        if (!loss_gate_passed) {
+            candidate.message = "internal candidate did not improve its held-out loss";
+        } else {
+            std::vector<std::string_view> failed_gates;
+            const auto add_failed_gate = [&](const std::string_view metric, const std::string_view label) {
+                if (read_metric(metrics_path, metric, 0.0) <= 0.5) {
+                    failed_gates.push_back(label);
+                }
+            };
+            add_failed_gate("foundation_anchor_gate_passed", "foundation anchors");
+            add_failed_gate("structural_output_gate_passed", "structured output");
+            add_failed_gate("identity_gate_passed", "identity");
+            add_failed_gate("privacy_gate_passed", "privacy");
+            add_failed_gate("generation_ready", "generation readiness");
+            std::ostringstream message;
+            message << "internal candidate improved held-out loss but failed ";
+            if (failed_gates.empty()) {
+                message << "one or more safety/readiness gates";
+            } else {
+                for (std::size_t index = 0; index < failed_gates.size(); ++index) {
+                    if (index > 0U) {
+                        message << (index + 1U == failed_gates.size() ? " and " : ", ");
+                    }
+                    message << failed_gates[index];
+                }
+                message << " gate" << (failed_gates.size() == 1U ? "" : "s");
+            }
+            candidate.message = std::move(message).str();
+        }
         candidate.updated_unix_ms = memory::now_unix_ms();
         commit_candidate(candidate);
         status.state = LearningJobState::failed;
@@ -1593,7 +1702,69 @@ bool ContinualLearningService::run_internal_update(
             return verify_internal_candidate_host(
                 settings, candidate, internal_generation, metrics_path, stop_token);
         },
-        [&settings, &candidate, &internal_generation, &internal_parent] {
+        [this, &settings, &candidate, &internal_generation, &internal_parent, &active_module] {
+            std::lock_guard registry_lock(mutex_);
+            auto* current = expert_registry_.find(candidate.skill);
+            if (current == nullptr || current->generation != candidate.parent_generation) {
+                return CandidatePromotionCommitResult{
+                    .succeeded = false,
+                    .diagnostics = "internal candidate registry changed before commit",
+                };
+            }
+
+            const auto previous = *current;
+            auto promoted = previous;
+            promoted.previous_state = internal_parent == "g000000"
+                ? promoted.state
+                : ExpertState::full_rank_active;
+            promoted.previous_module_path = internal_parent == "g000000"
+                ? std::filesystem::path{}
+                : internal_generation_path(settings.state_root, internal_parent);
+            promoted.previous_adapter_path = promoted.adapter_path;
+            promoted.state = ExpertState::full_rank_active;
+            promoted.adapter_path.clear();
+            promoted.module_path = internal_generation_path(
+                settings.state_root, internal_generation);
+            promoted.promoted_candidate_id = candidate.id;
+            ++promoted.generation;
+            ++promoted.lora_generations;
+            promoted.episodes_since_update =
+                promoted.episodes_since_update > candidate.training_episode_count
+                ? promoted.episodes_since_update -
+                    static_cast<std::size_t>(candidate.training_episode_count)
+                : 0U;
+            promoted.validation_score = candidate.validation_score;
+            promoted.regression_score = candidate.regression_score;
+            promoted.updated_unix_ms = memory::now_unix_ms();
+            try {
+                begin_internal_promotion_transaction(
+                    settings.state_root,
+                    candidate.skill,
+                    internal_generation,
+                    internal_parent);
+                // Publish the durable registry entry first. If this fails, the
+                // active pointer is never touched. The service mutex prevents
+                // accepted-episode counters from changing during the short
+                // pointer commit and its possible rollback.
+                expert_registry_.save(promoted);
+            } catch (const std::exception& exception) {
+                std::string recovery_error;
+                try {
+                    recover_internal_promotion_transaction(settings.state_root);
+                } catch (const std::exception& recovery_exception) {
+                    recovery_error = recovery_exception.what();
+                }
+                return CandidatePromotionCommitResult{
+                    .succeeded = false,
+                    .diagnostics = std::string{"unable to stage internal expert registry: "} +
+                        exception.what() + (recovery_error.empty()
+                            ? std::string{}
+                            : "; transaction recovery failed: " + recovery_error),
+                };
+            }
+            *current = promoted;
+            active_module = promoted;
+
             const auto promotion_result = platform::run_process(
                 platform::ProcessSpec{
                     .executable = settings.python_executable,
@@ -1609,13 +1780,36 @@ bool ContinualLearningService::run_internal_update(
                     .append_log = true,
                 },
                 [] { return false; });
+            const auto active_after = read_string_metric(
+                settings.state_root / "models" / "internal" / "active.json",
+                "generation");
+            if (active_after == internal_generation) {
+                clear_internal_promotion_transaction(settings.state_root);
+                return CandidatePromotionCommitResult{
+                    .succeeded = true,
+                    .diagnostics = promotion_result.exit_code == 0
+                        ? "candidate pointer and expert registry committed"
+                        : "candidate pointer committed; non-critical post-commit reporting failed",
+                };
+            }
+
+            std::string rollback_error;
+            try {
+                expert_registry_.save(previous);
+                clear_internal_promotion_transaction(settings.state_root);
+            } catch (const std::exception& exception) {
+                rollback_error = exception.what();
+            }
+            *current = previous;
+            active_module = previous;
             return CandidatePromotionCommitResult{
-                .succeeded = promotion_result.launched && promotion_result.exit_code == 0,
-                .diagnostics = promotion_result.error.empty()
-                    ? (promotion_result.exit_code == 0
-                        ? "candidate manifest and active pointer committed atomically"
-                        : "candidate compare-and-swap promotion command failed")
-                    : promotion_result.error,
+                .succeeded = false,
+                .diagnostics = !rollback_error.empty()
+                    ? "candidate pointer commit failed and registry rollback also failed: " +
+                        rollback_error
+                    : (promotion_result.error.empty()
+                        ? "candidate compare-and-swap promotion failed; expert registry rolled back"
+                        : promotion_result.error + "; expert registry rolled back"),
             };
         });
     if (atomic_promotion.outcome != PromotionOutcome::promoted) {
@@ -1638,50 +1832,6 @@ bool ContinualLearningService::run_internal_update(
         update_status(status);
         return false;
     }
-    registry_stale = false;
-    {
-        std::lock_guard lock(mutex_);
-        auto* current = expert_registry_.find(candidate.skill);
-        if (current == nullptr || current->generation != candidate.parent_generation) {
-            candidate.state = CandidateState::rejected;
-            candidate.message = "internal candidate registry changed during atomic promotion";
-            candidate.updated_unix_ms = memory::now_unix_ms();
-            candidate_registry_.save(candidate);
-            status.state = LearningJobState::failed;
-            status.message = candidate.message;
-            registry_stale = true;
-        } else {
-            current->previous_state = internal_parent == "g000000"
-                ? current->state
-                : ExpertState::full_rank_active;
-            current->previous_module_path = internal_parent == "g000000"
-                ? std::filesystem::path{}
-                : internal_generation_path(settings.state_root, internal_parent);
-            current->previous_adapter_path = current->adapter_path;
-            current->state = ExpertState::full_rank_active;
-            current->adapter_path.clear();
-            current->module_path = internal_generation_path(
-                settings.state_root, internal_generation);
-            current->promoted_candidate_id = candidate.id;
-            ++current->generation;
-            ++current->lora_generations;
-            current->episodes_since_update =
-                current->episodes_since_update > candidate.training_episode_count
-                ? current->episodes_since_update -
-                    static_cast<std::size_t>(candidate.training_episode_count)
-                : 0U;
-            current->validation_score = candidate.validation_score;
-            current->regression_score = candidate.regression_score;
-            current->updated_unix_ms = memory::now_unix_ms();
-            expert_registry_.save(*current);
-            active_module = *current;
-        }
-    }
-    if (registry_stale) {
-        update_status(status);
-        return false;
-    }
-
     candidate.state = CandidateState::promoted;
     candidate.message = "internal skill generation promoted; prior active weights remain rollback-ready";
     candidate.updated_unix_ms = memory::now_unix_ms();

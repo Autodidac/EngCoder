@@ -54,6 +54,30 @@ def main() -> int:
             encoding="utf-8",
         )
 
+        anchors = data / "anchors.jsonl"
+        anchors.write_text(
+            "\n".join(
+                json.dumps(record)
+                for record in (
+                    {
+                        **_record("english-anchor", "english", "A held-out English answer."),
+                        "messages": [
+                            {"role": "user", "content": "Answer this held-out request."},
+                            {"role": "assistant", "content": "A held-out English answer."},
+                        ],
+                    },
+                    {
+                        **_record("cpp-anchor", "cpp23", "```cpp\nint held_out{};\n```"),
+                        "messages": [
+                            {"role": "user", "content": "Repair this held-out C++ declaration."},
+                            {"role": "assistant", "content": "```cpp\nint held_out{};\n```"},
+                        ],
+                    },
+                )
+            ) + "\n",
+            encoding="utf-8",
+        )
+
         import curriculum_guard as guard  # pylint: disable=import-outside-toplevel
 
         cpp_only_episodes = data / "cpp-only-episodes.jsonl"
@@ -67,20 +91,22 @@ def main() -> int:
             state_root=temporary,
             seed_dataset=mixed,
             episodes=cpp_only_episodes,
-            anchors=mixed,
+            anchors=anchors,
             scope="cpp23-core",
         ))
         assert parsed.scope == "english-foundation"
         assert isinstance(parsed.seed_dataset, Path)
-        assert isinstance(parsed.episodes, Path)
+        assert parsed.episodes is None
         assert isinstance(parsed.anchors, Path)
         assert parsed.seed_dataset.is_file()
-        assert parsed.episodes.is_file()
         assert parsed.anchors.is_file()
         assert "cpp23" not in parsed.seed_dataset.read_text(encoding="utf-8")
-        assert parsed.episodes.read_text(encoding="utf-8") == ""
-        assert parsed.anchors == mixed
+        assert parsed.anchors == anchors
         assert "```cpp" in parsed.anchors.read_text(encoding="utf-8")
+        assert parsed.curriculum_manifest.is_file()
+        selection = json.loads(parsed.curriculum_manifest.read_text(encoding="utf-8"))
+        assert selection["counts"]["input_lines"] == 1
+        assert selection["counts"]["selected_records"] == 1
 
         unrelated = argparse.Namespace(
             command="inspect-module",
@@ -105,7 +131,7 @@ def main() -> int:
             command="train-internal",
             state_root=temporary,
             seed_dataset=mixed,
-            anchors=mixed,
+            anchors=anchors,
             scope="cpp23-core",
         )
         stale = guard.enforce_namespace(stale)
@@ -116,23 +142,26 @@ def main() -> int:
                 "english_foundation": {
                     "evaluation_passed": True,
                     "established": True,
-                    "bootstrap_policy": "verified-hybrid-conversation-v7",
+                    "bootstrap_policy": "minimal-behavior-curriculum-v8",
                 }
             }),
             encoding="utf-8",
         )
-        assert guard.BOOTSTRAP_POLICY == "verified-hybrid-conversation-v7"
+        assert guard.BOOTSTRAP_POLICY == "minimal-behavior-curriculum-v8"
         ready = argparse.Namespace(
             command="train-internal",
             state_root=temporary,
             seed_dataset=mixed,
-            anchors=mixed,
+            anchors=anchors,
             scope="cpp23-core",
         )
         ready = guard.enforce_namespace(ready)
         assert ready.scope == "cpp23-core"
-        assert ready.seed_dataset == mixed
         assert isinstance(ready.seed_dataset, Path)
+        assert ready.seed_dataset != mixed
+        assert ready.seed_dataset.is_file()
+        assert "```cpp" in ready.seed_dataset.read_text(encoding="utf-8")
+        assert "English answer" not in ready.seed_dataset.read_text(encoding="utf-8")
 
         print("curriculum guard smoke test passed")
         return 0

@@ -2,7 +2,7 @@
 
 ## Initial repository state
 
-- Permanent worktree: `C:\Users\iammi\.codex\worktrees\c2e6\ThreadSpire`
+- Permanent worktree: `<EngCoder worktree>`
 - Branch: `codex/threadspire-unified-workbench`
 - Initial commit: `8d82dca` (`Fix failed reply retry and exact learned recall`)
 - Initial Git status: clean
@@ -138,9 +138,9 @@ This live start test intentionally added only the small compact-native pack to t
 - The optional learning-pack smoke suites passed with the previously installed private runtime: checkpoint/resume, English filtering, repair lineage, atomic promotion, active and isolated shadow servers, JSON/SSE, and clean shutdown.
 - The first manual footprint invocation used the obsolete `cmake/check_footprint.cmake` path and failed before doing work. The corrected `tools/check_base_footprint.cmake` invocation passed at 5.13 MiB; no check was weakened or skipped.
 
-Only after those gates passed, the explicitly authorized reset was performed for exactly `C:\Users\iammi\AppData\Local\ThreadSpire`:
+Only after those gates passed, the explicitly authorized reset was performed for exactly `%LOCALAPPDATA%\ThreadSpire`:
 
-- The reset tool resolved and validated that exact path, refused links escaping the root, checked ThreadSpire-owned processes, and wrote `C:\Users\iammi\AppData\Local\EngCoder-reset-20260826-043239-manifest.json` beside the directory before deletion.
+- The reset tool resolved and validated that exact path, refused links escaping the root, checked ThreadSpire-owned processes, and wrote `%LOCALAPPDATA%\EngCoder-reset-20260826-043239-manifest.json` beside the directory before deletion.
 - It deleted 5,068,451,150 bytes across 18,058 files, including the legacy private Python/PyTorch runtime, models, training data, settings, queues, and failed generations. The manifest records `DeletionCompleted: true`, no followed linked entries, and no deletion error.
 - The original detached Downloads checkout remains untouched at `ad94ad4`. The obsolete `threadspire-native` worktree is absent; the persistent implementation worktree is the only project worktree besides the original Downloads checkout.
 
@@ -264,14 +264,14 @@ Final verification for this checkpoint: a fresh Visual Studio 2022 configure use
 
 Final verification used CMake 4.4.2 with Visual Studio 2022 / MSVC 19.44. The clean Release build passed with /W4 /WX; CTest passed 5/5; the staged Release package passed the 100 MiB gate at 5,585,920 bytes (5.32 MiB). Real-window QA exercised repeated minimum/wide resizing, verified the UI remained responsive, and inspected a settled foreground 1470x1020 capture with all navigation, AI controls, status, transcript cards, and dark surfaces visible.
 
-After those gates passed, the exact resolved C:\Users\iammi\AppData\Local\ThreadSpire path was reset with no-follow traversal. A first attempt correctly reported a late QA-process recreation instead of claiming completion. After that process exited, the target was revalidated and the second manifest recorded 3,596,923 bytes and 12 files deleted with DeletionCompleted: true; the target remains absent so the next user launch is a genuine first start.
+After those gates passed, the exact resolved `%LOCALAPPDATA%\ThreadSpire` path was reset with no-follow traversal. A first attempt correctly reported a late QA-process recreation instead of claiming completion. After that process exited, the target was revalidated and the second manifest recorded 3,596,923 bytes and 12 files deleted with DeletionCompleted: true; the target remains absent so the next user launch is a genuine first start.
 Debug parity verification also passed: the Visual Studio 2022 Debug configuration built successfully and Debug CTest passed 5/5.
 
 ### EngCoder storage identity
 
-After the legacy reset, the live application-data root was renamed to `C:\Users\iammi\AppData\Local\EngCoder`. The executable target, resource files, compact native host, capability-pack contract, exact-path reset guard, smoke tests, and current documentation now use EngCoder. The removed ThreadSpire root is not recreated. The `threadspire.*` C++23 module names and namespace remain only as the already-published internal module/ABI contract required by the native migration plan.
+After the legacy reset, the live application-data root was renamed to `%LOCALAPPDATA%\EngCoder`. The executable target, resource files, compact native host, capability-pack contract, exact-path reset guard, smoke tests, and current documentation now use EngCoder. The removed ThreadSpire root is not recreated. The `threadspire.*` C++23 module names and namespace remain only as the already-published internal module/ABI contract required by the native migration plan.
 
-The renamed target then received a fresh Visual Studio 2022 configure plus clean Release and Debug builds. Release CTest and Debug CTest each passed all five renamed `engcoder_*` tests. The exact resolved `C:\Users\iammi\AppData\Local\EngCoder` reset target was validated, the guarded reset wrote `C:\Users\iammi\AppData\Local\EngCoder-reset-20260826-230814-manifest.json`, and the manifest records `DeletionCompleted: true`. Both current and legacy data roots remain absent, no EngCoder-owned process remains, and the next launch is a genuine first start.
+The renamed target then received a fresh Visual Studio 2022 configure plus clean Release and Debug builds. Release CTest and Debug CTest each passed all five renamed `engcoder_*` tests. The exact resolved `%LOCALAPPDATA%\EngCoder` reset target was validated, the guarded reset wrote `%LOCALAPPDATA%\EngCoder-reset-20260826-230814-manifest.json`, and the manifest records `DeletionCompleted: true`. Both current and legacy data roots remain absent, no EngCoder-owned process remains, and the next launch is a genuine first start.
 
 ### Connected-model request compatibility and reply repainting
 

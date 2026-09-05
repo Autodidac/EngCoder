@@ -7,6 +7,12 @@ EpochGui
 EngCoder includes the backend-neutral EpochGui library from the exact vendored
 source recorded in third_party/EpochGui/engcoder-provenance.md.
 
+Release provenance: owning source commit
+e974921622643e796be134b356f9ca4f4137f811; exact EpochGui subtree tree
+191badda3412f195b4a1cfc635b05b2f3df9584c. This notice makes no claim that a
+separately hosted standalone EpochGui repository currently has an identical
+tree.
+
 EpochGui is Copyright (c) 2026 Adam Rushford and is distributed under the
 LicenseRef-MIT-NoSell terms reproduced in licenses/EpochGui-LICENSE.txt. That
 license and its permission notice must remain with all copies or substantial

@@ -36,17 +36,22 @@ def main() -> int:
         )
         model.initialize_model(temporary, config, force=True)
         original_readiness = model.evaluate_generation_readiness
+        required_readiness_names = sorted({
+            *model._REQUIRED_STRUCTURAL_READINESS_SAMPLES,  # pylint: disable=protected-access
+            "identity",
+            "privacy",
+        })
         model.evaluate_generation_readiness = lambda *_args, **_kwargs: (
             model.GenerationReadiness(
                 True,
                 1.0,
-                ({
-                    "name": "server-smoke",
+                tuple({
+                    "name": name,
                     "passed": True,
                     "structural_quality": True,
                     "reason": "deterministic server smoke stub",
                     "output": "thread and checkpoint",
-                },),
+                } for name in required_readiness_names),
             )
         )
         trained = model.train_candidate(

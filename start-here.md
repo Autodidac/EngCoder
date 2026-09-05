@@ -41,7 +41,9 @@ Accepting a reply stores one cleaned, deduplicated lesson. It does not repeatedl
 
 Automatic idle learning collects independently checked practice material while the app is idle. It needs a connected teacher AI for generated examples and does not modify weights.
 
-Press **Compile data and retrain model** to compile pending verified evidence and retrain a separate test copy. Chat retains priority, checkpoints resume after interruption, and the working model remains active until the candidate passes every check.
+Press **Compile data and retrain model** to derive the smallest bounded curriculum it can justify from pending verified evidence, then retrain a separate test copy. Equivalent phrases collapse to one behavior, repeated answer targets are capped, and normal updates contain only the new delta plus bounded regression replay. Chat retains priority, checkpoints resume after interruption, and the working model remains active until the candidate passes every check.
+
+Actual neural optimization requires the optional **Internal PyTorch Training** pack. Without it, approved lessons still work through verified memory and remain queued for a future weight job; the interface truthfully continues to report **0 B neural weights**.
 
 ## Inspect disk and RAM
 

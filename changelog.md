@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.1 — 2026-09-05 minimal sufficient curriculum
+
+- Added a deterministic, dependency-free curriculum compiler between the append-only evidence pool and every internal neural training run. The compiler writes a separate immutable JSONL selection and a complete hash/count/reason manifest; it never rewrites the evidence ledger.
+- Replaced whole-ledger replay with the newest eligible delta plus at most 32 coverage-balanced replay behaviors for normal updates. Foundation builds use a supervised-token ceiling rather than treating every stored record as mandatory.
+- Collapsed case, punctuation, contractions, obvious conversational paraphrases, numeric/literal slots, exact duplicates, and canonical behavior duplicates while preserving instruction polarity and authoritative corrections.
+- Capped identical normalized answer targets at four coverage-diverse examples so generic answers cannot dominate the gradient set merely because many prompts share them.
+- Removed physical `curriculum_weight` expansion. One selected teaching now creates exactly one gradient sequence.
+- Fixed the four-human-example gate so it counts four distinct behaviors instead of four phrasings, and so the complete qualifying batch reaches compilation rather than only the row that crossed the threshold.
+- Added compile-time defense-in-depth for personal data, credentials, private/nonpublic material, unsupported current facts, provider identity, emoji-only noise, failed records, and code outside the selected scope.
+- Kept held-out prompts evaluation-only while still allowing different examples of the same competence to train; long-form document train/evaluation separation remains section-first upstream.
+- Added a persistent Learning report for evidence rows, behavior clusters, selected records, supervised byte tokens, delta/replay counts, deduplication reasons, and the exact selected-set hash.
+- Bumped the internal bootstrap policy to `minimal-behavior-curriculum-v8`, preventing older whole-ledger-trained candidates from being presented as current.
+- Versioned the optional Internal PyTorch Training pack contract to include the compiler. The portable native application still contains no Python, PyTorch, trainer, or neural weights.
+- Reinterpreted the Small/Medium/Large 24,000/36,000/50,000 step values as hard safety ceilings, not mandatory replay targets. Training now checks all promotion gates at deterministic optimizer-aligned corpus boundaries and stops at the first valid early-success boundary; a new foundation must first cover the selected corpus twice, while an already-trained expert must cover it once.
+- Hardened Internal PyTorch Training pack preparation with an optional trusted `download.pytorch.org/whl/` CUDA index, separate NumPy and Safetensors installation when that index is selected, and operational NumPy, Safetensors round-trip, and CUDA tensor-math validation before the pack is committed.
+- Hardened verified memory so typed JSON parsing rejects quoted-key trust forgery, hard corrections remain authoritative for exact and typo-tolerant retrieval, and polarity-conflicting or ambiguous fuzzy matches fail closed.
+- Made neural promotion transactional across processes: generation activation now uses a locked parent-generation compare-and-swap, inference holds the model-cache lock through generation, and expert-registry/pointer updates recover or roll back together after interruption.
+- Fixed retained activity and resize edge cases: fast concurrent completions remain readable, transcript tails no longer slip under review controls, cached bounds commit only after successful native moves, and malformed curriculum manifests fail closed instead of displaying invented progress.
+- Replaced legacy ThreadSpire provenance labels in the shipped curriculum and held-out records with EngCoder labels so the Training Library never exposes obsolete product branding.
+
 ## 0.9.0 — 2026-09-05 measured-gap autonomy and durable training safety
 
 - Added measured conversational-gap learning: three independently reviewed reusable failures wake Qwen for one-at-a-time deep repair, then Nemotron independently verifies the replacement. Failed replies remain negative evidence and never enter positive memory or weights.

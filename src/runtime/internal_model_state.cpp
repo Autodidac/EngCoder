@@ -17,7 +17,7 @@ import threadspire.core;
 namespace threadspire::ai::runtime {
 namespace {
 
-constexpr std::string_view current_bootstrap_policy = "verified-hybrid-conversation-v7";
+constexpr std::string_view current_bootstrap_policy = "minimal-behavior-curriculum-v8";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -218,7 +218,9 @@ InternalModelProgress read_internal_model_progress(const app::AppPaths& paths) n
             value->find("generation_ready"), false);
 
         const auto explicit_percent = core::json::number_or(value->find("percent"), -1.0);
-        if (progress.bootstrap_target_steps > 0U) {
+        if (progress.bootstrap_complete) {
+            progress.percent = 100.0;
+        } else if (progress.bootstrap_target_steps > 0U) {
             const auto completed = progress.total_steps > 0U
                 ? progress.total_steps
                 : progress.prior_total_steps + progress.step;

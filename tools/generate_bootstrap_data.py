@@ -53,7 +53,7 @@ def record(
         "score": SCORE,
         "accepted": True,
         "tags": list(tags),
-        "provenance": "threadspire-deterministic-bootstrap",
+        "provenance": "engcoder-deterministic-bootstrap",
     }
     if curriculum_weight > 1:
         item["curriculum_weight"] = min(4, int(curriculum_weight))
@@ -75,7 +75,7 @@ def conversation_record(
         "score": SCORE,
         "accepted": True,
         "tags": list(tags),
-        "provenance": "threadspire-deterministic-bootstrap",
+        "provenance": "engcoder-deterministic-bootstrap",
     }
     if curriculum_weight > 1:
         item["curriculum_weight"] = min(4, int(curriculum_weight))
@@ -1373,7 +1373,7 @@ def split_train_anchors(records: Sequence[dict], anchor_count: int) -> tuple[lis
         {
             **{key: value for key, value in item.items() if key != "curriculum_weight"},
             "id": "anchor-" + str(item["id"]),
-            "provenance": "threadspire-held-out-anchor",
+            "provenance": "engcoder-held-out-anchor",
         }
         for item in anchors
     ]

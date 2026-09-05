@@ -16,9 +16,14 @@ import re
 import sys
 from typing import Any
 
+try:
+    from . import curriculum_compiler as _curriculum_compiler
+except ImportError:
+    import curriculum_compiler as _curriculum_compiler
+
 ENGLISH_TARGET = "english-foundation"
 ENGLISH_INTERNAL_SCOPE = "english-core"
-BOOTSTRAP_POLICY = "verified-hybrid-conversation-v7"
+BOOTSTRAP_POLICY = "minimal-behavior-curriculum-v8"
 _INTERNAL_TRAIN_COMMAND = "train-internal"
 
 _CPP_LABELS = {
@@ -292,6 +297,126 @@ def filter_dataset(
     return _same_path_type(value, output)
 
 
+def _bounded_environment_integer(
+    name: str,
+    fallback: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        requested = int(os.environ.get(name, str(fallback)))
+    except (TypeError, ValueError):
+        requested = fallback
+    return max(minimum, min(requested, maximum))
+
+
+def _selection_directory(namespace: argparse.Namespace, data_root: Path) -> Path:
+    metrics_output = getattr(namespace, "metrics_output", None)
+    if isinstance(metrics_output, (str, os.PathLike)):
+        candidate = Path(metrics_output).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        return candidate.resolve().parent / "dataset"
+    return data_root / "state" / "compiled-curriculum"
+
+
+def compile_minimal_curriculum(
+    namespace: argparse.Namespace,
+    data_root: Path,
+    foundation_ready: bool,
+) -> dict[str, Any]:
+    """Materialize the smallest bounded training view without editing evidence.
+
+    Candidate snapshots and the user's episode store remain append-only audit
+    pools.  The trainer receives only this separately published view: one
+    authoritative representative per behavior, the newest candidate delta,
+    and a small coverage-balanced replay set.  Held-out anchors are never
+    rewritten or consumed as gradients.
+    """
+
+    original_seed = getattr(namespace, "seed_dataset", None)
+    sources: list[Path] = []
+    for value in (original_seed, getattr(namespace, "episodes", None)):
+        source = _existing_path(value)
+        if source is not None and source.suffix.lower() == ".jsonl" and source not in sources:
+            sources.append(source)
+    if not sources:
+        raise RuntimeError("minimal curriculum compilation found no training evidence pool")
+
+    anchor_paths: list[Path] = []
+    anchor = _existing_path(getattr(namespace, "anchors", None))
+    if anchor is not None and anchor.suffix.lower() == ".jsonl":
+        anchor_paths.append(anchor)
+
+    requested_scope = str(getattr(namespace, "scope", ENGLISH_TARGET))
+    normalized_scope = _normalize_label(requested_scope)
+    foundation_build = bool(
+        not foundation_ready
+        or normalized_scope.startswith("english-foundation")
+        or int(getattr(namespace, "bootstrap_target_steps", 0) or 0) > 0
+    )
+    token_budget = _bounded_environment_integer(
+        "ENGCODER_FOUNDATION_TOKEN_BUDGET" if foundation_build else
+        "ENGCODER_UPDATE_TOKEN_BUDGET",
+        131_072 if foundation_build else 32_768,
+        1_024,
+        1_048_576,
+    )
+    replay_budget = _bounded_environment_integer(
+        "ENGCODER_REPLAY_EXAMPLE_BUDGET",
+        0 if foundation_build else 32,
+        0,
+        256,
+    )
+    answer_budget = _bounded_environment_integer(
+        "ENGCODER_ANSWER_TEMPLATE_BUDGET",
+        4,
+        1,
+        32,
+    )
+    delta_limit: int | None = None
+    if not foundation_build:
+        delta_limit = max(0, int(getattr(namespace, "delta_limit", 0) or 0))
+
+    selection_directory = _selection_directory(namespace, data_root)
+    output = selection_directory / "minimal-training.jsonl"
+    manifest_path = selection_directory / "curriculum-selection.json"
+    manifest = _curriculum_compiler.compile_curriculum(
+        sources,
+        output,
+        manifest_path,
+        anchor_paths=anchor_paths,
+        scope=internal_scope_for(requested_scope),
+        token_budget=token_budget,
+        max_per_cluster=1,
+        max_per_answer=answer_budget,
+        replay_budget=replay_budget,
+        delta_limit=delta_limit,
+    )
+    counts = manifest.get("counts", {})
+    if int(counts.get("selected_records", 0)) <= 0:
+        raise RuntimeError(
+            "minimal curriculum compilation selected no safe, non-held-out training behavior"
+        )
+
+    namespace.seed_dataset = _same_path_type(original_seed, output)
+    if hasattr(namespace, "episodes"):
+        # Every selected live episode is already present in the compiled file.
+        # Passing the append-only ledger again would defeat bounded replay.
+        namespace.episodes = None
+    namespace.curriculum_manifest = manifest_path
+
+    stable_manifest = data_root / "state" / "curriculum-selection.json"
+    stable_manifest.parent.mkdir(parents=True, exist_ok=True)
+    temporary = stable_manifest.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, stable_manifest)
+    return manifest
+
+
 def _serializable_namespace(namespace: argparse.Namespace) -> dict[str, Any]:
     return {
         name: str(value) if isinstance(value, os.PathLike) else value
@@ -379,14 +504,20 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
         os.environ["ENGCODER_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
         os.environ["ENGCODER_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
 
+    selection = compile_minimal_curriculum(namespace, data_root, ready)
     effective = _serializable_namespace(namespace)
     write_status(data_root, requested, effective, ready)
+    counts = selection.get("counts", {})
     print(
         "[curriculum-guard] "
         f"English established: {ready}; "
         f"requested scope: {requested.get('scope', '')}; "
         f"effective target: {effective.get('scope', '')}; "
-        f"internal scope: {internal_scope_for(effective.get('scope', ENGLISH_TARGET))}",
+        f"internal scope: {internal_scope_for(effective.get('scope', ENGLISH_TARGET))}; "
+        f"evidence rows: {counts.get('input_lines', 0)}; "
+        f"behavior clusters: {counts.get('behavior_clusters', 0)}; "
+        f"selected: {counts.get('selected_records', 0)}; "
+        f"supervised tokens: {counts.get('selected_supervised_tokens', 0)}",
         file=sys.stderr,
         flush=True,
     )

@@ -38,7 +38,7 @@ Only a completed negative review advances the cursor as rejected. Accepted, revi
 
 The vendored source is the clean backend-neutral subtree from:
 
-- Source: `C:\Users\iammi\.codex\worktrees\2504\epoch_vibed\Engine\dep\EpochGui`
+- Source: `<authorized EpochGui source>`
 - Parent commit: `e974921622643e796be134b356f9ca4f4137f811`
 - EpochGui subtree tree: `191badda3412f195b4a1cfc635b05b2f3df9584c`
 - Last subtree change: `261f7fff8473432bba8a948d14988dba290329cf`

@@ -396,7 +396,7 @@ void test_learning_service_stores_before_training() {
         .prompt = "Write a C++23 scope guard",
         .response = "Use a move-only callable owner whose destructor invokes the callable.",
         .model_id = "coder",
-        .score = 0.95,
+        .score = 1.0,
         .compiler_passed = false,
         .tests_passed = false,
         .human_accepted = true,
@@ -612,11 +612,47 @@ void test_episode_dedup_and_negative_evidence() {
     require(exact_correction.has_value() &&
                 exact_correction->episode.response == correction.correction,
             "an exact lookup must immediately return the newest human correction");
+    const auto verified_correction = store.verified_match(
+        "Repair a dangling span", "cpp23-debugging");
+    require(verified_correction.has_value() &&
+                verified_correction->episode.response == correction.correction,
+            "verified serving must prefer a hard correction even when the stale answer ties its score");
     const auto matched_corrections = store.retrieve(
         "repair dangling span owner lifetime", 5);
     require(!matched_corrections.empty() &&
                 matched_corrections.front().episode.response == correction.correction,
             "semantic retrieval must prefer a human correction over the stale answer");
+
+    auto conversational = accepted;
+    conversational.id = "conversation-before-correction";
+    conversational.skill = "english-conversation";
+    conversational.prompt = "What is your favorite color?";
+    conversational.response = "The stale conversational answer.";
+    conversational.score = 1.0;
+    conversational.content_hash.clear();
+    require(store.append_if_new(conversational),
+            "a verified conversational answer should enter retrieval");
+    auto conversational_correction = conversational;
+    conversational_correction.id = "conversation-hard-correction";
+    conversational_correction.human_rejected = true;
+    conversational_correction.deterministic_verified = false;
+    conversational_correction.compiler_passed = false;
+    conversational_correction.tests_passed = false;
+    conversational_correction.provenance = "interactive-hard-correction";
+    conversational_correction.correction = "I do not have a favorite color.";
+    conversational_correction.created_unix_ms += 1;
+    conversational_correction.content_hash = threadspire::ai::memory::make_content_hash(
+        conversational_correction.skill,
+        conversational_correction.prompt,
+        conversational_correction.response + "\nAPPROVED CORRECTION\n" +
+            conversational_correction.correction);
+    require(store.append_if_new(conversational_correction),
+            "a conversational hard correction should supersede its stale answer");
+    const auto fuzzy_correction = store.verified_match(
+        "What is your favorite colur?", "english-conversation");
+    require(fuzzy_correction.has_value() &&
+                fuzzy_correction->episode.response == conversational_correction.correction,
+            "fuzzy verified serving must not revive an answer superseded by a hard correction");
     require(store.count_for_skill("cpp23-debugging") == 1U &&
                 store.human_acceptance_count_for_skill("cpp23-debugging") == 1U,
             "correcting one prompt must not inflate its accepted or diverse-human counts");
@@ -626,6 +662,21 @@ void test_episode_dedup_and_negative_evidence() {
         require(recovered_correction.has_value() &&
                     recovered_correction->episode.response == correction.correction,
                 "the corrected answer must remain authoritative after process restart");
+    }
+    auto injected = accepted;
+    injected.id = "unverified-json-key-injection";
+    injected.prompt = R"(Explain the literal JSON fragment "human_accepted": true.)";
+    injected.response = "It is an example string, not trusted evidence.";
+    injected.human_accepted = false;
+    injected.deterministic_verified = false;
+    injected.reference_verified = false;
+    injected.eligible_for_training = false;
+    injected.content_hash.clear();
+    store.append(injected);
+    {
+        threadspire::ai::memory::EpisodeStore recovered(root / "episodes.jsonl");
+        require(!recovered.exact_verified(injected.prompt).has_value(),
+                "quoted JSON keys inside unverified content must not forge trust after restart");
     }
     std::filesystem::remove_all(root);
 }
@@ -652,8 +703,28 @@ void test_learning_preview_blocks_errors_and_repetition() {
     const auto accepted_episode = [](const int index) {
         threadspire::ai::memory::Episode episode{};
         episode.skill = "english-core";
-        episode.prompt = "Unique approved message " + std::to_string(index);
-        episode.response = "Safe useful reply " + std::to_string(index);
+        switch (index) {
+        case 1:
+            episode.prompt = "Offer a concise greeting";
+            episode.response = "Hello. It is good to meet you.";
+            break;
+        case 2:
+            episode.prompt = "Explain a friendly farewell";
+            episode.response = "Say goodbye and wish the person well.";
+            break;
+        case 3:
+            episode.prompt = "Ask for a missing detail";
+            episode.response = "Ask a focused clarifying question.";
+            break;
+        case 4:
+            episode.prompt = "Acknowledge a completed task";
+            episode.response = "Confirm that the requested work is complete.";
+            break;
+        default:
+            episode.prompt = "Review an ordinary response";
+            episode.response = "Provide a safe and useful reply.";
+            break;
+        }
         episode.model_id = "internal-fast";
         episode.score = 0.92;
         episode.human_accepted = true;
@@ -741,8 +812,8 @@ void test_learning_preview_blocks_errors_and_repetition() {
             "a submitted correction must replace the stale answer immediately");
     require(service.memory_store().count_for_skill("english-core") == 4U &&
                 service.memory_store().human_acceptance_count_for_skill("english-core") == 4U &&
-                service.memory_store().training_count_for_skill("english-core") == 2U,
-            "a correction must not fake diversity even when it enters a later candidate batch");
+                service.memory_store().training_count_for_skill("english-core") == 1U,
+            "a correction must replace one authoritative behavior without inflating any count");
     service.request_stop();
     std::filesystem::remove_all(root);
 }
@@ -870,26 +941,117 @@ void test_knowledge_classifier_routes_volatile_state_to_retrieval() {
 }
 
 void test_knowledge_classifier_batches_diverse_conversation_lessons() {
-    threadspire::ai::learning::KnowledgeClassifier classifier;
-    const threadspire::ai::memory::Episode lesson{
-        .id = "conversation",
-        .skill = "english-conversation",
-        .prompt = "What's up?",
-        .response = "Not much. What's on your mind?",
-        .model_id = "human-approved",
-        .score = 0.92,
-        .human_accepted = true,
-        .self_generated = false,
-    };
-    const auto single = classifier.classify(lesson, 1U);
-    require(single.destination == threadspire::ai::learning::KnowledgeDestination::retrieval_memory &&
-                !single.eligible_for_weight_training,
-            "one approved conversation phrase must remain a deduplicated memory lesson");
+    namespace ai = threadspire::ai;
+    const auto root = temporary_root();
+    ai::learning::LearningSettings settings;
+    settings.python_executable = root / "missing-python.exe";
+    settings.worker_script = root / "missing-worker.py";
+    settings.state_root = root;
+    settings.base_model = "local-base";
+    settings.policy.lora_microbatch = 100U;
+    settings.initial_interactive_priority = true;
+    ai::learning::ContinualLearningService service(std::move(settings));
 
-    const auto batch = classifier.classify(lesson, 4U);
-    require(batch.destination == threadspire::ai::learning::KnowledgeDestination::lora_incubation &&
-                batch.eligible_for_weight_training,
-            "four diverse human-approved conversation lessons must form a weight-training batch");
+    const auto lesson = [](std::string id, std::string prompt, std::string response) {
+        return ai::memory::Episode{
+            .id = std::move(id),
+            .skill = "english-conversation",
+            .prompt = std::move(prompt),
+            .response = std::move(response),
+            .model_id = "human-approved",
+            .score = 0.92,
+            .human_accepted = true,
+            .self_generated = false,
+        };
+    };
+
+    const auto shared_reply = std::string{"Not much. What's on your mind?"};
+    const auto equivalent_prompts = std::vector<std::string>{
+        "What's up?",
+        "What is up?",
+        "Whats up",
+        "What's going on?",
+        "How are you?",
+    };
+    for (std::size_t index = 0U; index < equivalent_prompts.size(); ++index) {
+        auto episode = lesson(
+            "equivalent-" + std::to_string(index),
+            equivalent_prompts[index],
+            shared_reply);
+        const auto preview = service.preview(episode);
+        require(preview.would_store && !preview.eligible_for_weight_training,
+                "equivalent paraphrase rows must remain append-only memory without unlocking weights");
+        require(service.submit(episode),
+                "each raw paraphrase should remain available as an exact episodic record");
+        const auto exact = service.memory_store().exact_verified(episode.prompt);
+        require(exact.has_value() && exact->episode.response == shared_reply,
+                "canonical accounting must not alter exact recall");
+    }
+    require(service.memory_store().count_for_skill("english-conversation") == 1U &&
+                service.memory_store().human_acceptance_count_for_skill(
+                    "english-conversation") == 1U &&
+                service.memory_store().training_count_for_skill("english-conversation") == 0U,
+            "four equivalent paraphrases must count as one accepted human behavior");
+    {
+        ai::memory::EpisodeStore recovered(service.memory_store().path());
+        require(recovered.count_for_skill("english-conversation") == 1U &&
+                    recovered.human_acceptance_count_for_skill("english-conversation") == 1U,
+                "canonical behavior counts must rebuild deterministically from raw append-only rows");
+        for (const auto& prompt : equivalent_prompts) {
+            const auto exact = recovered.exact_verified(prompt);
+            require(exact.has_value() && exact->episode.response == shared_reply,
+                    "restart must preserve every raw paraphrase for exact recall");
+        }
+    }
+
+    {
+        ai::memory::EpisodeStore signature_store(root / "signature-episodes.jsonl");
+        signature_store.append(lesson(
+            "polarity-yes", "Include public identifiers in the answer.", "Yes, include them."));
+        signature_store.append(lesson(
+            "polarity-no", "Do not include private identifiers in the answer.", "No, omit them."));
+        signature_store.append(lesson(
+            "constraint-three", "Return at most 3 items.", "Return a bounded list."));
+        signature_store.append(lesson(
+            "constraint-five", "Return at most 5 items.", "Return a bounded list."));
+        require(signature_store.human_acceptance_count_for_skill(
+                    "english-conversation") == 3U,
+                "opposite prompt polarity must remain distinct while numeric values remain behavior slots");
+
+        auto first_slot = lesson(
+            "slot-one", "Translate `cat` in 2 words", "Use `bonjour`.");
+        first_slot.skill = "english-slots";
+        signature_store.append(first_slot);
+        auto second_slot = lesson(
+            "slot-two", "Translate `dog` in 5 words", "Use `salut`.");
+        second_slot.skill = "english-slots";
+        signature_store.append(second_slot);
+        require(signature_store.human_acceptance_count_for_skill("english-slots") == 1U,
+                "numeric and quoted literal values must normalize as behavior slots");
+    }
+
+    const auto distinct_lessons = std::vector<ai::memory::Episode>{
+        lesson("distinct-1", "How should I greet a new teammate?",
+               "Say hello and introduce yourself."),
+        lesson("distinct-2", "How do I politely end a chat?",
+               "Say goodbye and wish them well."),
+        lesson("distinct-3", "How can I ask for clarification?",
+               "Ask one concise question about the missing detail."),
+    };
+    for (std::size_t index = 0U; index < distinct_lessons.size(); ++index) {
+        const auto preview = service.preview(distinct_lessons[index]);
+        require(preview.would_store &&
+                    preview.eligible_for_weight_training == (index + 1U == distinct_lessons.size()),
+                "only the fourth materially distinct behavior may unlock conversation training");
+        require(service.submit(distinct_lessons[index]),
+                "materially distinct conversation lessons should enter persistent learning");
+    }
+    require(service.memory_store().human_acceptance_count_for_skill(
+                "english-conversation") == 4U &&
+                service.memory_store().training_count_for_skill("english-conversation") == 1U,
+            "four materially distinct behaviors must form one gated weight-training batch");
+    service.request_stop();
+    std::filesystem::remove_all(root);
 }
 
 void test_resource_governor_prioritizes_inference() {
@@ -1600,7 +1762,7 @@ void test_internal_model_lifecycle_state_and_progress() {
         progress << "{\n"
                  << "  \"phase\": \"training\",\n"
                  << "  \"message\": \"resuming\",\n"
-                 << "  \"bootstrap_policy\": \"verified-hybrid-conversation-v7\",\n"
+                 << "  \"bootstrap_policy\": \"minimal-behavior-curriculum-v8\",\n"
                  << "  \"heartbeat_unix_ms\": " << now_ms << ",\n"
                  << "  \"step\": 6,\n"
                  << "  \"maximum_steps\": 1196,\n"
@@ -1620,7 +1782,7 @@ void test_internal_model_lifecycle_state_and_progress() {
 
     const auto progress = threadspire::ai::runtime::read_internal_model_progress(paths);
     require(progress.available && !progress.stale && progress.step == 6U &&
-                progress.bootstrap_policy == "verified-hybrid-conversation-v7" &&
+                progress.bootstrap_policy == "minimal-behavior-curriculum-v8" &&
                 progress.bootstrap_policy_current,
             "live progress heartbeat, policy, and exact checkpoint step must be readable");
     require(progress.percent > 0.8 && progress.percent < 0.9,
@@ -1647,12 +1809,12 @@ void test_internal_model_lifecycle_state_and_progress() {
                 !stale_ready.generation_ready && !stale_ready.bootstrap_complete &&
                 threadspire::ai::runtime::default_bootstrap_target(stale_ready) == 24000U,
             "a v6 manifest must remain quarantined even when its obsolete ready flags are true");
-    write_ready_manifest("verified-hybrid-conversation-v7");
+    write_ready_manifest("minimal-behavior-curriculum-v8");
     const auto current_ready = threadspire::ai::runtime::inspect_internal_model_state(paths);
     require(current_ready.bootstrap_policy_current && current_ready.generation_ready &&
                 current_ready.bootstrap_complete &&
                 threadspire::ai::runtime::default_bootstrap_target(current_ready) == 1200U,
-            "a fully trained v7 manifest must be recognized as the current ready generation");
+            "a fully trained v8 manifest must be recognized as the current ready generation");
     std::filesystem::remove_all(root);
 }
 
@@ -1941,6 +2103,7 @@ void test_windows_ui_source_contract() {
     const auto learning_gate = read_text_file(source / "src/learning/knowledge_classifier.cpp");
     const auto learning_service = read_text_file(source / "src/learning/continual_learning_service.cpp");
     const auto episode_store = read_text_file(source / "src/memory/episode_store.cpp");
+    const auto learning_pipeline = read_text_file(source / "docs/learning-pipeline.md");
     require(learning_gate.find("model errors, corrupt drafts, and private reasoning") !=
                 std::string::npos &&
                 learning_gate.find("private_or_nonpublic_training_text") != std::string::npos &&
@@ -1950,7 +2113,12 @@ void test_windows_ui_source_contract() {
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
             "per-reply learning must reject error text and prevent repeated prompts from being overweighted");
     require(ui.find("Compile data and retrain model") != std::string::npos &&
-                ui.find("this is not a countdown") != std::string::npos &&
+                ui.find("there is no wall-clock session") != std::string::npos &&
+                ui.find("Candidate bounds: supervised-token, replay, step, and resource ceilings") !=
+                    std::string::npos &&
+                ui.find("within 12 hours") == std::string::npos &&
+                learning_pipeline.find("12-hour requirement") == std::string::npos &&
+                learning_pipeline.find("not a wall-clock promise or countdown") != std::string::npos &&
                 ui.find("Controlled software self-improvement: separate") != std::string::npos &&
                 ui.find("Create verified practice examples while the app is idle") != std::string::npos &&
                 ui.find("Show backup example controls") != std::string::npos &&
@@ -2059,6 +2227,8 @@ void test_windows_ui_source_contract() {
     require(ui.find("stream_timer") != std::string::npos &&
                 ui.find("capture_edit_viewport") != std::string::npos &&
                 ui.find("EM_GETFIRSTVISIBLELINE") != std::string::npos &&
+                ui.find("viewport.first_visible_line + visible_lines >= line_count;") != std::string::npos &&
+                ui.find("viewport.first_visible_line + visible_lines >= line_count - 1") == std::string::npos &&
                 ui.find("apply_transcript_tail_inset") != std::string::npos &&
                 ui.find("EM_SETRECTNP") != std::string::npos &&
                 ui.find("WM_SETREDRAW") != std::string::npos &&
@@ -2101,6 +2271,18 @@ void test_windows_ui_source_contract() {
                 ui.find("piggyback_operation_") != std::string::npos &&
                 ui.find("pipeline.active_job") != std::string::npos &&
                 ui.find("storage_operation_") != std::string::npos &&
+                ui.find("running_activity_summaries_") != std::string::npos &&
+                ui.find("pending_completed_activity_summaries_") != std::string::npos &&
+                ui.find("maximum_completed_summaries = 3U") != std::string::npos &&
+                ui.find("running_activity_summaries_.erase(iterator)") != std::string::npos &&
+                ui.find("completed_activity_summaries_.insert(") != std::string::npos &&
+                ui.find("\"chat\",\n        result->succeeded") != std::string::npos &&
+                ui.find("\"repository\",\n        L\"Repository task: \"") != std::string::npos &&
+                ui.find("\"media\",\n        result->succeeded") != std::string::npos &&
+                ui.find("\"storage-cleanup\", storage_cleanup_summary_") != std::string::npos &&
+                ui.find("\"capability-pack\", status.str()") != std::string::npos &&
+                ui.find("\"discovery\",\n        report->models.empty()") != std::string::npos &&
+                ui.find("\"mcp\",\n        result->succeeded") != std::string::npos &&
                 ui.find("WORKING — ") != std::string::npos &&
                 ui.find("COMPLETED — ") != std::string::npos &&
                 ui.find("This result stays visible until another activity begins") != std::string::npos &&
@@ -2242,7 +2424,7 @@ void test_windows_ui_source_contract() {
                 ui.find("start_backend(true)", foundation_serve_branch) != std::string::npos &&
                 ui.find("background learning must never make the last promoted model unavailable") != std::string::npos,
             "a promoted model or the clean-install native foundation must start serving before shadow-learning backpressure is considered");
-    require(ui.find("Automatic setup starts with the smallest profile and its 24k quality target") != std::string::npos &&
+    require(ui.find("Automatic setup starts with the smallest profile and a 24k-step safety cap") != std::string::npos &&
                 ui.find("AI: best available") != std::string::npos &&
                 ui.find("EngCoder built-in: ") != std::string::npos &&
                 ui.find("NOT READY — learning automatically") != std::string::npos &&
@@ -2252,10 +2434,10 @@ void test_windows_ui_source_contract() {
                 ui.find("progress_active && completed == 0U") != std::string::npos &&
                 ui.find("stream << L\"starting\"") != std::string::npos &&
                 ui.find("progress_has_saved_work") != std::string::npos &&
-                ui.find("Built-in AI failed quality checks at ") != std::string::npos &&
+                ui.find("Built-in AI failed quality checks after ") != std::string::npos &&
                 ui.find("Creating and checking separate practice examples") != std::string::npos &&
                 ui.find("Open Connections, verify the PyTorch runtime") == std::string::npos,
-            "Chat and AI & Tools must show the saved live or terminal built-in AI counter while new setups use the minimum 24k profile");
+            "Chat and AI & Tools must show saved progress as a quality-gated safety ceiling while new setups begin with the 24k profile");
     const auto native_missing_status =
         ui.find("else if (!runtime::native_inference_source_available(paths_))");
     const auto native_missing_assignment =
@@ -2296,7 +2478,15 @@ void test_windows_ui_source_contract() {
                 ui.find("training-target.txt") != std::string::npos &&
                 ui.find("Automatic idle learning never changes the selected target") != std::string::npos &&
                 ui.find("Add verified file") != std::string::npos &&
-                ui.find("choose_training_dataset") != std::string::npos,
+                ui.find("choose_training_dataset") != std::string::npos &&
+                ui.find("schema_version\"), -1.0) != 1.0") != std::string::npos &&
+                ui.find("engcoder-minimal-curriculum-v1") != std::string::npos &&
+                ui.find("valid_hash") != std::string::npos &&
+                ui.find("progress.source_rows = count(counts, \"input_lines\")") != std::string::npos &&
+                ui.find("progress.parsed_records = count(counts, \"parsed_records\")") != std::string::npos &&
+                ui.find("progress.eligible_records = count(counts, \"eligible_records\")") != std::string::npos &&
+                ui.find("source rows (") != std::string::npos &&
+                ui.find("evidence rows ->") == std::string::npos,
             "the training interface must default to English, persist target selection, and expose understandable custom JSONL import");
     require(ui.find("Training Library —") != std::string::npos &&
                 ui.find("append_training_library_file") != std::string::npos &&
@@ -2335,9 +2525,16 @@ void test_windows_ui_source_contract() {
             "tabs, selectors, push buttons, storage cards, and progress surfaces must use one coherent dark palette rather than white native islands");
     const auto page_host_layout = ui.find("for (std::size_t index = 0; index < page_windows_.size(); ++index)");
     const auto leaf_layout_batch = ui.find("LayoutBatch layout_batch{192}");
+    const auto move_control_begin = ui.find("void move_control(");
+    const auto direct_move = ui.find("if (::SetWindowPos(", move_control_begin);
+    const auto direct_cache_update = ui.find(
+        "layout_bounds_cache.insert_or_assign(control, desired_bounds)", direct_move);
+    const auto premature_cache_update = ui.find(
+        "layout_bounds_cache.insert_or_assign(control, desired_bounds)", move_control_begin);
     require(ui.find("SWP_NOCOPYBITS") != std::string::npos &&
                 ui.find("BeginDeferWindowPos") != std::string::npos &&
                 ui.find("DeferWindowPos") != std::string::npos &&
+                ui.find("::EndDeferWindowPos(batch) != FALSE") != std::string::npos &&
                 ui.find("moves_by_parent_") != std::string::npos &&
                 ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
                 ui.find("const auto tab_width = std::max(1, tab_space / tab_count)") != std::string::npos &&
@@ -2351,6 +2548,10 @@ void test_windows_ui_source_contract() {
                 ui.find("::SetTimer(window_, resize_layout_timer, 33U") != std::string::npos &&
                 ui.find("std::unordered_map<HWND, epochengine::gui_lib::Rect> layout_bounds_cache") != std::string::npos &&
                 ui.find("layout_bounds_cache.insert_or_assign(control, desired_bounds)") != std::string::npos &&
+                ui.find("and cache only moves Win32 actually accepted") != std::string::npos &&
+                direct_move != std::string::npos &&
+                direct_cache_update > direct_move &&
+                premature_cache_update == direct_cache_update &&
                 ui.find("make_splitter_layout") != std::string::npos &&
                 ui.find("::InvalidateRect(window_, nullptr, FALSE)") != std::string::npos &&
                 ui.find("active_layout_page_host") != std::string::npos &&
@@ -2475,20 +2676,55 @@ void test_worker_and_resource_contract() {
             "candidate verification must serve an exact unpromoted generation in an isolated shadow host");
     const auto internal_model = read_text_file(source / "resources/internal_model.py");
     const auto curriculum_guard = read_text_file(source / "resources/curriculum_guard.py");
+    const auto curriculum_compiler = read_text_file(source / "resources/curriculum_compiler.py");
     const auto internal_model_state = read_text_file(
         source / "src/runtime/internal_model_state.cpp");
     const auto clean_foundation_migration = read_text_file(
         source / "tools/migrate_to_clean_english_foundation.ps1");
+    const auto training_pack_builder = read_text_file(
+        source / "tools/prepare_internal_training_pack.ps1");
     const auto lifecycle_ui = read_text_file(source / "src/app/main_window.cpp");
-    require(internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
-                curriculum_guard.find("verified-hybrid-conversation-v7") != std::string::npos &&
-                internal_model_state.find("verified-hybrid-conversation-v7") != std::string::npos &&
-                clean_foundation_migration.find("verified-hybrid-conversation-v7") != std::string::npos &&
+    require(training_pack_builder.find("[string]$TorchIndexUrl") != std::string::npos &&
+                training_pack_builder.find("Use either -Wheelhouse or -TorchIndexUrl, not both.") != std::string::npos &&
+                training_pack_builder.find("[Uri]::TryCreate($TorchIndexUrl, [UriKind]::Absolute") != std::string::npos &&
+                training_pack_builder.find("$parsedIndex.Scheme -ne \"https\"") != std::string::npos &&
+                training_pack_builder.find("$parsedIndex.Host -ne \"download.pytorch.org\"") != std::string::npos &&
+                training_pack_builder.find("-not $parsedIndex.IsDefaultPort") != std::string::npos &&
+                training_pack_builder.find("$parsedIndex.Query") != std::string::npos &&
+                training_pack_builder.find("$parsedIndex.Fragment") != std::string::npos &&
+                training_pack_builder.find("$parsedIndex.AbsolutePath.StartsWith(\"/whl/\"") != std::string::npos &&
+                training_pack_builder.find("@(" + std::string("\"--index-url\", $parsedIndex.AbsoluteUri.TrimEnd('/')")) != std::string::npos,
+            "custom Torch indexes must be mutually exclusive with wheelhouses and restricted to the official HTTPS PyTorch wheel tree");
+    require(training_pack_builder.find(
+                "pip install --disable-pip-version-check numpy safetensors") != std::string::npos &&
+                training_pack_builder.find("@(" + std::string("\"torch\", \"numpy\", \"safetensors\"")) != std::string::npos &&
+                training_pack_builder.find("NumPy and Safetensors could not be installed.") != std::string::npos &&
+                training_pack_builder.find("import numpy as np") != std::string::npos &&
+                training_pack_builder.find("float((x*x).sum()) == 140.0") != std::string::npos &&
+                training_pack_builder.find("failed its NumPy operation check") != std::string::npos,
+            "every internal training-pack installation path must provide and operationally verify NumPy and Safetensors");
+    require(training_pack_builder.find(
+                "from safetensors.torch import load_file, save_file") != std::string::npos &&
+                training_pack_builder.find("save_file({'probe':") != std::string::npos &&
+                training_pack_builder.find("torch.equal(load_file(p)['probe']") != std::string::npos &&
+                training_pack_builder.find("failed its Safetensors round-trip check") != std::string::npos &&
+                training_pack_builder.find("Remove-Item -LiteralPath $serializationProbe -Force") != std::string::npos,
+            "pack preparation must prove Safetensors can write and reload Torch tensors and remove its probe");
+    require(training_pack_builder.find("torch.cuda.is_available()") != std::string::npos &&
+                training_pack_builder.find("torch.ones((8,8), device='cuda')") != std::string::npos &&
+                training_pack_builder.find("y=x@x") != std::string::npos &&
+                training_pack_builder.find("torch.cuda.synchronize()") != std::string::npos &&
+                training_pack_builder.find("float(y[0,0]) == 8.0") != std::string::npos,
+            "CUDA validation must allocate on the GPU, execute and synchronize a kernel, and verify its result");
+    require(internal_model.find("minimal-behavior-curriculum-v8") != std::string::npos &&
+                curriculum_guard.find("minimal-behavior-curriculum-v8") != std::string::npos &&
+                internal_model_state.find("minimal-behavior-curriculum-v8") != std::string::npos &&
+                clean_foundation_migration.find("minimal-behavior-curriculum-v8") != std::string::npos &&
                 internal_model.find("verified-hybrid-conversation-v6") == std::string::npos &&
                 curriculum_guard.find("verified-hybrid-conversation-v6") == std::string::npos &&
                 internal_model_state.find("verified-hybrid-conversation-v6") == std::string::npos &&
                 clean_foundation_migration.find("verified-hybrid-conversation-v6") == std::string::npos,
-            "trainer, curriculum guard, runtime state, and migration must share the v7 bootstrap policy exactly");
+            "trainer, curriculum guard, runtime state, and migration must share the v8 minimal-curriculum policy exactly");
     require(internal_model.find("threadspire.internal-progress.v1") != std::string::npos &&
                 internal_model.find("bootstrap_complete") != std::string::npos &&
                 internal_model.find("full_backbone_trained") != std::string::npos &&
@@ -2504,9 +2740,9 @@ void test_worker_and_resource_contract() {
     require(internal_model.find("filtered_logits[:, SEPARATOR_ID] = logits[:, SEPARATOR_ID]") != std::string::npos &&
                 internal_model.find("token_id in {EOS_ID, SEPARATOR_ID}") != std::string::npos,
             "generation must honor the supervised end-of-answer separator instead of forcing correct answers to continue as garbage");
-    require(internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
+    require(internal_model.find("minimal-behavior-curriculum-v8") != std::string::npos &&
                 internal_model.find("foundation_anchor_gate") != std::string::npos &&
-                internal_model.find("len(anchors) >= 320") != std::string::npos &&
+                internal_model.find("anchor_count >= 320") != std::string::npos &&
                 internal_model.find("allow_verified_shortcuts=False") != std::string::npos &&
                 internal_model.find("readiness_samples.get(name, False)") != std::string::npos &&
                 internal_model.find("None if requested_scope == \"english-foundation\" else scope_filter") != std::string::npos &&
@@ -2515,6 +2751,12 @@ void test_worker_and_resource_contract() {
                 internal_model.find("identity_gate_passed") != std::string::npos &&
                 internal_model.find("privacy_gate_passed") != std::string::npos,
             "foundation promotion must evaluate every held-out anchor, exercise neural weights without retrieval shortcuts, and enforce structural, identity, and privacy gates");
+    require(internal_model.find("def _promotion_lock") != std::string::npos &&
+                internal_model.find("_publish_active_pointer_locked") != std::string::npos &&
+                internal_model.find("_curriculum_compiler._polarity_signature(prompt) != query_polarity") != std::string::npos &&
+                worker.find("with state._internal_lock:\n        loaded = state.get_internal()") != std::string::npos &&
+                worker.find("with state._internal_lock:\n            loaded = state.get_internal()") != std::string::npos,
+            "runtime retrieval and hot promotion must preserve prompt polarity, serialize pointer CAS across processes, and hold the cache lock from lookup through inference");
     require(lifecycle_ui.find("automatic_bootstrap_targets{24000U, 36000U, 50000U}") != std::string::npos &&
                 lifecycle_ui.find("adaptive_bootstrap_target") != std::string::npos &&
                 lifecycle_ui.find("saved_learning_steps(progress) >= automatic_bootstrap_targets.back()") != std::string::npos &&
@@ -2534,14 +2776,19 @@ void test_worker_and_resource_contract() {
                 lifecycle_ui.find("backend_operation_.cancel()") != std::string::npos,
             "automatic and manual bootstrap repair must resume the strongest rejected lineage, yield saved training immediately to foreground work, and never start an unready host");
     require(worker.find("curriculum.enforce_namespace(parser.parse_args())") != std::string::npos &&
+                worker.find("--delta-limit") != std::string::npos &&
                 curriculum_guard.find("argparse.ArgumentParser.parse_args=") == std::string::npos &&
                 curriculum_guard.find("return path if isinstance(original, Path) else str(path)") != std::string::npos &&
                 curriculum_guard.find("namespace.episodes = filter_dataset") != std::string::npos &&
+                curriculum_guard.find("compile_minimal_curriculum") != std::string::npos &&
+                curriculum_compiler.find("engcoder-minimal-curriculum-v1") != std::string::npos &&
+                curriculum_compiler.find("max_per_answer") != std::string::npos &&
+                curriculum_compiler.find("delta_selected_ids") != std::string::npos &&
                 internal_model.find("canonical_training_scope") != std::string::npos &&
                 internal_model.find("path_values = [Path(path_value) for path_value in paths]") != std::string::npos &&
                 internal_model.find("_threadspire_curriculum_guard.english_record(record)") != std::string::npos &&
                 internal_model.find("curriculum-state.json") != std::string::npos,
-            "English-first training must preserve Path values, avoid global argparse mutation, filter gradient evidence, retain complete evaluation anchors, reject code-shaped training records, map the UI target to english-core, and persist the gate state");
+            "English-first training must preserve Path values, avoid global argparse mutation, compile a bounded delta/replay curriculum, retain complete evaluation anchors, reject code-shaped training records, map the UI target to english-core, and persist the gate state");
 
     const auto continual = read_text_file(
         source / "src/learning/continual_learning_service.cpp");
@@ -2563,6 +2810,14 @@ void test_worker_and_resource_contract() {
                 continual.find("status.id = candidate.id") == std::string::npos &&
                 continual.find("status.id = candidate->id") == std::string::npos,
             "internal learning must keep a stable serialized job ID, coalesce resumable shadow generations, preserve new evidence, compare-and-swap promotion, and support atomic rollback");
+    const auto staged_registry = continual.find("expert_registry_.save(promoted)");
+    const auto committed_pointer = continual.find("const auto promotion_result", staged_registry);
+    require(staged_registry != std::string::npos &&
+                committed_pointer != std::string::npos &&
+                staged_registry < committed_pointer &&
+                continual.find("expert registry rolled back", committed_pointer) != std::string::npos &&
+                continual.find("improved held-out loss but failed") != std::string::npos,
+            "internal promotion must stage or roll back the expert registry around pointer publication and report the actual failing safety/readiness gate");
 
     const auto completion = read_text_file(
         source / "src/backend/completion_client.cpp");
@@ -2581,7 +2836,7 @@ void test_worker_and_resource_contract() {
                 streaming_heartbeat != std::string::npos &&
                 streaming_dataset != std::string::npos &&
                 streaming_dataset - streaming_heartbeat < 256U &&
-                internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                internal_model.find("minimal-behavior-curriculum-v8") != std::string::npos &&
                 internal_model.find("trusted_dataset=trusted_dataset") != std::string::npos &&
                 internal_model.find("vague-question-repair") != std::string::npos &&
                 internal_model.find("grounded-summary") != std::string::npos &&
@@ -2608,9 +2863,11 @@ void test_worker_and_resource_contract() {
                 resources.find("IDR_MODEL_WORKER") == std::string::npos &&
                 resources.find("IDR_INTERNAL_MODEL") == std::string::npos &&
                 resources.find("IDR_CURRICULUM_GUARD") == std::string::npos &&
+                resources.find("curriculum_compiler.py") == std::string::npos &&
                 resource_ids.find("IDR_MODEL_WORKER") == std::string::npos &&
                 resource_ids.find("IDR_INTERNAL_MODEL") == std::string::npos &&
-                resource_ids.find("IDR_CURRICULUM_GUARD") == std::string::npos,
+                resource_ids.find("IDR_CURRICULUM_GUARD") == std::string::npos &&
+                resource_ids.find("IDR_CURRICULUM_COMPILER") == std::string::npos,
             "the base executable must not embed Python training programs or resource IDs");
     require(app_paths_header.find("std::filesystem::path packs") != std::string::npos &&
                 app_paths_header.find("curriculum_guard_module") != std::string::npos &&

@@ -9,12 +9,15 @@ streaming generation, and resumable local training loop.
 from __future__ import annotations
 try:
     from . import curriculum_guard as _threadspire_curriculum_guard
+    from . import curriculum_compiler as _curriculum_compiler
 except ImportError:
     import curriculum_guard as _threadspire_curriculum_guard
+    import curriculum_compiler as _curriculum_compiler
 _threadspire_curriculum_guard.install()
 
 
 from collections import Counter
+from contextlib import contextmanager
 from functools import lru_cache
 from dataclasses import asdict, dataclass, field
 import codecs
@@ -45,7 +48,7 @@ SEPARATOR_ID = 6
 BYTE_OFFSET = 16
 VOCAB_SIZE = BYTE_OFFSET + 256
 FORMAT_VERSION = "threadspire.internal.v1"
-BOOTSTRAP_POLICY = "verified-hybrid-conversation-v7"
+BOOTSTRAP_POLICY = "minimal-behavior-curriculum-v8"
 
 
 SkillRoute: TypeAlias = tuple[str, ...]
@@ -63,6 +66,103 @@ def atomic_write_text(path: Path, text: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _process_is_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+        return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def _promotion_lock(state_root: Path, timeout_seconds: float = 60.0) -> Iterator[None]:
+    """Serialize active-pointer compare-and-swap operations across processes."""
+
+    lock_path = internal_root(state_root) / "promotion.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor: int | None = None
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    while descriptor is None:
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            try:
+                os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+                os.fsync(descriptor)
+            except Exception:
+                os.close(descriptor)
+                descriptor = None
+                lock_path.unlink(missing_ok=True)
+                raise
+        except FileExistsError:
+            owner = 0
+            try:
+                for line in lock_path.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("pid="):
+                        owner = int(line[4:])
+                        break
+            except (OSError, ValueError):
+                owner = 0
+            try:
+                age_seconds = max(0.0, time.time() - lock_path.stat().st_mtime)
+            except OSError:
+                age_seconds = 0.0
+            if (owner > 0 and not _process_is_alive(owner)) or (
+                owner == 0 and age_seconds >= 10.0
+            ):
+                lock_path.unlink(missing_ok=True)
+                continue
+            if time.monotonic() >= deadline:
+                holder = f"process {owner}" if owner > 0 else "an unknown process"
+                raise TimeoutError(f"timed out waiting for internal promotion lock held by {holder}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+            lock_path.unlink(missing_ok=True)
+
+
+def _active_generation_name(state_root: Path) -> str | None:
+    pointer = active_manifest_path(state_root)
+    if not pointer.is_file():
+        return None
+    payload = json.loads(pointer.read_text(encoding="utf-8"))
+    generation = str(payload.get("generation", "")).strip()
+    return generation or None
+
+
+def _publish_active_pointer_locked(
+    state_root: Path,
+    generation: str,
+    expected_parent: str | None,
+    *,
+    rollback_from: str | None = None,
+) -> None:
+    current_generation = _active_generation_name(state_root)
+    if current_generation != expected_parent:
+        raise RuntimeError(
+            f"stale internal candidate: active={current_generation or '<none>'}, "
+            f"expected={expected_parent or '<none>'}"
+        )
+    pointer = {
+        "format": FORMAT_VERSION,
+        "generation": generation,
+        "parent": expected_parent,
+        "promoted_unix_ms": int(time.time() * 1000),
+        "origin": "random-initialized-local-model",
+    }
+    if rollback_from is not None:
+        pointer["rollback_from"] = rollback_from
+    atomic_write_text(active_manifest_path(state_root), json.dumps(pointer, indent=2) + "\n")
 
 
 def update_english_foundation_state(
@@ -931,13 +1031,8 @@ def save_generation(
         shutil.rmtree(destination)
     os.replace(temporary, destination)
     if promote:
-        pointer = {
-            "format": FORMAT_VERSION,
-            "generation": generation,
-            "promoted_unix_ms": int(time.time() * 1000),
-            "origin": "random-initialized-local-model",
-        }
-        atomic_write_text(active_manifest_path(state_root), json.dumps(pointer, indent=2) + "\n")
+        with _promotion_lock(state_root):
+            _publish_active_pointer_locked(state_root, generation, parent)
     return destination
 
 
@@ -1510,12 +1605,18 @@ def _verified_curated_response(
     query_words = set(re.findall(r"[a-z0-9]+", normalized_user))
     if not query_words:
         return None
+    query_polarity = _curriculum_compiler._polarity_signature(user)
+    exact_answers: set[str] = set()
     best_score = 0.0
     best_answer: str | None = None
+    ambiguous = False
     for prompt, answer in _curated_responses(str(trusted_dataset.resolve()), modified_ns):
         normalized_prompt = " ".join(prompt.casefold().split())
         if normalized_prompt == normalized_user:
-            return answer
+            exact_answers.add(answer)
+            continue
+        if _curriculum_compiler._polarity_signature(prompt) != query_polarity:
+            continue
         prompt_words = set(re.findall(r"[a-z0-9]+", normalized_prompt))
         if not prompt_words:
             continue
@@ -1523,7 +1624,12 @@ def _verified_curated_response(
         if score > best_score:
             best_score = score
             best_answer = answer
-    return best_answer if best_score >= 0.82 else None
+            ambiguous = False
+        elif score == best_score and best_answer is not None and answer != best_answer:
+            ambiguous = True
+    if exact_answers:
+        return next(iter(exact_answers)) if len(exact_answers) == 1 else None
+    return best_answer if best_score >= 0.82 and not ambiguous else None
 
 
 def verified_local_response(
@@ -2009,7 +2115,7 @@ def _normalized_learning_prompt(record: dict[str, Any]) -> str:
 
 
 def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
-    prompts: dict[str, set[str]] = {}
+    behaviors: dict[str, set[str]] = {}
     for path in paths:
         if not path.is_file():
             continue
@@ -2037,11 +2143,12 @@ def _human_approval_counts(paths: Sequence[Path]) -> dict[str, int]:
                         ),
                         "",
                     )
-                normalized = re.sub(r"[^a-z0-9+_]+", " ", prompt.lower()).strip()
-                if normalized:
+                if prompt:
                     skill = normalize_skill(str(record.get("skill", record.get("domain", "general"))))
-                    prompts.setdefault(skill, set()).add(normalized)
-    return {skill: len(values) for skill, values in prompts.items()}
+                    behaviors.setdefault(skill, set()).add(
+                        _curriculum_compiler.behavior_signature(record)
+                    )
+    return {skill: len(values) for skill, values in behaviors.items()}
 
 
 def _record_skills(record_capabilities: set[str]) -> tuple[str, ...]:
@@ -2228,11 +2335,14 @@ def load_training_sequences(
                 }:
                     route = tuple(dict.fromkeys(("english-core", normalized_skill)))
                 sequence = (tokens, labels, route)
-                try:
-                    curriculum_weight = int(record.get("curriculum_weight", 1))
-                except (TypeError, ValueError):
-                    curriculum_weight = 1
-                sequences.extend([sequence] * max(1, min(curriculum_weight, 4)))
+                # One admitted teaching is one gradient sequence. Historical
+                # ``curriculum_weight`` values used to clone rows up to four
+                # times, which silently over-trained common answers and made
+                # the effective dataset larger than the auditable curriculum.
+                # Selection now happens in the minimal curriculum compiler;
+                # emphasis must be earned through coverage failures, not row
+                # multiplication.
+                sequences.append(sequence)
     return sequences
 
 
@@ -2286,6 +2396,110 @@ def evaluate_loss(
     return sum(losses) / len(losses) if losses else float("inf")
 
 
+_REQUIRED_STRUCTURAL_READINESS_SAMPLES = frozenset({
+    "greeting", "lowercase", "grammar", "vague-question-repair",
+    "misunderstanding-recovery", "grounded-summary",
+    "safe-replacement-reasoning", "format-following", "arithmetic",
+    "conversation-context", "troubleshooting", "definition",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateEvaluation:
+    validation_loss: float
+    readiness: GenerationReadiness
+    loss_gate_passed: bool
+    foundation_anchor_gate_passed: bool
+    structural_output_gate_passed: bool
+    identity_gate_passed: bool
+    privacy_gate_passed: bool
+    passed: bool
+
+
+def evaluate_candidate(
+    model: EngCoderModel,
+    config: ModelConfig,
+    generation: str,
+    manifest: dict[str, Any],
+    device: torch.device,
+    trusted_dataset: Path,
+    evaluation_sequences: Sequence[TrainingSequence],
+    anchor_count: int,
+    requested_scope: str,
+    requires_generation_readiness: bool,
+    previous_loss: float,
+    *,
+    validation_loss: float | None = None,
+) -> CandidateEvaluation:
+    """Apply the exact same held-out and readiness gates at every boundary."""
+
+    was_training = model.training
+    try:
+        measured_loss = (
+            evaluate_loss(model, evaluation_sequences, device, limit=None)
+            if validation_loss is None else float(validation_loss)
+        )
+        readiness = (
+            evaluate_generation_readiness(
+                model,
+                config,
+                generation,
+                manifest,
+                device,
+                trusted_dataset,
+            )
+            if requires_generation_readiness else
+            GenerationReadiness(False, 0.0, ())
+        )
+    finally:
+        model.train(was_training)
+
+    loss_passed = math.isfinite(measured_loss) and (
+        not math.isfinite(previous_loss)
+        or measured_loss <= previous_loss + 1.0e-6
+    )
+    foundation_anchor_gate = bool(
+        requested_scope != "english-foundation" or anchor_count >= 320
+    )
+    readiness_samples = {
+        str(sample.get("name", "")): bool(sample.get("passed", False))
+        for sample in readiness.samples
+    }
+    structural_gate = bool(
+        not requires_generation_readiness
+        or all(
+            readiness_samples.get(name, False)
+            for name in _REQUIRED_STRUCTURAL_READINESS_SAMPLES
+        )
+    )
+    identity_gate = bool(
+        not requires_generation_readiness
+        or readiness_samples.get("identity", False)
+    )
+    privacy_gate = bool(
+        not requires_generation_readiness
+        or readiness_samples.get("privacy", False)
+    )
+    passed = bool(
+        loss_passed
+        and foundation_anchor_gate
+        and structural_gate
+        and identity_gate
+        and privacy_gate
+        and (readiness.passed if requires_generation_readiness else True)
+    )
+    return CandidateEvaluation(
+        validation_loss=measured_loss,
+        readiness=readiness,
+        loss_gate_passed=loss_passed,
+        foundation_anchor_gate_passed=foundation_anchor_gate,
+        structural_output_gate_passed=structural_gate,
+        identity_gate_passed=identity_gate,
+        privacy_gate_passed=privacy_gate,
+        passed=passed,
+    )
+
+
 def configure_training_scope(model: EngCoderModel, scope: str) -> list[nn.Parameter]:
     scope = canonical_training_scope(scope)
     for parameter in model.parameters():
@@ -2336,6 +2550,7 @@ def save_training_checkpoint(
     tokens_seen: int,
     order: list[int],
     cursor: int,
+    batch_size: int,
     accumulation_steps: int,
     training_data_fingerprint: str,
     anchor_data_fingerprint: str,
@@ -2358,6 +2573,7 @@ def save_training_checkpoint(
             "tokens_seen": tokens_seen,
             "order": order,
             "cursor": cursor,
+            "batch_size": batch_size,
             "accumulation_steps": accumulation_steps,
             "training_data_fingerprint": training_data_fingerprint,
             "anchor_data_fingerprint": anchor_data_fingerprint,
@@ -2529,10 +2745,20 @@ def train_candidate(
         device,
         limit=None if anchors else 32,
     )
+    requires_generation_readiness = bool(
+        effective_bootstrap_target > 0 or prior_generation_ready
+    )
+    preflight_evaluation: CandidateEvaluation | None = None
     if (
-        effective_bootstrap_target > 0
-        and prior_total_steps >= effective_bootstrap_target
-        and prior_full_backbone
+        requested_scope == "english-foundation"
+        and (
+            prior_bootstrap_complete
+            or (
+                effective_bootstrap_target > 0
+                and prior_total_steps >= effective_bootstrap_target
+                and prior_full_backbone
+            )
+        )
     ):
         write_progress(
             progress_file,
@@ -2546,27 +2772,42 @@ def train_candidate(
             training_data_scope=training_data_scope,
             optimizer_scope=optimizer_scope,
         )
-        preflight_readiness = evaluate_generation_readiness(
+        preflight_evaluation = evaluate_candidate(
             model,
             config,
             parent,
             loaded.manifest,
             device,
             state_root / "data" / "bootstrap.jsonl",
+            evaluation_sequences,
+            len(anchors),
+            requested_scope,
+            requires_generation_readiness,
+            previous_loss,
+            validation_loss=previous_loss,
         )
-        if preflight_readiness.passed:
+        if preflight_evaluation.passed:
             maximum_steps = 0
             print(json.dumps({
                 "event": "bootstrap-host-already-ready",
                 "generation": parent,
-                "readiness_score": preflight_readiness.score,
+                "readiness_score": preflight_evaluation.readiness.score,
                 "saved_steps": prior_total_steps,
             }), flush=True)
+    planned_maximum_steps = max(0, int(maximum_steps))
+    validation_schedule = _curriculum_compiler.training_validation_schedule(
+        len(sequences),
+        batch_size,
+        accumulation_steps,
+        planned_maximum_steps,
+        foundation=bootstrap_backbone_required,
+    )
     model.train()
     run_started = time.monotonic()
     last_progress_write = 0.0
     steps = 0
-    tokens_seen = int(loaded.manifest.get("tokens_seen", 0))
+    parent_tokens_seen = int(loaded.manifest.get("tokens_seen", 0))
+    tokens_seen = parent_tokens_seen
     order = list(range(len(sequences)))
     random.shuffle(order)
     cursor = 0
@@ -2578,6 +2819,7 @@ def train_candidate(
             checkpoint.get("format") == FORMAT_VERSION
             and checkpoint.get("parent") == parent
             and checkpoint.get("scope") == optimizer_scope
+            and int(checkpoint.get("batch_size", -1)) == batch_size
             and int(checkpoint.get("accumulation_steps", accumulation_steps)) == accumulation_steps
             and checkpoint.get("bootstrap_policy") == BOOTSTRAP_POLICY
             and checkpoint.get("training_data_fingerprint") == training_data_fingerprint
@@ -2616,13 +2858,16 @@ def train_candidate(
     if not restored_gradients:
         optimizer.zero_grad(set_to_none=True)
     resumed_step = steps
+    candidate_evaluation = preflight_evaluation if maximum_steps == 0 else None
+    early_stopped = False
+    stop_reason = "already-ready" if maximum_steps == 0 else "safety-cap-reached"
     write_progress(
         progress_file,
         phase="training",
         message=(
-            f"Resuming bootstrap training at step {steps:,} of {maximum_steps:,}"
+            f"Resuming training at step {steps:,}; safety cap {maximum_steps:,}"
             if steps > 0
-            else f"Bootstrap training step 0 of {maximum_steps:,}"
+            else f"Training step 0; safety cap {maximum_steps:,}"
         ),
         generation=parent,
         requested_scope=requested_scope,
@@ -2630,6 +2875,8 @@ def train_candidate(
         training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
+        minimum_training_steps=validation_schedule.minimum_steps,
+        validation_interval_steps=validation_schedule.interval_steps,
         prior_total_steps=prior_total_steps,
         projected_total_steps=prior_total_steps + maximum_steps,
         bootstrap_target_steps=effective_bootstrap_target,
@@ -2659,6 +2906,7 @@ def train_candidate(
                     tokens_seen=tokens_seen,
                     order=order,
                     cursor=cursor,
+                    batch_size=batch_size,
                     accumulation_steps=accumulation_steps,
                     training_data_fingerprint=training_data_fingerprint,
                     anchor_data_fingerprint=anchor_data_fingerprint,
@@ -2673,6 +2921,8 @@ def train_candidate(
                     training_data_scope=training_data_scope,
                     step=steps,
                     maximum_steps=maximum_steps,
+                    minimum_training_steps=validation_schedule.minimum_steps,
+                    validation_interval_steps=validation_schedule.interval_steps,
                     prior_total_steps=prior_total_steps,
                     bootstrap_target_steps=effective_bootstrap_target,
                     tokens_seen=tokens_seen,
@@ -2734,13 +2984,15 @@ def train_candidate(
                 write_progress(
                     progress_file,
                     phase="training",
-                    message=f"Bootstrap training step {steps:,} of {maximum_steps:,}",
+                    message=f"Training step {steps:,}; safety cap {maximum_steps:,}",
                     generation=parent,
                     requested_scope=requested_scope,
                     scope=optimizer_scope,
                     training_data_scope=training_data_scope,
                     step=steps,
                     maximum_steps=maximum_steps,
+                    minimum_training_steps=validation_schedule.minimum_steps,
+                    validation_interval_steps=validation_schedule.interval_steps,
                     prior_total_steps=prior_total_steps,
                     projected_total_steps=prior_total_steps + maximum_steps,
                     bootstrap_target_steps=effective_bootstrap_target,
@@ -2764,10 +3016,77 @@ def train_candidate(
                     tokens_seen=tokens_seen,
                     order=order,
                     cursor=cursor,
+                    batch_size=batch_size,
                     accumulation_steps=accumulation_steps,
                     training_data_fingerprint=training_data_fingerprint,
                     anchor_data_fingerprint=anchor_data_fingerprint,
                 )
+            validation_due = bool(
+                anchors
+                and requires_generation_readiness
+                and steps < maximum_steps
+                and steps >= validation_schedule.minimum_steps
+                and validation_schedule.interval_steps > 0
+                and steps % validation_schedule.interval_steps == 0
+                and steps % max(1, accumulation_steps) == 0
+            )
+            if validation_due:
+                write_progress(
+                    progress_file,
+                    phase="evaluating-candidate",
+                    message=(
+                        f"Checking held-out quality after {steps:,} steps; "
+                        f"safety cap {maximum_steps:,}"
+                    ),
+                    generation=parent,
+                    requested_scope=requested_scope,
+                    scope=optimizer_scope,
+                    training_data_scope=training_data_scope,
+                    step=steps,
+                    maximum_steps=maximum_steps,
+                    minimum_training_steps=validation_schedule.minimum_steps,
+                    validation_interval_steps=validation_schedule.interval_steps,
+                    prior_total_steps=prior_total_steps,
+                    bootstrap_target_steps=effective_bootstrap_target,
+                    tokens_seen=tokens_seen,
+                    elapsed_seconds=max(0.0, time.monotonic() - run_started),
+                )
+                interim_evaluation = evaluate_candidate(
+                    model,
+                    config,
+                    parent,
+                    loaded.manifest,
+                    device,
+                    state_root / "data" / "bootstrap.jsonl",
+                    evaluation_sequences,
+                    len(anchors),
+                    requested_scope,
+                    requires_generation_readiness,
+                    previous_loss,
+                )
+                meaningful_delta = (
+                    max(1.0e-4, abs(previous_loss) * 1.0e-4)
+                    if math.isfinite(previous_loss) else 0.0
+                )
+                incremental_improved = bool(
+                    not math.isfinite(previous_loss)
+                    or interim_evaluation.validation_loss < previous_loss - meaningful_delta
+                )
+                if interim_evaluation.passed and (
+                    bootstrap_backbone_required or incremental_improved
+                ):
+                    candidate_evaluation = interim_evaluation
+                    early_stopped = True
+                    stop_reason = "quality-gates-passed"
+                    print(json.dumps({
+                        "event": "training-stopped-early",
+                        "reason": stop_reason,
+                        "step": steps,
+                        "safety_cap": maximum_steps,
+                        "validation_loss": interim_evaluation.validation_loss,
+                        "readiness_score": interim_evaluation.readiness.score,
+                    }), flush=True)
+                    break
     finally:
         if active_marker is not None:
             active_marker.unlink(missing_ok=True)
@@ -2799,77 +3118,45 @@ def train_candidate(
         eta_seconds=None,
         device=device.type,
     )
-    validation_loss = evaluate_loss(
-        model,
-        evaluation_sequences,
-        device,
-        limit=None if anchors else 32,
-    )
-    requires_generation_readiness = (
-        effective_bootstrap_target > 0 or prior_generation_ready
-    )
-    candidate_readiness = (
-        evaluate_generation_readiness(
+    if candidate_evaluation is None:
+        candidate_evaluation = evaluate_candidate(
             model,
             config,
             parent,
             loaded.manifest,
             device,
             state_root / "data" / "bootstrap.jsonl",
+            evaluation_sequences,
+            len(anchors),
+            requested_scope,
+            requires_generation_readiness,
+            previous_loss,
         )
-        if requires_generation_readiness else
-        GenerationReadiness(False, 0.0, ())
-    )
+    validation_loss = candidate_evaluation.validation_loss
+    candidate_readiness = candidate_evaluation.readiness
     generation_ready = bool(candidate_readiness.passed)
     improvement = previous_loss - validation_loss if math.isfinite(previous_loss) else 1.0
-    loss_passed = math.isfinite(validation_loss) and (
-        not math.isfinite(previous_loss)
-        or validation_loss <= previous_loss + 1.0e-6
-    )
-    foundation_anchor_gate = bool(
-        requested_scope != "english-foundation" or len(anchors) >= 320
-    )
-    readiness_samples = {
-        str(sample.get("name", "")): bool(sample.get("passed", False))
-        for sample in candidate_readiness.samples
-    }
-    required_structural_samples = {
-        "greeting", "lowercase", "grammar", "vague-question-repair",
-        "misunderstanding-recovery", "grounded-summary",
-        "safe-replacement-reasoning", "format-following", "arithmetic",
-        "conversation-context", "troubleshooting", "definition",
-    }
-    structural_gate = bool(
-        not requires_generation_readiness
-        or all(readiness_samples.get(name, False) for name in required_structural_samples)
-    )
-    identity_gate = bool(
-        not requires_generation_readiness or readiness_samples.get("identity", False)
-    )
-    privacy_gate = bool(
-        not requires_generation_readiness or readiness_samples.get("privacy", False)
-    )
-    passed_evaluation = (
-        loss_passed
-        and foundation_anchor_gate
-        and structural_gate
-        and identity_gate
-        and privacy_gate
-        and (
-        generation_ready if requires_generation_readiness else True
-        )
-    )
+    loss_passed = candidate_evaluation.loss_gate_passed
+    foundation_anchor_gate = candidate_evaluation.foundation_anchor_gate_passed
+    structural_gate = candidate_evaluation.structural_output_gate_passed
+    identity_gate = candidate_evaluation.identity_gate_passed
+    privacy_gate = candidate_evaluation.privacy_gate_passed
+    passed_evaluation = candidate_evaluation.passed
     generation = _next_generation(state_root, parent)
     total_steps = prior_total_steps + steps
+    validated_early_completion = bool(early_stopped and passed_evaluation)
+    foundation_training_sufficient = bool(
+        total_steps >= effective_bootstrap_target or validated_early_completion
+    )
     full_backbone_trained = prior_full_backbone or bool(
         optimizer_scope == "all"
         and training_data_scope == "english-core"
         and effective_bootstrap_target > 0
-        and total_steps >= effective_bootstrap_target
+        and foundation_training_sufficient
     )
     bootstrap_complete = prior_bootstrap_complete or bool(
         effective_bootstrap_target > 0
-        and total_steps >= effective_bootstrap_target
+        and foundation_training_sufficient
         and full_backbone_trained
         and generation_ready
         and passed_evaluation
@@ -2877,7 +3164,12 @@ def train_candidate(
     write_progress(
         progress_file,
         phase="saving-generation",
-        message="Evaluation passed; publishing the new internal-model generation"
+        message=(
+            f"Quality gates passed at step {steps:,}; stopped before the "
+            f"{maximum_steps:,}-step safety cap"
+        )
+        if passed_evaluation and early_stopped else
+        "Evaluation passed; publishing the new internal-model generation"
         if passed_evaluation else
         (
             "Generation canaries did not pass; saving the repair candidate for continuation"
@@ -2891,6 +3183,8 @@ def train_candidate(
         training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
+        minimum_training_steps=validation_schedule.minimum_steps,
+        validation_interval_steps=validation_schedule.interval_steps,
         total_steps=total_steps,
         bootstrap_target_steps=effective_bootstrap_target,
         bootstrap_complete=bootstrap_complete,
@@ -2900,6 +3194,8 @@ def train_candidate(
         tokens_seen=tokens_seen,
         previous_loss=previous_loss,
         validation_loss=validation_loss,
+        early_stopped=early_stopped,
+        stop_reason=stop_reason,
         elapsed_seconds=max(0.0, time.monotonic() - run_started),
         percent=100.0,
         eta_seconds=None,
@@ -2944,7 +3240,20 @@ def train_candidate(
         "training_scope": optimizer_scope,
         "training_data_scope": training_data_scope,
         "steps": steps,
+        "executed_steps": steps,
+        "planned_maximum_steps": planned_maximum_steps,
+        "minimum_training_steps": validation_schedule.minimum_steps,
+        "validation_interval_steps": validation_schedule.interval_steps,
+        "corpus_pass_steps": validation_schedule.corpus_pass_steps,
+        "corpus_passes": (
+            float(steps * max(1, batch_size)) / float(max(1, len(sequences)))
+        ),
+        "optimizer_updates": math.ceil(steps / max(1, accumulation_steps)),
+        "early_stopped": early_stopped,
+        "stop_reason": stop_reason,
+        "validated_early_completion": validated_early_completion,
         "tokens_seen": tokens_seen,
+        "candidate_tokens_seen": max(0, tokens_seen - parent_tokens_seen),
         "previous_loss": previous_loss,
         "validation_loss": validation_loss,
         "loss_improvement": improvement,
@@ -3029,13 +3338,16 @@ def train_candidate(
         message=(
             "Saved local host passed every readiness check and is now active"
             if promoted and bootstrap_complete and steps == 0 else
+            (f"Quality gates passed after {steps:,} steps; training stopped before "
+             f"the {maximum_steps:,}-step safety cap and the new generation is active"
+             if promoted and bootstrap_complete and early_stopped else
             ("Bootstrap training completed and the new generation is active"
              if promoted and bootstrap_complete else
             ("Training completed and the new generation is active" if promoted else
              ("Training completed; promotion is deferred" if passed_evaluation else
               ("Bootstrap canaries did not pass; the saved candidate will be continued by repair"
                if loss_passed and needs_bootstrap_repair else
-               "Training completed, but the candidate failed held-out loss checks"))))
+               "Training completed, but the candidate failed held-out loss checks")))))
         ),
         generation=generation,
         parent_generation=parent,
@@ -3044,6 +3356,8 @@ def train_candidate(
         training_data_scope=training_data_scope,
         step=steps,
         maximum_steps=maximum_steps,
+        minimum_training_steps=validation_schedule.minimum_steps,
+        validation_interval_steps=validation_schedule.interval_steps,
         total_steps=total_steps,
         bootstrap_target_steps=effective_bootstrap_target,
         bootstrap_complete=bootstrap_complete,
@@ -3053,6 +3367,8 @@ def train_candidate(
         tokens_seen=tokens_seen,
         previous_loss=previous_loss,
         validation_loss=validation_loss,
+        early_stopped=early_stopped,
+        stop_reason=stop_reason,
         elapsed_seconds=max(0.0, time.monotonic() - run_started),
         percent=100.0,
         eta_seconds=0.0,
@@ -3086,28 +3402,22 @@ def promote_generation(
     if str(manifest.get("status", "")) not in {"trained-candidate", "trained"}:
         raise RuntimeError("internal candidate has not passed evaluation")
 
-    current_path = resolve_active_generation(state_root)
-    current_manifest = generation_manifest(current_path)
-    current_generation = str(current_manifest.get("generation", ""))
-    if current_generation != expected_parent:
-        raise RuntimeError(
-            f"stale internal candidate: active={current_generation}, expected={expected_parent}"
-        )
+    with _promotion_lock(state_root):
+        current_path = resolve_active_generation(state_root)
+        current_manifest = generation_manifest(current_path)
+        current_generation = str(current_manifest.get("generation", ""))
+        if current_generation != expected_parent:
+            raise RuntimeError(
+                f"stale internal candidate: active={current_generation}, expected={expected_parent}"
+            )
 
-    manifest["status"] = "trained"
-    manifest["promoted_unix_ms"] = int(time.time() * 1000)
-    atomic_write_text(
-        candidate_path / "manifest.json",
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-    )
-    pointer = {
-        "format": FORMAT_VERSION,
-        "generation": generation,
-        "parent": expected_parent,
-        "promoted_unix_ms": int(time.time() * 1000),
-        "origin": "random-initialized-local-model",
-    }
-    atomic_write_text(active_manifest_path(state_root), json.dumps(pointer, indent=2) + "\n")
+        manifest["status"] = "trained"
+        manifest["promoted_unix_ms"] = int(time.time() * 1000)
+        atomic_write_text(
+            candidate_path / "manifest.json",
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        )
+        _publish_active_pointer_locked(state_root, generation, expected_parent)
     curriculum_scope = canonical_training_scope(str(
         manifest.get("training_data_scope", manifest.get("training_scope", ""))
     ))
@@ -3149,21 +3459,20 @@ def activate_generation(
     target = generation_manifest(target_path)
     if str(target.get("status", "")) != "trained":
         raise RuntimeError("rollback target is not a trained internal generation")
-    current_path = resolve_active_generation(state_root)
-    current = generation_manifest(current_path)
-    current_generation = str(current.get("generation", ""))
-    if current_generation != expected_current:
-        raise RuntimeError(
-            f"stale internal rollback: active={current_generation}, expected={expected_current}"
+    with _promotion_lock(state_root):
+        current_path = resolve_active_generation(state_root)
+        current = generation_manifest(current_path)
+        current_generation = str(current.get("generation", ""))
+        if current_generation != expected_current:
+            raise RuntimeError(
+                f"stale internal rollback: active={current_generation}, expected={expected_current}"
+            )
+        _publish_active_pointer_locked(
+            state_root,
+            generation,
+            expected_current,
+            rollback_from=expected_current,
         )
-    pointer = {
-        "format": FORMAT_VERSION,
-        "generation": generation,
-        "rollback_from": expected_current,
-        "promoted_unix_ms": int(time.time() * 1000),
-        "origin": "random-initialized-local-model",
-    }
-    atomic_write_text(active_manifest_path(state_root), json.dumps(pointer, indent=2) + "\n")
     return {
         "status": "activated",
         "generation": generation,

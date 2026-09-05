@@ -5,7 +5,7 @@ param(
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string] $ReplacementVersion = '0.6.0',
+    [string] $ReplacementVersion = '0.9.1',
 
     [Parameter()]
     [switch] $ValidateOnly
