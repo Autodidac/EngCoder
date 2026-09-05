@@ -1545,9 +1545,16 @@ def generate_tokens(
     temperature: float,
     top_p: float = 0.92,
     trusted_dataset: Path | None = None,
+    allow_verified_shortcuts: bool = True,
 ) -> Iterator[tuple[str, int]]:
     tokenizer = ByteTokenizer()
-    verified = verified_local_response(messages, trusted_dataset)
+    # Runtime retrieval and deterministic helpers improve the working product,
+    # but they must never make an untrained neural candidate appear competent.
+    # Evaluation therefore exercises the candidate weights with shortcuts off.
+    verified = (
+        verified_local_response(messages, trusted_dataset)
+        if allow_verified_shortcuts else None
+    )
     if verified is not None:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         for token_id in tokenizer.encode_text(verified):
@@ -1828,6 +1835,7 @@ def evaluate_generation_readiness(
                 0.0,
                 top_p=1.0,
                 trusted_dataset=trusted_dataset,
+                allow_verified_shortcuts=False,
             )
         ).strip()
         quality = assess_generation_quality(output, trusted_dataset, canary["messages"])
@@ -2825,13 +2833,15 @@ def train_candidate(
         str(sample.get("name", "")): bool(sample.get("passed", False))
         for sample in candidate_readiness.samples
     }
+    required_structural_samples = {
+        "greeting", "lowercase", "grammar", "vague-question-repair",
+        "misunderstanding-recovery", "grounded-summary",
+        "safe-replacement-reasoning", "format-following", "arithmetic",
+        "conversation-context", "troubleshooting", "definition",
+    }
     structural_gate = bool(
         not requires_generation_readiness
-        or all(
-            passed
-            for name, passed in readiness_samples.items()
-            if name not in {"identity", "privacy"}
-        )
+        or all(readiness_samples.get(name, False) for name in required_structural_samples)
     )
     identity_gate = bool(
         not requires_generation_readiness or readiness_samples.get("identity", False)

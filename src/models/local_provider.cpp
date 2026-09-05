@@ -224,7 +224,9 @@ struct Probe final {
 
 } // namespace
 
-ProviderDiscoveryReport discover_local_models(const std::chrono::milliseconds timeout_per_endpoint) {
+ProviderDiscoveryReport discover_local_models(
+    const std::chrono::milliseconds timeout_per_endpoint,
+    const std::stop_token stop_token) {
     ProviderDiscoveryReport report;
     const std::array probes{
         Probe{"ollama", "Ollama", "http://127.0.0.1:11434", "ollama", "/api/tags", "name"},
@@ -237,8 +239,16 @@ ProviderDiscoveryReport discover_local_models(const std::chrono::milliseconds ti
 
     std::set<std::string> seen;
     for (const auto& probe : probes) {
+        if (stop_token.stop_requested()) {
+            report.diagnostics.push_back("Local AI discovery cancelled");
+            break;
+        }
         auto response = backend::http_get(
             join_url(probe.endpoint, probe.models_path), timeout_per_endpoint);
+        if (stop_token.stop_requested()) {
+            report.diagnostics.push_back("Local AI discovery cancelled");
+            break;
+        }
         auto used_lm_studio_native_api = false;
         std::vector<std::string> model_names;
         if (probe.id == "lmstudio" && response.succeeded()) {
@@ -248,6 +258,10 @@ ProviderDiscoveryReport discover_local_models(const std::chrono::milliseconds ti
             response = backend::http_get(
                 join_url(probe.endpoint, "/v1/models"),
                 timeout_per_endpoint);
+            if (stop_token.stop_requested()) {
+                report.diagnostics.push_back("Local AI discovery cancelled");
+                break;
+            }
         }
         if (!response.succeeded()) {
             continue;

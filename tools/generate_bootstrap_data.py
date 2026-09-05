@@ -95,6 +95,24 @@ def _slug(value: str) -> str:
     return "".join(result).strip("-") or "item"
 
 
+def _cpp_identifier(value: str) -> str:
+    """Return a deterministic, standards-conforming identifier fragment."""
+
+    result = []
+    underscore = False
+    for character in value.lower():
+        if character.isalnum():
+            result.append(character)
+            underscore = False
+        elif result and not underscore:
+            result.append("_")
+            underscore = True
+    identifier = "".join(result).strip("_") or "item"
+    if identifier[0].isdigit():
+        identifier = "type_" + identifier
+    return identifier
+
+
 def _normalize_message_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value))
     return " ".join(text.strip().split()).casefold()
@@ -787,11 +805,14 @@ def cpp_records() -> list[dict]:
                     include = ""
                     expression = f"{left} {operation} {right}"
                     if operation.startswith("std::"):
-                        include = "#include <algorithm>\n\n"
+                        include = "#include <algorithm>\n"
+                        if type_name == "std::int64_t":
+                            include += "#include <cstdint>\n"
+                        include += "\n"
                         expression = f"{operation}({left}, {right})"
                     elif type_name == "std::int64_t":
                         include = "#include <cstdint>\n\n"
-                    function_name = f"{name}_{_slug(type_name)}"
+                    function_name = f"{name}_{_cpp_identifier(type_name)}"
                     answer = (
                         f"```cpp\n{include}{prefix}[[nodiscard]] {type_name} {function_name}"
                         f"({type_name} {left}, {type_name} {right}) noexcept {{\n"

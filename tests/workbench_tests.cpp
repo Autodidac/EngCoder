@@ -409,7 +409,7 @@ void test_persistent_serialized_training_resume_and_coalescing() {
     const auto checkpoint = root / "checkpoints" / "job.bin";
     PersistentTrainingQueue queue(state_file);
     queue.load();
-    const auto first = queue.submit("english:g2", "english-core", "candidate-g2", "g1");
+    const auto first = queue.submit("english:g2", "english-core", {}, "g1");
     const auto duplicate = queue.submit("english:g2", "english-core", "other", "g1");
     require(!first.coalesced && duplicate.coalesced && duplicate.job.id == first.job.id &&
                 queue.snapshot().size() == 1U,
@@ -425,6 +425,8 @@ void test_persistent_serialized_training_resume_and_coalescing() {
             "serialized training must claim exactly one queued job");
     require(queue.transition(claimed->id, TrainingState::preparing, TrainingState::training),
             "training transition must be persisted");
+    require(queue.bind_candidate(claimed->id, "candidate-g2", "g1"),
+            "the durable job must bind to the exact shadow candidate before training can yield");
     std::string checkpoint_error;
     require(write_atomic_checkpoint(checkpoint, "checkpoint-v1", checkpoint_error) &&
                 read_text(checkpoint) == "checkpoint-v1" &&
@@ -443,8 +445,10 @@ void test_persistent_serialized_training_resume_and_coalescing() {
     const auto recovered = restarted.claim_next();
     require(recovered.has_value() && recovered->id == claimed->id &&
                 recovered->state == TrainingState::preparing &&
-                recovered->checkpoint_path == checkpoint && recovered->attempts == 2U,
-            "a restarted queue must resume the exact persisted checkpoint");
+                recovered->checkpoint_path == checkpoint && recovered->attempts == 2U &&
+                recovered->candidate_id == "candidate-g2" &&
+                recovered->parent_generation == "g1",
+            "a restarted queue must resume the exact persisted candidate and checkpoint");
     require(restarted.transition(
                 recovered->id, TrainingState::preparing, TrainingState::training) &&
             restarted.transition(
@@ -551,6 +555,68 @@ void test_service_recovers_serialized_job_before_candidate_creation() {
     const auto jobs = reloaded.snapshot();
     require(jobs.size() == 1U && jobs.front().state == TrainingState::recoverable_failed,
             "restart recovery must leave a resumable terminal record instead of losing queued work");
+    std::filesystem::remove_all(root);
+}
+
+void test_service_reconciles_one_durable_job_per_interrupted_candidate() {
+    using namespace threadspire::ai::learning;
+    const auto root = temporary_root();
+    std::string candidate_id;
+    {
+        ExpertRegistry experts(root / "experts" / "registry");
+        experts.load();
+        auto& module = experts.ensure("english-core", "threadspire://coder");
+        experts.save(module);
+
+        CandidateRegistry candidates(root / "candidates" / "registry");
+        candidates.load();
+        auto candidate = candidates.create(
+            "english-core",
+            "threadspire://coder",
+            CandidateKind::full_rank_skill,
+            module.generation,
+            {},
+            root / "candidates" / "job",
+            root / "candidates" / "job.log");
+        candidate.state = CandidateState::training;
+        candidates.save(candidate);
+        candidate_id = candidate.id;
+
+        PersistentTrainingQueue queue(root / "jobs" / "training-state.json");
+        queue.load();
+        const auto job = queue.submit(
+            "skill:english-core:full-rank-skill",
+            "english-core",
+            candidate_id,
+            std::to_string(module.generation));
+        require(queue.transition(job.job.id, TrainingState::queued, TrainingState::preparing) &&
+                    queue.transition(job.job.id, TrainingState::preparing, TrainingState::training),
+                "test setup must leave one candidate-bound durable job in flight");
+    }
+
+    LearningSettings settings;
+    settings.python_executable = root / "missing-python.exe";
+    settings.worker_script = root / "missing-worker.py";
+    settings.state_root = root;
+    settings.base_model = "threadspire://coder";
+    settings.initial_interactive_priority = true;
+    settings.require_cuda = false;
+    settings.automatic_consolidation = false;
+    {
+        ContinualLearningService service(std::move(settings));
+        require(service.pipeline_snapshot().queued_updates == 1U,
+                "startup must reconcile the candidate registry with its existing durable job instead of duplicating it");
+        const auto candidates = service.candidate_snapshot();
+        const auto recovered = std::ranges::find(candidates, candidate_id, &CandidateRecord::id);
+        require(recovered != candidates.end() && recovered->state == CandidateState::interrupted,
+                "the one recovered candidate must remain visibly interrupted and resumable");
+        service.request_stop();
+    }
+
+    PersistentTrainingQueue reloaded(root / "jobs" / "training-state.json");
+    reloaded.load();
+    require(reloaded.snapshot().size() == 1U,
+            "restart reconciliation must never leave a duplicate candidate-keyed job behind");
     std::filesystem::remove_all(root);
 }
 void test_atomic_promotion_keeps_working_host_until_candidate_passes() {
@@ -883,6 +949,7 @@ int main() {
         test_persistent_serialized_training_resume_and_coalescing();
         test_persistent_queue_survives_concurrent_readers();
         test_service_recovers_serialized_job_before_candidate_creation();
+        test_service_reconciles_one_durable_job_per_interrupted_candidate();
         test_atomic_promotion_keeps_working_host_until_candidate_passes();
         test_storage_cards_growth_projections_quotas_and_cleanup();
         test_safe_reset_path_validation();

@@ -31,6 +31,10 @@ struct SerializedTrainingJob final {
     std::string parent_generation;
     TrainingState state{TrainingState::queued};
     std::filesystem::path checkpoint_path;
+    std::filesystem::path training_dataset;
+    std::filesystem::path evaluation_dataset;
+    std::size_t bootstrap_target_steps{0};
+    bool initialize_internal_model{false};
     std::string message;
     std::uint64_t attempts{0};
     std::int64_t created_unix_ms{0};
@@ -51,7 +55,11 @@ public:
         std::string coalesce_key,
         std::string skill,
         std::string candidate_id = {},
-        std::string parent_generation = {});
+        std::string parent_generation = {},
+        std::filesystem::path training_dataset = {},
+        std::filesystem::path evaluation_dataset = {},
+        std::size_t bootstrap_target_steps = 0,
+        bool initialize_internal_model = false);
     [[nodiscard]] std::optional<SerializedTrainingJob> claim_next();
     [[nodiscard]] bool transition(
         std::string_view id,
@@ -59,6 +67,10 @@ public:
         TrainingState next,
         std::filesystem::path checkpoint_path = {},
         std::string message = {});
+    [[nodiscard]] bool bind_candidate(
+        std::string_view id,
+        std::string candidate_id,
+        std::string parent_generation = {});
     [[nodiscard]] std::size_t recover_inflight(std::string message);
     void set_interactive_busy(bool busy);
     [[nodiscard]] bool interactive_busy() const noexcept;

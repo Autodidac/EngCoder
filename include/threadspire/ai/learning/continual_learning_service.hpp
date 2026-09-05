@@ -3,6 +3,7 @@
 #include "threadspire/ai/learning/candidate_registry.hpp"
 #include "threadspire/ai/learning/expert_registry.hpp"
 #include "threadspire/ai/learning/knowledge_classifier.hpp"
+#include "threadspire/ai/learning/training_state_machine.hpp"
 #include "threadspire/ai/memory/episode_store.hpp"
 #include "threadspire/ai/resource/resource_governor.hpp"
 
@@ -34,6 +35,7 @@ struct LearningSettings final {
     std::size_t micro_steps{12};
     std::size_t maximum_sequence_tokens{2048};
     std::size_t checkpoint_steps{3};
+    std::size_t foundation_bootstrap_steps{24'000};
     std::chrono::milliseconds inference_preemption_grace{1500};
     double learning_rate{1.0e-4};
     std::size_t full_rank_steps{6};
@@ -42,6 +44,7 @@ struct LearningSettings final {
     bool require_cuda{true};
     bool automatic_consolidation{true};
     bool resume_interrupted_candidates{true};
+    bool initial_interactive_priority{false};
     resource::ResourcePolicy resource_policy{};
 };
 
@@ -101,6 +104,10 @@ public:
     [[nodiscard]] LearningSubmissionPreview preview(memory::Episode episode) const;
     [[nodiscard]] bool submit(memory::Episode episode);
     void request_skill_update(std::string skill);
+    void request_foundation_update(
+        std::filesystem::path training_dataset,
+        std::filesystem::path evaluation_dataset,
+        std::size_t bootstrap_target_steps = 0);
     [[nodiscard]] std::size_t request_pending_updates();
     void set_interactive_busy(bool value);
     void request_stop();
@@ -113,6 +120,7 @@ public:
     [[nodiscard]] bool rollback_skill(std::string_view skill);
 
     [[nodiscard]] bool interactive_busy() const noexcept;
+    [[nodiscard]] std::uint32_t interactive_lease_count() const noexcept;
     [[nodiscard]] std::vector<LearningJobStatus> statuses() const;
     [[nodiscard]] LearningPipelineSnapshot pipeline_snapshot() const;
     [[nodiscard]] std::vector<ExpertModule> expert_snapshot() const;
@@ -122,9 +130,14 @@ public:
 
 private:
     struct LearningRequest final {
+        std::string job_id;
         std::string skill;
         std::optional<std::string> candidate_id;
         CandidateKind kind{CandidateKind::lora_overlay};
+        std::filesystem::path training_dataset;
+        std::filesystem::path evaluation_dataset;
+        std::size_t bootstrap_target_steps{0};
+        bool initialize_internal_model{false};
     };
 
     void worker_loop(std::stop_token stop_token);
@@ -134,21 +147,35 @@ private:
         ExpertModule& active_module,
         LearningJobStatus& status,
         std::optional<std::string> resume_candidate_id,
+        std::string_view durable_job_id,
+        const std::filesystem::path& training_dataset,
+        const std::filesystem::path& evaluation_dataset,
+        std::size_t bootstrap_target_steps,
+        bool initialize_internal_model,
         std::stop_token stop_token);
     [[nodiscard]] bool run_lora_update(
         const LearningSettings& settings,
         ExpertModule& active_module,
         LearningJobStatus& status,
         std::optional<std::string> resume_candidate_id,
+        std::string_view durable_job_id,
         std::stop_token stop_token);
     [[nodiscard]] bool run_consolidation(
         const LearningSettings& settings,
         ExpertModule& active_module,
         LearningJobStatus& status,
         std::optional<std::string> resume_candidate_id,
+        std::string_view durable_job_id,
         std::stop_token stop_token);
     void queue_request(LearningRequest request);
+    void recover_persisted_requests();
     void recover_interrupted_candidates();
+    void transition_durable_phase(
+        std::string_view job_id,
+        TrainingState expected,
+        TrainingState next,
+        const std::filesystem::path& checkpoint_path,
+        std::string message) noexcept;
     void update_status(const LearningJobStatus& status);
     void persist_status(const LearningJobStatus& status) const;
     void commit_module(const ExpertModule& module);
@@ -159,6 +186,7 @@ private:
     memory::EpisodeStore memory_store_;
     ExpertRegistry expert_registry_;
     CandidateRegistry candidate_registry_;
+    PersistentTrainingQueue persistent_queue_;
     KnowledgeClassifier knowledge_classifier_;
     resource::ResourceGovernor resource_governor_;
     mutable std::mutex promotion_mutex_;

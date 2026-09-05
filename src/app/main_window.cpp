@@ -654,6 +654,30 @@ struct EditViewport final {
 
 [[nodiscard]] EditViewport capture_edit_viewport(const HWND handle) noexcept;
 
+void scroll_edit_to_tail(
+    const HWND handle,
+    const DWORD selection_start,
+    const DWORD selection_end) noexcept {
+    const auto text_length = std::max(0, ::GetWindowTextLengthW(handle));
+    static_cast<void>(::SendMessageW(
+        handle,
+        EM_SETSEL,
+        static_cast<WPARAM>(text_length),
+        static_cast<LPARAM>(text_length)));
+    static_cast<void>(::SendMessageW(handle, EM_SCROLLCARET, 0, 0));
+
+    // Scrolling a read-only transcript must not silently move the user's
+    // selection. Keeping the formatting rectangle inset leaves a readable
+    // gutter below the final line without adding fake text to the transcript.
+    static_cast<void>(::SendMessageW(
+        handle,
+        EM_SETSEL,
+        static_cast<WPARAM>(std::min<DWORD>(
+            selection_start, static_cast<DWORD>(text_length))),
+        static_cast<LPARAM>(std::min<DWORD>(
+            selection_end, static_cast<DWORD>(text_length)))));
+}
+
 [[nodiscard]] std::wstring window_text(const HWND handle) {
     if (handle == nullptr) {
         return {};
@@ -713,7 +737,7 @@ void apply_transcript_tail_inset(
     }
     const auto horizontal = scaled(12, dpi);
     const auto top = scaled(10, dpi);
-    const auto bottom = scaled(30, dpi);
+    const auto bottom = scaled(52, dpi);
     RECT desired{
         horizontal,
         top,
@@ -737,7 +761,8 @@ void apply_transcript_tail_inset(
         0,
         reinterpret_cast<LPARAM>(&desired)));
     if (viewport.follow_tail) {
-        static_cast<void>(::SendMessageW(handle, EM_SCROLLCARET, 0, 0));
+        scroll_edit_to_tail(
+            handle, viewport.selection_start, viewport.selection_end);
     }
 }
 
@@ -765,12 +790,8 @@ void restore_edit_viewport(
     const EditViewport& viewport) noexcept {
     const auto text_length = std::max(0, ::GetWindowTextLengthW(handle));
     if (viewport.follow_tail) {
-        static_cast<void>(::SendMessageW(
-            handle,
-            EM_SETSEL,
-            static_cast<WPARAM>(text_length),
-            static_cast<LPARAM>(text_length)));
-        static_cast<void>(::SendMessageW(handle, EM_SCROLLCARET, 0, 0));
+        scroll_edit_to_tail(
+            handle, viewport.selection_start, viewport.selection_end);
         return;
     }
 
@@ -799,7 +820,7 @@ void redraw_control(const HWND handle) noexcept {
         handle,
         nullptr,
         nullptr,
-        RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW));
+        RDW_INVALIDATE | RDW_FRAME));
 }
 
 void fill_solid_rect(
@@ -1907,41 +1928,7 @@ LRESULT CALLBACK page_host_subclass(
 }
 
 [[nodiscard]] bool private_or_nonpublic_training_prompt(const std::string_view prompt) {
-    auto lowered = std::string(prompt);
-    std::ranges::transform(lowered, lowered.begin(), [](const unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-    const auto at = lowered.find('@');
-    const auto probable_email = at != std::string::npos &&
-        lowered.find('.', at) != std::string::npos;
-    const auto digit_count = std::ranges::count_if(lowered, [](const unsigned char character) {
-        return std::isdigit(character) != 0;
-    });
-    return probable_email || digit_count >= 7 ||
-           lowered.find("my name") != std::string::npos ||
-           lowered.find("my address") != std::string::npos ||
-           lowered.find("home address") != std::string::npos ||
-           lowered.find("i live at") != std::string::npos ||
-           lowered.find("my phone") != std::string::npos ||
-           lowered.find("my email") != std::string::npos ||
-           lowered.find("my birthday") != std::string::npos ||
-           lowered.find("social security") != std::string::npos ||
-           lowered.find("ssn") != std::string::npos ||
-           lowered.find("credit card") != std::string::npos ||
-           lowered.find("bank account") != std::string::npos ||
-           lowered.find("password") != std::string::npos ||
-           lowered.find("passcode") != std::string::npos ||
-           lowered.find("api key") != std::string::npos ||
-           lowered.find("access token") != std::string::npos ||
-           lowered.find("private key") != std::string::npos ||
-           lowered.find("confidential") != std::string::npos ||
-           lowered.find("proprietary") != std::string::npos ||
-           lowered.find("internal only") != std::string::npos ||
-           lowered.find("private repo") != std::string::npos ||
-           lowered.find("not public") != std::string::npos ||
-           lowered.find("on my machine") != std::string::npos ||
-           lowered.find("local path") != std::string::npos ||
-           lowered.find("c:\\") != std::string::npos;
+    return learning::private_or_nonpublic_training_text(prompt);
 }
 
 
@@ -2016,15 +2003,28 @@ LRESULT CALLBACK page_host_subclass(
     return stream.str();
 }
 
-[[nodiscard]] std::string join_tool_events(const std::vector<std::string>& events) {
-    std::string result;
+[[nodiscard]] std::string verified_tool_trace_receipt(
+    const std::vector<std::string>& events) {
+    std::string receipts;
     for (const auto& event : events) {
-        if (!result.empty()) {
-            result.push_back('\n');
+        const auto marker = event.find(": success • receipt ");
+        if (marker == std::string::npos) {
+            continue;
         }
-        result += event;
+        const auto receipt = event.substr(marker + std::string_view{": success • receipt "}.size());
+        if (receipt.size() != 16U) {
+            continue;
+        }
+        if (!receipts.empty()) {
+            receipts.push_back('\n');
+        }
+        receipts += event.substr(0U, marker);
+        receipts.push_back(':');
+        receipts += receipt;
     }
-    return result;
+    return receipts.empty()
+        ? std::string{}
+        : "tool-trace-v1:" + memory::make_content_hash("tool-trace-v1", receipts, "");
 }
 
 [[nodiscard]] bool copy_to_clipboard(
@@ -2970,7 +2970,10 @@ MainWindow::~MainWindow() {
 bool MainWindow::register_window_class() {
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
-    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    // Child bounds are updated explicitly during a coalesced layout pass.
+    // Class-wide resize invalidation repainted the full RichEdit tree for every
+    // drag step and defeated that coalescing.
+    window_class.style = 0;
     window_class.lpfnWndProc = &MainWindow::window_procedure;
     window_class.hInstance = instance_;
     window_class.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
@@ -3069,8 +3072,30 @@ LRESULT MainWindow::handle_message(
         return 0;
     case WM_GETMINMAXINFO: {
         auto* information = reinterpret_cast<MINMAXINFO*>(lparam);
-        information->ptMinTrackSize.x = scaled(980, dpi_);
-        information->ptMinTrackSize.y = scaled(680, dpi_);
+        RECT minimum_client{
+            0,
+            0,
+            scaled(980, dpi_),
+            scaled(680, dpi_),
+        };
+        const auto style = static_cast<DWORD>(
+            ::GetWindowLongPtrW(window_, GWL_STYLE));
+        const auto extended_style = static_cast<DWORD>(
+            ::GetWindowLongPtrW(window_, GWL_EXSTYLE));
+        if (::AdjustWindowRectExForDpi(
+                &minimum_client,
+                style,
+                FALSE,
+                extended_style,
+                dpi_) != FALSE) {
+            information->ptMinTrackSize.x =
+                minimum_client.right - minimum_client.left;
+            information->ptMinTrackSize.y =
+                minimum_client.bottom - minimum_client.top;
+        } else {
+            information->ptMinTrackSize.x = scaled(980, dpi_);
+            information->ptMinTrackSize.y = scaled(680, dpi_);
+        }
         return 0;
     }
     case WM_SIZE:
@@ -3088,16 +3113,25 @@ LRESULT MainWindow::handle_message(
             }
         }
         return 0;
+    case WM_ENTERSIZEMOVE:
+        // The quarter-second state refresh reads persistent queues, model
+        // manifests, process state, and storage telemetry. Let the bounded
+        // resize layout timer own the UI thread while the user is dragging;
+        // one complete refresh runs immediately after the drag finishes.
+        interactive_resize_ = true;
+        return 0;
     case WM_EXITSIZEMOVE:
+        interactive_resize_ = false;
         static_cast<void>(::KillTimer(window_, resize_layout_timer));
         resize_layout_scheduled_ = false;
         layout_controls();
+        update_periodic_state();
         static_cast<void>(::RedrawWindow(
             window_,
             nullptr,
             nullptr,
             RDW_INVALIDATE | RDW_FRAME |
-                RDW_ALLCHILDREN | RDW_UPDATENOW));
+                RDW_ALLCHILDREN));
         return 0;
     case WM_DPICHANGED: {
         dpi_ = HIWORD(wparam);
@@ -3161,15 +3195,11 @@ LRESULT MainWindow::handle_message(
                     : static_cast<LONG_PTR>(Page::logs);
                 const auto selected_page = static_cast<Page>(
                     std::clamp<LONG_PTR>(item.lParam, minimum, maximum));
-                show_page(selected_page);
+                // Layout the hidden destination before making it visible so a
+                // tab switch cannot expose stale one-pixel startup bounds.
+                page_ = selected_page;
                 select_page_tab(selected_page);
                 layout_controls();
-                static_cast<void>(::RedrawWindow(
-                    window_,
-                    nullptr,
-                    nullptr,
-                    RDW_INVALIDATE | RDW_FRAME |
-                        RDW_ALLCHILDREN | RDW_UPDATENOW));
             }
         }
         return 0;
@@ -3188,7 +3218,9 @@ LRESULT MainWindow::handle_message(
     }
     case WM_TIMER:
         if (wparam == update_timer) {
-            update_periodic_state();
+            if (!interactive_resize_) {
+                update_periodic_state();
+            }
         } else if (wparam == stream_timer) {
             flush_stream_text();
         } else if (wparam == resize_layout_timer) {
@@ -4196,8 +4228,7 @@ void MainWindow::create_skills_page() {
         CBS_DROPDOWNLIST | WS_VSCROLL,
         0, id::skills_pack_choice, parent);
     for (const auto& descriptor : runtime::CapabilityPackManager::catalog()) {
-        if (descriptor.kind == runtime::CapabilityPackKind::compact_native_inference ||
-            descriptor.kind == runtime::CapabilityPackKind::internal_pytorch_training) {
+        if (descriptor.kind == runtime::CapabilityPackKind::compact_native_inference) {
             continue;
         }
         const auto label = widen(descriptor.name) + L" — " +
@@ -4383,14 +4414,21 @@ void MainWindow::layout_controls() {
         const auto tab_space = std::max(
             1,
             client_width - margin * 2 - scaled(36, dpi_));
-        const auto tab_width = std::max(
-            1,
-            ::MulDiv(tab_space / tab_count, 96, static_cast<int>(dpi_)));
-        static_cast<void>(::SendMessageW(
-            tabs,
-            TCM_SETITEMSIZE,
-            0,
-            MAKELPARAM(tab_width, scaled(40, dpi_))));
+        // TCM_SETITEMSIZE consumes client pixels. tab_space is already in
+        // client pixels, so inverse-DPI scaling here left a large dead tail on
+        // 125–200% displays.
+        const auto tab_width = std::max(1, tab_space / tab_count);
+        const auto tab_height = scaled(40, dpi_);
+        RECT first_tab{};
+        if (TabCtrl_GetItemRect(tabs, 0, &first_tab) == FALSE ||
+            first_tab.right - first_tab.left != tab_width ||
+            first_tab.bottom - first_tab.top != tab_height) {
+            static_cast<void>(::SendMessageW(
+                tabs,
+                TCM_SETITEMSIZE,
+                0,
+                MAKELPARAM(tab_width, tab_height)));
+        }
         RECT last_tab{};
         if (TabCtrl_GetItemRect(tabs, tab_count - 1, &last_tab) != FALSE) {
             move_control(
@@ -4436,15 +4474,21 @@ void MainWindow::layout_controls() {
         if (settings_tab_count > 0) {
             const auto settings_tab_width = std::max(
                 1,
-                ::MulDiv(
-                    (width - scaled(36, dpi_)) / settings_tab_count,
-                    96,
-                    static_cast<int>(dpi_)));
-            static_cast<void>(::SendMessageW(
-                settings_tabs,
-                TCM_SETITEMSIZE,
-                0,
-                MAKELPARAM(settings_tab_width, scaled(36, dpi_))));
+                (width - scaled(36, dpi_)) / settings_tab_count);
+            const auto settings_tab_height = scaled(36, dpi_);
+            RECT first_settings_tab{};
+            if (TabCtrl_GetItemRect(
+                    settings_tabs, 0, &first_settings_tab) == FALSE ||
+                first_settings_tab.right - first_settings_tab.left !=
+                    settings_tab_width ||
+                first_settings_tab.bottom - first_settings_tab.top !=
+                    settings_tab_height) {
+                static_cast<void>(::SendMessageW(
+                    settings_tabs,
+                    TCM_SETITEMSIZE,
+                    0,
+                    MAKELPARAM(settings_tab_width, settings_tab_height)));
+            }
             RECT last_settings_tab{};
             if (TabCtrl_GetItemRect(
                     settings_tabs,
@@ -4477,14 +4521,7 @@ void MainWindow::layout_controls() {
         const auto host_height = std::max(
             1,
             shell_height - (settings_page ? settings_navigation_height : 0));
-        static_cast<void>(::SetWindowPos(
-            page,
-            HWND_TOP,
-            page_left,
-            host_top,
-            width,
-            host_height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOCOPYBITS));
+        move_control(page, page_left, host_top, width, host_height);
     }
     if (settings_navigation_visible) {
         static_cast<void>(::SetWindowPos(
@@ -4514,6 +4551,7 @@ void MainWindow::layout_controls() {
     const auto row = scaled(40, dpi_);
     const auto button = scaled(144, dpi_);
     const auto surface_padding = scaled(12, dpi_);
+    const auto compact_vertical = height < scaled(760, dpi_);
 
     // The root shell and every page host now have their final bounds. Queue
     // leaf controls by parent so Win32 never abandons a mixed-parent batch.
@@ -4565,6 +4603,12 @@ void MainWindow::layout_controls() {
     const auto workspace_status_y = workspace_top + row + gap;
     const auto workspace_buttons_width =
         workspace_button_width + workspace_settings_width + gap;
+    for (const auto identifier : {
+             id::chat_backend,
+             id::chat_discover,
+             id::chat_open_models}) {
+        set_window_visibility(control(identifier), !compact_vertical);
+    }
     move_control(
         control(id::chat_backend),
         surface_padding,
@@ -4584,7 +4628,12 @@ void MainWindow::layout_controls() {
         workspace_settings_width,
         row);
 
-    const auto workspace_repository_y = workspace_status_y + row + gap;
+    // At compact heights, Settings and the persistent activity strip already
+    // expose connection state. Removing the duplicate status row gives the
+    // conversation and composer non-overlapping vertical space.
+    const auto workspace_repository_y = compact_vertical
+        ? workspace_top + row + gap
+        : workspace_status_y + row + gap;
     const auto show_workspace_repository = workspace_coding_mode();
     for (const auto identifier : {
              id::chat_repository_label,
@@ -4642,9 +4691,14 @@ void MainWindow::layout_controls() {
     const auto sidebar_inner_width = std::max(
         1,
         sidebar_width - surface_padding * 2);
-    const auto compact_actions = conversation_inner_width < scaled(550, dpi_);
-    const auto compact_bottom_actions = conversation_inner_width < scaled(850, dpi_);
-    const auto compact_vertical = height < scaled(760, dpi_);
+    const auto expanded_review_min_width =
+        scaled(80 + 55 + 55 + 62 + 120 + 62 + 68 + 170, dpi_) + gap * 7;
+    const auto expanded_bottom_min_width =
+        scaled(240 + 100 + 75 + 100 + 115 + 125 + 80, dpi_) + gap * 6;
+    const auto compact_actions =
+        conversation_inner_width < expanded_review_min_width;
+    const auto compact_bottom_actions = compact_vertical ||
+        conversation_inner_width < expanded_bottom_min_width;
     const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
     const auto action_y = height - surface_padding - action_block_height;
     const auto prompt_height = std::clamp(
@@ -4652,15 +4706,16 @@ void MainWindow::layout_controls() {
         scaled(compact_vertical ? 75 : 95, dpi_),
         scaled(compact_vertical ? 120 : 165, dpi_));
     const auto prompt_y = action_y - gap - prompt_height;
-    const auto prompt_label_y = prompt_y - row;
+    const auto prompt_label_y = prompt_y - (compact_vertical ? 0 : row);
     const auto composer_top = prompt_label_y - surface_padding;
     const auto conversation_label_y = workspace_content_top + surface_padding;
-    const auto conversation_y = conversation_label_y + row;
+    const auto conversation_y =
+        conversation_label_y + (compact_vertical ? 0 : row);
     const auto review_block_height = compact_actions ? row * 2 + gap : row;
     const auto review_y =
         composer_top - gap - surface_padding - review_block_height;
     const auto conversation_height = std::max(
-        scaled(compact_vertical ? 80 : 120, dpi_),
+        1,
         review_y - gap - conversation_y);
     move_control(control(id::chat_setup_card), 0, 0, width,
         std::max(1, workspace_content_top - gap));
@@ -4682,6 +4737,7 @@ void MainWindow::layout_controls() {
         conversation_label_y,
         scaled(160, dpi_),
         row);
+    set_window_visibility(control(id::chat_response_label), !compact_vertical);
     move_control(
         control(id::chat_response),
         conversation_inner_x,
@@ -4713,9 +4769,9 @@ void MainWindow::layout_controls() {
             move_control(control(identifier), review_x, second_row_y, control_width, row);
             review_x += control_width + gap;
         };
-        move_second_row(id::chat_accept, scaled(140, dpi_));
-        move_second_row(id::chat_reject, scaled(82, dpi_));
-        move_second_row(id::chat_learning_preview, scaled(92, dpi_));
+        move_second_row(id::chat_accept, scaled(120, dpi_));
+        move_second_row(id::chat_reject, scaled(72, dpi_));
+        move_second_row(id::chat_learning_preview, scaled(76, dpi_));
         move_second_row(id::chat_auto_learning, scaled(170, dpi_));
     } else {
         const auto review_fixed_width =
@@ -4748,18 +4804,22 @@ void MainWindow::layout_controls() {
         prompt_label_y,
         scaled(140, dpi_),
         row);
-    move_control(
-        control(id::chat_include_context),
-        conversation_inner_x + scaled(144, dpi_),
-        prompt_label_y,
-        scaled(270, dpi_),
-        row);
+    set_window_visibility(control(id::chat_prompt_label), !compact_vertical);
+    if (!compact_vertical) {
+        move_control(
+            control(id::chat_include_context),
+            conversation_inner_x + scaled(144, dpi_),
+            prompt_label_y,
+            scaled(270, dpi_),
+            row);
+    }
     move_control(
         control(id::chat_attachment_status),
         conversation_inner_x + scaled(418, dpi_),
         prompt_label_y,
         std::max(1, conversation_inner_width - scaled(418, dpi_)),
         row);
+    set_window_visibility(control(id::chat_attachment_status), !compact_vertical);
     move_control(
         control(id::chat_prompt),
         conversation_inner_x,
@@ -4776,23 +4836,34 @@ void MainWindow::layout_controls() {
             move_control(control(identifier), action_x, action_y, control_width, control_height);
             action_x += control_width + gap;
         };
-        move_first_action(id::chat_mode, scaled(230, dpi_));
-        move_first_action(id::chat_send, scaled(100, dpi_));
-        move_first_action(id::chat_stop, scaled(75, dpi_));
-        move_first_action(id::chat_clear, scaled(100, dpi_));
+        move_first_action(id::chat_mode, scaled(170, dpi_));
+        move_first_action(id::chat_send, scaled(80, dpi_));
+        move_first_action(id::chat_stop, scaled(65, dpi_));
+        move_first_action(id::chat_clear, scaled(90, dpi_));
         action_x = conversation_inner_x;
         const auto second_action_y = action_y + row + gap;
         const auto move_second_action = [&](const int identifier, const int control_width) {
             move_control(control(identifier), action_x, second_action_y, control_width, row);
             action_x += control_width + gap;
         };
-        move_second_action(id::chat_attach, scaled(125, dpi_));
-        move_second_action(id::chat_open_output, scaled(135, dpi_));
-        move_control(control(id::chat_hint), action_x, second_action_y,
-            std::max(
-                1,
-                conversation_inner_x + conversation_inner_width - action_x),
-            row);
+        move_second_action(id::chat_attach, scaled(110, dpi_));
+        move_second_action(id::chat_open_output, scaled(120, dpi_));
+        if (compact_vertical) {
+            move_control(
+                control(id::chat_include_context),
+                action_x,
+                second_action_y,
+                std::max(
+                    1,
+                    conversation_inner_x + conversation_inner_width - action_x),
+                row);
+        } else {
+            move_control(control(id::chat_hint), action_x, second_action_y,
+                std::max(
+                    1,
+                    conversation_inner_x + conversation_inner_width - action_x),
+                row);
+        }
     } else {
         auto action_x = conversation_inner_x;
         const auto move_workspace_action = [&](const int identifier, const int control_width) {
@@ -4814,6 +4885,7 @@ void MainWindow::layout_controls() {
                 conversation_inner_x + conversation_inner_width - action_x),
             row);
     }
+    set_window_visibility(control(id::chat_hint), !compact_vertical);
 
     move_control(
         control(id::chat_plan_label),
@@ -5758,7 +5830,7 @@ void MainWindow::show_page(const Page page) {
         set_window_visibility(host, false);
     }
 
-    if (visible_page != nullptr) {
+    if (visible_page != nullptr && !visible_page_was_visible) {
         static_cast<void>(::SetWindowPos(
             visible_page,
             HWND_TOP,
@@ -5768,14 +5840,12 @@ void MainWindow::show_page(const Page page) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
                 SWP_NOOWNERZORDER |
-                (visible_page_was_visible ? 0U : SWP_SHOWWINDOW)));
-        if (!visible_page_was_visible) {
-            static_cast<void>(::RedrawWindow(
-                visible_page,
-                nullptr,
-                nullptr,
-                RDW_INVALIDATE | RDW_ALLCHILDREN));
-        }
+                SWP_SHOWWINDOW));
+        static_cast<void>(::RedrawWindow(
+            visible_page,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN));
     }
 }
 
@@ -5796,12 +5866,10 @@ void MainWindow::select_page_tab(const Page page) {
             item.mask = TCIF_PARAM;
             if (TabCtrl_GetItem(tabs, index, &item) != FALSE &&
                 item.lParam == static_cast<LPARAM>(target)) {
-                static_cast<void>(TabCtrl_SetCurSel(tabs, index));
-                static_cast<void>(::RedrawWindow(
-                    tabs,
-                    nullptr,
-                    nullptr,
-                    RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW));
+                if (TabCtrl_GetCurSel(tabs) != index) {
+                    static_cast<void>(TabCtrl_SetCurSel(tabs, index));
+                    redraw_control(tabs);
+                }
                 return;
             }
         }
@@ -8375,7 +8443,7 @@ memory::Episode MainWindow::learning_episode_for(
             : "episodic-memory",
         .content_hash = {},
         .correction = {},
-        .tool_trace_hash = join_tool_events(turn.tool_events),
+        .tool_trace_hash = verified_tool_trace_receipt(turn.tool_events),
         .created_unix_ms = 0,
     };
 }
@@ -8395,6 +8463,24 @@ bool MainWindow::has_pending_live_training_candidates() {
     }
     const auto key = training_cursor_key("live-interaction", dataset);
     return records > piggyback_cursor_for(key);
+}
+
+std::size_t MainWindow::pending_measured_gap_count() {
+    const auto dataset = paths_.candidates / "measured-conversation-gaps.jsonl";
+    if (!std::filesystem::is_regular_file(dataset)) {
+        return 0U;
+    }
+    std::ifstream stream(dataset, std::ios::binary);
+    std::size_t records = 0U;
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!trim_ascii(line).empty()) {
+            ++records;
+        }
+    }
+    const auto key = training_cursor_key("measured-conversation-gap", dataset);
+    const auto cursor = piggyback_cursor_for(key);
+    return records > cursor ? records - cursor : 0U;
 }
 
 void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
@@ -8510,7 +8596,7 @@ void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
             {"needs_current_information", turn.analysis.needs_current_information},
             {"compiler_passed", turn.repository_compiler_passed},
             {"tests_passed", turn.repository_tests_passed},
-            {"tool_trace_hash", join_tool_events(turn.tool_events)},
+            {"tool_trace_hash", verified_tool_trace_receipt(turn.tool_events)},
             {"curriculum_stage", conversation_ready
                 ? (planning_ready ? "coding" : "planning")
                 : "conversation"},
@@ -9031,7 +9117,15 @@ void MainWindow::discover_local_ai() {
                     .message = "discovery cancelled",
                 };
             }
-            auto report = models::discover_local_models(std::chrono::milliseconds(650));
+            auto report = models::discover_local_models(
+                std::chrono::milliseconds(650), token);
+            if (token.stop_requested()) {
+                return util::OperationResult{
+                    .state = util::OperationState::cancelled,
+                    .exit_code = 1,
+                    .message = "discovery cancelled",
+                };
+            }
             const auto count = report.models.size();
             {
                 std::lock_guard lock(result_mutex_);
@@ -9485,14 +9579,12 @@ void MainWindow::generate_piggyback(
         return;
     }
     const auto pipeline = learning_service_->pipeline_snapshot();
-    const auto weight_training_blocks_examples =
-        pipeline.active_job.has_value() ||
-        (!live_candidates && pipeline.queued_updates > 0U);
+    const auto weight_training_blocks_examples = pipeline.active_job.has_value();
     if (weight_training_blocks_examples) {
         if (!automatic) {
             set_status(
-                L"Weight training is already active or queued. The example pass "
-                L"will wait so the current checkpoint can finish without disruption.");
+                L"Weight training is active. The example pass will resume after "
+                L"the current candidate yields or finishes.");
         }
         next_piggyback_at_ =
             std::chrono::steady_clock::now() + (live_candidates
@@ -9501,14 +9593,20 @@ void MainWindow::generate_piggyback(
         return;
     }
 
-    const auto target_skill = live_candidates
-        ? std::string{"live-interaction"}
+    constexpr std::size_t measured_gap_trigger = 3U;
+    const auto pending_gap_examples = pending_measured_gap_count();
+    const auto measured_gap_analysis = automatic && !trusted_only &&
+        !live_candidates && pending_gap_examples >= measured_gap_trigger;
+    const auto target_skill = live_candidates || measured_gap_analysis
+        ? std::string{"english-conversation"}
         : selected_training_skill();
     const auto dataset = trusted_only
         ? selected_training_dataset().lexically_normal()
         : (live_candidates
             ? paths_.candidates / "live-interactions.jsonl"
-            : paths_.data / "seed.jsonl");
+            : (measured_gap_analysis
+                ? paths_.candidates / "measured-conversation-gaps.jsonl"
+                : paths_.data / "seed.jsonl"));
     if (!std::filesystem::is_regular_file(dataset)) {
         if (!automatic) {
             set_status(widen("Training dataset does not exist: " + dataset.string()));
@@ -9525,17 +9623,23 @@ void MainWindow::generate_piggyback(
         for (const auto& model : snapshot.models()) {
             if (model.enabled &&
                 !models::is_internal_model(model) &&
-                (live_candidates
+                ((automatic && !trusted_only) || live_candidates
                     ? authorized_live_training_model(model)
                     : model.teacher) &&
                 models::has_capability(model, "chat")) {
                 teachers.push_back(model);
             }
         }
-        if (teachers.empty() || (live_candidates && teachers.size() < 2U)) {
+        const auto automatic_conversation_curriculum = automatic && !trusted_only;
+        if (automatic_conversation_curriculum) {
+            std::erase_if(teachers, [](const auto& candidate) {
+                return !authorized_live_training_model(candidate);
+            });
+        }
+        if (teachers.empty() || (automatic_conversation_curriculum && teachers.size() < 2U)) {
             if (!automatic) {
-                set_status(live_candidates
-                    ? L"Live Auto Training needs both authorized local LM Studio models: Qwen 3.8 27B and Nemotron 3 Nano 4B."
+                set_status(automatic_conversation_curriculum
+                    ? L"Automatic English teaching needs both authorized local LM Studio models: Qwen 3.8 27B and Nemotron 3 Nano 4B."
                     : L"No external teacher AI is ready. Start a capable local AI and discover it first.");
             }
             next_piggyback_at_ =
@@ -9552,7 +9656,7 @@ void MainWindow::generate_piggyback(
                 std::min(0.08, right.tokens_per_second / 1000.0);
             return left_score > right_score;
         });
-        if (live_candidates) {
+        if (automatic_conversation_curriculum) {
             std::vector<models::ModelProfile> distinct_families;
             for (const auto& candidate : teachers) {
                 const auto family = live_training_model_family(candidate);
@@ -9569,8 +9673,30 @@ void MainWindow::generate_piggyback(
             if (teachers.size() < 2U) {
                 if (!automatic) {
                     set_status(
-                        L"Live Auto Training needs one loopback Qwen 3.8 27B and one loopback Nemotron 3 Nano 4B model.");
+                        L"Automatic English teaching needs one loopback Qwen 3.8 27B and one loopback Nemotron 3 Nano 4B model.");
                 }
+                next_piggyback_at_ =
+                    std::chrono::steady_clock::now() + std::chrono::minutes(2);
+                return;
+            }
+
+            // Automatic expansion has deliberately asymmetric roles. Fast
+            // Nemotron owns routine breadth; Qwen wakes as a generator only
+            // after multiple independently reviewed conversation failures
+            // establish a measured gap. The other family always verifies.
+            //
+            // Everyday automatic expansion has one deliberately asymmetric
+            // teacher path: fast Nemotron generates conversational variants
+            // and Qwen checks them. Keep both families in the verifier pool so
+            // either source model's foreground reply can still be reviewed by
+            // the other family. Qwen generates curriculum only in the explicit
+            // English-foundation workflow or a measured-gap pass.
+            verifiers = teachers;
+            std::erase_if(teachers, [measured_gap_analysis](const auto& candidate) {
+                return live_training_model_family(candidate) !=
+                    (measured_gap_analysis ? 1 : 2);
+            });
+            if (teachers.empty()) {
                 next_piggyback_at_ =
                     std::chrono::steady_clock::now() + std::chrono::minutes(2);
                 return;
@@ -9581,9 +9707,7 @@ void MainWindow::generate_piggyback(
         }
         teacher = teachers.front();
 
-        if (live_candidates) {
-            verifiers = teachers;
-        } else {
+        if (!automatic_conversation_curriculum) {
             for (const auto& candidate : snapshot.models()) {
                 if (candidate.enabled &&
                     !models::is_internal_model(candidate) &&
@@ -9610,7 +9734,10 @@ void MainWindow::generate_piggyback(
         }
     }
     std::size_t maximum_examples = trusted_only ? 100000U : 8U;
-    if (!trusted_only && !live_candidates) {
+    if (measured_gap_analysis) {
+        maximum_examples = std::min<std::size_t>(pending_gap_examples, 8U);
+    }
+    if (!trusted_only && !live_candidates && !measured_gap_analysis) {
         try {
             maximum_examples = static_cast<std::size_t>(std::stoull(
                 narrow(control_text(id::learning_piggyback_count))));
@@ -9623,30 +9750,39 @@ void MainWindow::generate_piggyback(
         maximum_examples = std::clamp<std::size_t>(maximum_examples, 1U, 64U);
     }
 
-    training_target_ = target_skill;
     active_piggyback_skill_ = target_skill;
     active_piggyback_trusted_only_ = trusted_only;
     active_piggyback_live_ = live_candidates;
-    active_piggyback_cursor_key_ = training_cursor_key(target_skill, dataset);
-    custom_training_dataset_ = trusted_only ? dataset : custom_training_dataset_;
-    persist_training_configuration();
+    active_piggyback_deep_gap_ = measured_gap_analysis;
+    active_piggyback_cursor_key_ = training_cursor_key(
+        live_candidates
+            ? std::string_view{"live-interaction"}
+            : (measured_gap_analysis
+                ? std::string_view{"measured-conversation-gap"}
+                : std::string_view{target_skill}),
+        dataset);
+    if (!live_candidates && !measured_gap_analysis) {
+        training_target_ = target_skill;
+        custom_training_dataset_ = trusted_only ? dataset : custom_training_dataset_;
+        persist_training_configuration();
+    }
 
     if (trusted_only) {
         set_control_text(
             id::learning_piggyback_status,
             widen("Importing trusted JSONL into target: " + target_skill));
     } else if (live_candidates) {
-        std::string teacher_names;
-        for (const auto& model : teachers) {
-            if (!teacher_names.empty()) {
-                teacher_names += " + ";
-            }
-            teacher_names += model.display_name;
-        }
         set_control_text(
             id::learning_piggyback_status,
-            widen("Live Auto Training • checking interaction candidates with " + teacher_names +
-                  " • weak answers are revised or rejected • every decision is logged"));
+            widen("Live Auto Training • source replies are checked by the other model family • "
+                  "Nemotron generates fast conversational variants • Qwen verifies them • "
+                  "weak answers are revised or rejected • every decision is logged"));
+    } else if (measured_gap_analysis) {
+        set_control_text(
+            id::learning_piggyback_status,
+            widen("Measured gap pass • " + std::to_string(pending_gap_examples) +
+                  " reviewed conversation failures waiting • Qwen repairs at one request at a time • "
+                  "Nemotron independently verifies • every decision is logged"));
     } else {
         std::string teacher_names;
         for (const auto& model : teachers) {
@@ -9670,7 +9806,8 @@ void MainWindow::generate_piggyback(
         .restrict_to_target_domain = !trusted_only && !live_candidates,
         .generate_teacher_variations = !trusted_only,
         .untrusted_live_examples = live_candidates,
-        .wrap_seed_dataset = !live_candidates,
+        .measured_gap_analysis = measured_gap_analysis,
+        .wrap_seed_dataset = !live_candidates && !measured_gap_analysis,
         .internal_base_url = backend_server_.running()
             ? backend_server_.base_url()
             : std::string{},
@@ -9680,7 +9817,10 @@ void MainWindow::generate_piggyback(
         .verifiers = verifiers,
         .audit_log = paths_.logs /
             (live_candidates ? "live-training-attempts.jsonl" : "teacher-attempts.jsonl"),
-        .maximum_parallel_per_teacher = 4U,
+        .measured_gap_dataset = live_candidates
+            ? paths_.candidates / "measured-conversation-gaps.jsonl"
+            : std::filesystem::path{},
+        .maximum_parallel_per_teacher = measured_gap_analysis ? 1U : 4U,
         .seed_offset = trusted_only
             ? 0U
             : piggyback_cursor_for(active_piggyback_cursor_key_),
@@ -9719,6 +9859,8 @@ void MainWindow::generate_piggyback(
                 .message = result.succeeded
                     ? (request.untrusted_live_examples
                         ? "Live Auto Training pass complete"
+                        : request.measured_gap_analysis
+                        ? "measured conversation-gap repair pass complete"
                         : request.generate_teacher_variations
                         ? "teacher-data pass complete"
                         : "trusted JSONL import complete")
@@ -9729,10 +9871,13 @@ void MainWindow::generate_piggyback(
             ? "importing trusted custom training data"
             : (live_candidates
                 ? "checking and revising live interactions with authorized local models"
-                : "generating training examples from local teacher models"));
+                : (measured_gap_analysis
+                    ? "repairing measured conversation gaps with Qwen and independent Nemotron review"
+                    : "generating training examples from local teacher models")));
     if (!started) {
         learning_service_->set_interactive_busy(false);
         active_piggyback_live_ = false;
+        active_piggyback_deep_gap_ = false;
     }
     next_piggyback_at_ =
         std::chrono::steady_clock::now() + (started
@@ -10780,7 +10925,9 @@ void MainWindow::update_global_activity() {
         const auto operation = piggyback_operation_.snapshot();
         auto label = std::wstring{active_piggyback_live_
             ? L"Live Auto Training"
-            : L"Creating and checking verified practice examples"};
+            : (active_piggyback_deep_gap_
+                ? L"Qwen is repairing measured conversation gaps; Nemotron will verify"
+                : L"Creating and checking verified practice examples")};
         if (!operation.message.empty()) {
             label += L" — " + widen(operation.message);
         }
@@ -10798,6 +10945,7 @@ void MainWindow::update_global_activity() {
     const auto pipeline = learning_service_->pipeline_snapshot();
     const auto user_taught_replies =
         learning_service_->memory_store().total_human_acceptance_count();
+    const auto measured_gaps_waiting = pending_measured_gap_count();
     if (pipeline.active_job.has_value()) {
         auto label = std::wstring{L"Retraining a separate test model"};
         if (!pipeline.active_job->skill.empty()) {
@@ -10805,8 +10953,11 @@ void MainWindow::update_global_activity() {
         }
         active_work.push_back(std::move(label));
     }
-    add_running(storage_operation_, L"Measuring disk and memory use");
+    const auto storage_measurement_running = storage_operation_.running();
 
+    // Routine five-second storage sampling is still visible, but it is not a
+    // user-meaningful operation and must never replace the last training,
+    // response, setup, or cleanup result.
     if (!active_work.empty()) {
         active_activity_summary_ = active_work.front();
     } else if (!active_activity_summary_.empty()) {
@@ -10867,6 +11018,10 @@ void MainWindow::update_global_activity() {
         }
         text
              << L" • Chat has priority; every decision will remain in the Training Library.";
+    } else if (measured_gaps_waiting >= 3U && checked(id::chat_auto_learning)) {
+        text << L"WAITING — " << measured_gaps_waiting
+             << L" independently reviewed conversation gaps are ready for a deep repair pass\r\n"
+             << L"Qwen will generate one repair at a time; Nemotron will independently verify it. Chat has priority.";
     } else if (pipeline.queued_updates > 0U) {
         text << L"WAITING — " << pipeline.queued_updates << L" neural-weight job"
              << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
@@ -10906,12 +11061,18 @@ void MainWindow::update_global_activity() {
                  << (checked(id::chat_auto_learning) ? L"on" : L"off")
                  << L" • User-taught replies: " << user_taught_replies
                  << L" • Idle practice generation: "
-                 << (checked(id::learning_auto) ? L"on" : L"off");
+                 << (checked(id::learning_auto) ? L"on" : L"off")
+                 << L" • Measured gaps waiting: " << measured_gaps_waiting;
         }
     }
 
+    if (storage_measurement_running) {
+        text << L" • Background: measuring disk and memory use";
+    }
+
+    // set_control_text already invalidates after a real change. Avoid forcing
+    // an unchanged owner-drawn activity card to repaint every 250 ms.
     set_control_text(id::activity_strip, text.str());
-    redraw_control(control(id::activity_strip));
 }
 
 void MainWindow::update_periodic_state() {
@@ -10962,6 +11123,7 @@ void MainWindow::update_periodic_state() {
         nemotron_ready = nemotron_ready || family == 2;
     }
     const auto live_models_ready = qwen_ready && nemotron_ready;
+    const auto measured_gaps_waiting = pending_measured_gap_count();
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
     const auto user_taught_replies =
         learning_service_->memory_store().total_human_acceptance_count();
@@ -11006,7 +11168,9 @@ void MainWindow::update_periodic_state() {
             id::chat_learning_status,
             active_piggyback_live_
                 ? L"Live Auto Training is checking, revising, or rejecting interaction candidates with Qwen and Nemotron. Every decision is retained."
-                : L"Creating and checking separate practice examples. Chat remains available.");
+                : (active_piggyback_deep_gap_
+                    ? L"Qwen is repairing independently measured conversation gaps one at a time; Nemotron is the separate verifier. Chat remains available."
+                    : L"Creating and checking separate practice examples. Chat remains available."));
     } else if (learning_pipeline.active_job.has_value()) {
         set_control_text(
             id::chat_learning_status,
@@ -11031,6 +11195,11 @@ void MainWindow::update_periodic_state() {
                 << (user_taught_replies == 1U ? L"y is" : L"ies are")
                 << L" already saved in verified memory.";
         set_control_text(id::chat_learning_status, pending.str());
+    } else if (measured_gaps_waiting >= 3U) {
+        std::wostringstream gaps;
+        gaps << measured_gaps_waiting
+             << L" independently reviewed conversation gaps are waiting. Qwen will repair them and Nemotron will verify them when Chat is idle.";
+        set_control_text(id::chat_learning_status, gaps.str());
     } else if (learning_pipeline.queued_updates > 0U) {
         std::wostringstream queued;
         queued << user_taught_replies << L" user-taught repl"
@@ -11053,13 +11222,20 @@ void MainWindow::update_periodic_state() {
 
     const auto run_live_pass =
         checked(id::chat_auto_learning) && live_training_pending_;
+    constexpr std::size_t measured_gap_trigger = 3U;
+    const auto run_gap_pass = !run_live_pass && checked(id::chat_auto_learning) &&
+        measured_gaps_waiting >= measured_gap_trigger;
     const auto run_practice_pass =
-        !run_live_pass && checked(id::learning_auto);
-    const auto helper_ready = run_live_pass ? live_models_ready : teacher_available;
-    const auto example_pass_blocked =
-        learning_pipeline.active_job.has_value() ||
-        (!run_live_pass && learning_pipeline.queued_updates > 0U);
-    if ((run_live_pass || run_practice_pass) &&
+        !run_live_pass && !run_gap_pass && checked(id::learning_auto);
+    const auto helper_ready = (run_live_pass || run_gap_pass || run_practice_pass)
+        ? live_models_ready
+        : teacher_available;
+    // Evidence curation and teacher generation are independent of tensor
+    // optimization. A queued job (most commonly waiting for the optional
+    // Internal PyTorch Training pack) must not freeze either automatic loop.
+    // Only a trainer that is genuinely active owns the background budget.
+    const auto example_pass_blocked = learning_pipeline.active_job.has_value();
+    if ((run_live_pass || run_gap_pass || run_practice_pass) &&
         helper_ready &&
         !piggyback_operation_.running() &&
         !foundation_operation_.running() &&
@@ -11459,6 +11635,7 @@ void MainWindow::update_piggyback_result() {
     }
     const auto trusted_only = active_piggyback_trusted_only_;
     const auto live_candidates = active_piggyback_live_;
+    const auto measured_gap_analysis = active_piggyback_deep_gap_;
     if (!trusted_only && !active_piggyback_cursor_key_.empty()) {
         const auto current = piggyback_cursor_for(active_piggyback_cursor_key_);
         if (result->progress.next_seed_offset > current) {
@@ -11479,6 +11656,9 @@ void MainWindow::update_piggyback_result() {
            << L" • revised " << result->progress.revised
            << L" • need evidence " << result->progress.needs_evidence
            << L" • retry pending " << result->progress.retry_pending
+           << L" • excluded " << result->progress.excluded
+           << L" • measured gaps " << result->progress.coverage_gaps
+           << L" • deep repairs " << result->progress.deep_gap_verified
            << L" • stored " << result->progress.stored
            << L" • rejected " << result->progress.rejected;
     if (!result->error.empty()) {
@@ -11508,6 +11688,8 @@ void MainWindow::update_piggyback_result() {
         next_piggyback_at_ = now + (result->progress.retry_pending > 0U
             ? std::chrono::seconds(30)
             : std::chrono::seconds(2));
+    } else if (measured_gap_analysis && result->progress.retry_pending > 0U) {
+        next_piggyback_at_ = now + std::chrono::seconds(30);
     } else if (result->succeeded && trainable_evidence > 0U) {
         // Let the coalesced weight candidate drain before another teacher pass.
         next_piggyback_at_ = now + std::chrono::minutes(10);
@@ -11529,6 +11711,13 @@ void MainWindow::update_piggyback_result() {
             std::to_wstring(result->progress.verified) + L" accepted, " +
             std::to_wstring(result->progress.revised) + L" revised, " +
             std::to_wstring(result->progress.needs_evidence) + L" need evidence, " +
+            std::to_wstring(result->progress.excluded) + L" excluded, " +
+            std::to_wstring(result->progress.rejected) + L" rejected";
+    } else if (measured_gap_analysis) {
+        active_activity_summary_ =
+            L"Measured-gap pass: " +
+            std::to_wstring(result->progress.deep_gap_verified) + L" repaired and verified, " +
+            std::to_wstring(result->progress.retry_pending) + L" retry pending, " +
             std::to_wstring(result->progress.rejected) + L" rejected";
     }
     set_status(result->succeeded
@@ -11538,16 +11727,21 @@ void MainWindow::update_piggyback_result() {
                 ? (result->progress.retry_pending > 0U
                     ? L"Live Auto Training retained an unresolved review and will retry it automatically"
                     : L"Live Auto Training pass completed; every decision is in the Training Library")
-                : L"Local teacher-data pass completed"))
+                : (measured_gap_analysis
+                    ? L"Measured conversation-gap repair pass completed"
+                    : L"Local teacher-data pass completed")))
         : (trusted_only
             ? L"Trusted custom JSONL import did not complete"
             : (live_candidates
                 ? L"Live Auto Training pass did not complete; its audit remains available"
-                : L"Local teacher-data pass did not complete")));
+                : (measured_gap_analysis
+                    ? L"Measured conversation-gap repair did not complete; it remains queued"
+                    : L"Local teacher-data pass did not complete"))));
     active_piggyback_skill_.clear();
     active_piggyback_cursor_key_.clear();
     active_piggyback_trusted_only_ = false;
     active_piggyback_live_ = false;
+    active_piggyback_deep_gap_ = false;
     update_learning_report();
     update_skill_report();
 }
@@ -12152,6 +12346,10 @@ void MainWindow::update_capability_pack_result() {
     static_cast<void>(::EnableWindow(control(id::skills_pack_install), TRUE));
     update_storage_report(true);
     if (install_result->succeeded) {
+        if (selected_capability_pack_id_ == "internal-pytorch-training") {
+            selected_python_ = paths_.python;
+            learning_service_->set_python_executable(selected_python_);
+        }
         audit_selected_capability_pack();
     }
 }
@@ -12320,6 +12518,7 @@ void MainWindow::update_learning_report() {
         nemotron_ready = nemotron_ready || family == 2;
     }
     const auto live_models_ready = qwen_ready && nemotron_ready;
+    const auto measured_gaps_waiting = pending_measured_gap_count();
     const auto now = std::chrono::steady_clock::now();
     const auto selected_skill = selected_training_skill();
     const auto selected_dataset = selected_training_dataset();
@@ -12335,11 +12534,16 @@ void MainWindow::update_learning_report() {
     } else if (piggyback_operation_.running()) {
         learning_summary << (active_piggyback_live_
             ? L"Live Auto Training: reviewing live interactions; Chat has priority"
-            : L"Automatic idle learning: verifying separate practice examples; Chat has priority");
+            : (active_piggyback_deep_gap_
+                ? L"Measured-gap training: Qwen repairs one at a time and Nemotron verifies; Chat has priority"
+                : L"Automatic idle learning: verifying separate practice examples; Chat has priority"));
     } else if (pipeline.active_job.has_value()) {
         learning_summary << L"Weight training: "
                          << friendly_learning_stage(pipeline.active_job->state)
                          << L"; the working model remains online";
+    } else if (measured_gaps_waiting >= 3U && live_auto) {
+        learning_summary << L"Measured-gap training: " << measured_gaps_waiting
+                         << L" reviewed failures waiting for Qwen repair and Nemotron verification";
     } else if (pipeline.queued_updates > 0U) {
         learning_summary << L"Weight training: " << pipeline.queued_updates
                          << L" verified update"
@@ -12366,6 +12570,7 @@ void MainWindow::update_learning_report() {
            << L"  Status: " << learning_summary.str() << L"\r\n"
            << L"  Live Auto Training: " << (live_auto ? L"enabled" : L"disabled")
            << L"; interaction ledger: " << (live_training_pending_ ? L"work waiting" : L"caught up")
+           << L"; measured conversation gaps waiting: " << measured_gaps_waiting
            << L"\r\n"
            << L"  Authorized live reviewers: Qwen 3.8 27B "
            << (qwen_ready ? L"ready" : L"waiting")
@@ -12373,6 +12578,7 @@ void MainWindow::update_learning_report() {
            << (nemotron_ready ? L"ready" : L"waiting")
            << L"; loopback OpenAI-compatible endpoints only\r\n"
            << L"  Automatic idle learning: " << (automatic_teacher ? L"enabled" : L"disabled") << L"\r\n"
+           << L"  Teacher roles: Nemotron produces routine high-throughput variants; after 3 independently reviewed conversation failures, Qwen repairs measured gaps one at a time and Nemotron verifies them\r\n"
            << L"  Neural weight retraining: automatically queued after a verified microbatch; Compile data and retrain model can force a smaller pending batch\r\n"
            << L"  Foreground rule: one routed AI answers; Qwen and Nemotron cooperate only in the background review pass\r\n"
            << L"  Curriculum rule: conversation first, planning after measured competence, then coding with compiler and test evidence\r\n"
@@ -12975,6 +13181,7 @@ void MainWindow::append_control_text(const int identifier, const std::wstring_vi
     }
 
     const auto viewport = capture_edit_viewport(handle);
+    const auto append_start = std::max(0, ::GetWindowTextLengthW(handle));
     const auto owned = normalize_edit_newlines(text);
     static_cast<void>(::SendMessageW(handle, WM_SETREDRAW, FALSE, 0));
     static_cast<void>(::SendMessageW(
@@ -12987,8 +13194,13 @@ void MainWindow::append_control_text(const int identifier, const std::wstring_vi
         EM_REPLACESEL,
         FALSE,
         reinterpret_cast<LPARAM>(owned.c_str())));
-    if (identifier == id::chat_response || identifier == id::coding_response) {
-        style_chat_transcript(handle, window_text(handle));
+    if ((identifier == id::chat_response || identifier == id::coding_response) &&
+        is_rich_edit_control(handle)) {
+        // Streaming deltas are response body text. Format only the inserted
+        // range; reparsing and restyling the entire growing transcript on every
+        // timer tick made a long reply progressively slower (quadratic work).
+        const auto append_end = std::max(append_start, ::GetWindowTextLengthW(handle));
+        format_rich_range(handle, append_start, append_end, text_color, false);
     }
     restore_edit_viewport(handle, viewport);
     static_cast<void>(::SendMessageW(handle, WM_SETREDRAW, TRUE, 0));
@@ -13059,7 +13271,7 @@ void MainWindow::recreate_ui_font() {
 
 void MainWindow::set_status(std::wstring text) const {
     const auto status = control(id::status);
-    if (status != nullptr) {
+    if (status != nullptr && window_text(status) != text) {
         static_cast<void>(::SetWindowTextW(status, text.c_str()));
         redraw_control(status);
     }

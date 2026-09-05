@@ -340,6 +340,30 @@ std::string sanitize_training_response(
         source_model_id);
 }
 
+[[nodiscard]] bool credential_or_private_identity_text(const std::string_view value) {
+    const auto lowered = lower_ascii(value);
+    const auto at = lowered.find('@');
+    const auto probable_email = at != std::string::npos &&
+        lowered.find('.', at) != std::string::npos;
+    const auto digit_count = std::ranges::count_if(lowered, [](const unsigned char character) {
+        return std::isdigit(character) != 0;
+    });
+    return probable_email || digit_count >= 7 ||
+           contains_any(lowered, {
+               "my name", "my address", "home address", "i live at", "my phone",
+               "my email", "my birthday", "social security", "ssn", "credit card",
+               "bank account", "password", "passcode", "api key", "access token",
+               "private key", "confidential", "proprietary", "internal only",
+               "private repo", "not public",
+           });
+}
+
+bool private_or_nonpublic_training_text(const std::string_view value) {
+    const auto lowered = lower_ascii(value);
+    return credential_or_private_identity_text(value) ||
+           contains_any(lowered, {"on my machine", "local path", "c:\\"});
+}
+
 std::string_view to_string(const KnowledgeDestination destination) noexcept {
     switch (destination) {
     case KnowledgeDestination::reject:
@@ -357,6 +381,15 @@ std::string_view to_string(const KnowledgeDestination destination) noexcept {
 KnowledgeDecision KnowledgeClassifier::classify(
     const memory::Episode& episode,
     const std::size_t accepted_skill_examples) const {
+    if (credential_or_private_identity_text(episode.prompt + "\n" + episode.response +
+                                            "\n" + episode.correction)) {
+        return {
+            .destination = KnowledgeDestination::reject,
+            .eligible_for_weight_training = false,
+            .confidence = 1.0,
+            .reason = "personal, credential, private, or machine-specific content is never admitted to learning",
+        };
+    }
     const auto hard_correction = episode.human_rejected && !episode.correction.empty() &&
         episode.provenance == "interactive-hard-correction";
     if (hard_correction) {

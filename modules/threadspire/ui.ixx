@@ -215,6 +215,7 @@ private:
     [[nodiscard]] std::wstring learning_preview_text(const ResponseTurn& turn) const;
     void queue_live_training_candidate(ResponseTurn& turn);
     [[nodiscard]] bool has_pending_live_training_candidates();
+    [[nodiscard]] std::size_t pending_measured_gap_count();
     void discover_local_ai();
     void add_manual_local_ai();
     void connect_mcp();
@@ -312,6 +313,7 @@ private:
     HBRUSH edit_brush_{nullptr};
     unsigned int dpi_{96};
     bool resize_layout_scheduled_{false};
+    bool interactive_resize_{false};
     Page page_{Page::chat};
     AppPaths paths_;
     memory::UserMemoryStore user_memory_store_;
@@ -399,6 +401,7 @@ private:
     std::string active_piggyback_cursor_key_;
     bool active_piggyback_trusted_only_{false};
     bool active_piggyback_live_{false};
+    bool active_piggyback_deep_gap_{false};
     bool live_training_pending_{false};
     bool foundation_resume_requested_{false};
     std::vector<std::filesystem::path> foundation_source_files_;

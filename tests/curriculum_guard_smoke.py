@@ -101,6 +101,27 @@ def main() -> int:
             }),
             encoding="utf-8",
         )
+        stale = argparse.Namespace(
+            command="train-internal",
+            state_root=temporary,
+            seed_dataset=mixed,
+            anchors=mixed,
+            scope="cpp23-core",
+        )
+        stale = guard.enforce_namespace(stale)
+        assert stale.scope == "english-foundation"
+
+        curriculum_state.write_text(
+            json.dumps({
+                "english_foundation": {
+                    "evaluation_passed": True,
+                    "established": True,
+                    "bootstrap_policy": "verified-hybrid-conversation-v7",
+                }
+            }),
+            encoding="utf-8",
+        )
+        assert guard.BOOTSTRAP_POLICY == "verified-hybrid-conversation-v7"
         ready = argparse.Namespace(
             command="train-internal",
             state_root=temporary,

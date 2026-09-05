@@ -734,8 +734,17 @@ CompletionResult AgentOrchestrator::run_stage(
             const auto tool_result = active_options_.mcp_client->call_tool(
                 call.name,
                 call.arguments_json);
-            active_tool_events_.push_back(
-                call.name + (tool_result.succeeded ? ": success" : ": failed: " + tool_result.error));
+            if (tool_result.succeeded) {
+                const auto receipt = memory::make_content_hash(
+                    "tool-result-v1",
+                    call.name + '\n' + call.arguments_json,
+                    tool_result.content);
+                active_tool_events_.push_back(
+                    call.name + ": success • receipt " + receipt);
+            } else {
+                active_tool_events_.push_back(
+                    call.name + ": failed: " + tool_result.error);
+            }
             messages.push_back(ChatMessage{
                 .role = "tool",
                 .content = tool_result.succeeded ? tool_result.content : tool_result.error,

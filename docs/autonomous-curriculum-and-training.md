@@ -2,7 +2,7 @@
 
 ## Purpose
 
-EngCoder 0.8.0 separates four operations that had previously been easy to confuse:
+EngCoder 0.9.0 separates four operations that had previously been easy to confuse:
 
 1. **Build English Foundation** is an explicit, one-time, resumable curriculum build. Qwen designs the deep curriculum, Nemotron supplies breadth, and each model verifies material produced by the other.
 2. **Live Auto Training** continuously reviews successful conversations and turns reusable behavior into verified microbatches.
@@ -52,7 +52,8 @@ The generator cannot be its own independent verifier:
 
 - Nemotron-generated records are verified by Qwen.
 - Qwen-generated records are verified by Nemotron.
-- a useful weak record may be revised once, after which the other model must independently confirm it;
+- a useful weak record may be revised once, after which a model independent of the reviser must confirm it;
+- an unchanged live answer needs one review by a model independent of its author; it is never sent back to its author for a redundant second vote;
 - endpoint failure, cancellation, or malformed review remains **retry pending** at the durable chunk cursor;
 - a completed negative review remains a visible rejection.
 
@@ -94,6 +95,10 @@ The first English foundation candidate:
 
 After the foundation is promoted, shared weights are frozen by default and bounded skill experts receive verified microbatches. This is scoped full-weight expert training, not LoRA. Qwen returns for an explicit rebuild, measured coverage gap, or difficult long-context lesson; Nemotron remains the normal conversational generator.
 
+### Measured conversational gaps
+
+Live Auto does not wake Qwen merely because one answer was rejected. An independent reviewer must classify a completed rejection as a reusable conversational coverage gap; privacy, identity, unsupported/current facts, junk, and formatting failures are excluded. EngCoder deduplicates the failed prompt/answer into a separate negative-evidence ledger. Once three unprocessed gaps exist, Qwen proposes repairs one at a time and Nemotron verifies them. Only the independently verified replacement enters normal admission. The failed answer itself never becomes trusted memory or positive weight data. The gap ledger and cursor survive restart independently of live-interaction and seed-curriculum cursors.
+
 The base application can still show 0 B neural weights. That means no candidate has passed and been promoted. Verified memory and curriculum evidence may exist, and the native retrieval foundation may answer known prompts, but the interface must not call that a trained LLM.
 
 ## Progression and routing
@@ -127,5 +132,6 @@ Build, Pause, Resume, and Rebuild are explicit. A Chat request pauses the founda
 - Missing independent review: retry pending; never accept by timeout.
 - No accepted document holdouts: do not queue weights.
 - Missing internal trainer: preserve evidence and show the pending job while weights remain 0 B.
+- Measured-gap teacher/reviewer failure: leave that bounded batch retry-pending and keep its durable cursor; never treat the failed answer as a reference.
 - Failed evaluation or host check: preserve the current working model and retain the candidate/audit result.
 - Foreground Chat: checkpoint and yield; resume the same candidate afterward.

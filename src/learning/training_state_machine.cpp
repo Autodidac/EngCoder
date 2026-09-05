@@ -150,6 +150,11 @@ void PersistentTrainingQueue::load() {
             .parent_generation = core::json::string_or(value->find("parent_generation")),
             .state = training_state_from_string(core::json::string_or(value->find("state"))),
             .checkpoint_path = std::filesystem::path(core::json::string_or(value->find("checkpoint_path"))),
+            .training_dataset = std::filesystem::path(core::json::string_or(value->find("training_dataset"))),
+            .evaluation_dataset = std::filesystem::path(core::json::string_or(value->find("evaluation_dataset"))),
+            .bootstrap_target_steps = size_value(value->find("bootstrap_target_steps")),
+            .initialize_internal_model = core::json::bool_or(
+                value->find("initialize_internal_model"), false),
             .message = core::json::string_or(value->find("message")),
             .attempts = size_value(value->find("attempts")),
             .created_unix_ms = static_cast<std::int64_t>(core::json::number_or(value->find("created_unix_ms"), 0.0)),
@@ -165,7 +170,11 @@ SubmitTrainingResult PersistentTrainingQueue::submit(
     std::string coalesce_key,
     std::string skill,
     std::string candidate_id,
-    std::string parent_generation) {
+    std::string parent_generation,
+    std::filesystem::path training_dataset,
+    std::filesystem::path evaluation_dataset,
+    const std::size_t bootstrap_target_steps,
+    const bool initialize_internal_model) {
     if (coalesce_key.empty()) {
         throw std::invalid_argument("training coalesce key must not be empty");
     }
@@ -184,6 +193,10 @@ SubmitTrainingResult PersistentTrainingQueue::submit(
         .candidate_id = std::move(candidate_id),
         .parent_generation = std::move(parent_generation),
         .state = TrainingState::queued,
+        .training_dataset = std::move(training_dataset),
+        .evaluation_dataset = std::move(evaluation_dataset),
+        .bootstrap_target_steps = bootstrap_target_steps,
+        .initialize_internal_model = initialize_internal_model,
         .message = "queued beside the active model",
         .created_unix_ms = timestamp,
         .updated_unix_ms = timestamp,
@@ -255,6 +268,36 @@ bool PersistentTrainingQueue::transition(
     return true;
 }
 
+bool PersistentTrainingQueue::bind_candidate(
+    const std::string_view id,
+    std::string candidate_id,
+    std::string parent_generation) {
+    if (candidate_id.empty()) {
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    const auto job = std::ranges::find(jobs_, id, &SerializedTrainingJob::id);
+    if (job == jobs_.end() || terminal(job->state)) {
+        return false;
+    }
+    if (!job->candidate_id.empty() && job->candidate_id != candidate_id) {
+        return false;
+    }
+    const auto previous = *job;
+    job->candidate_id = std::move(candidate_id);
+    if (!parent_generation.empty()) {
+        job->parent_generation = std::move(parent_generation);
+    }
+    job->updated_unix_ms = now_ms();
+    try {
+        persist_locked();
+    } catch (...) {
+        *job = previous;
+        throw;
+    }
+    return true;
+}
+
 std::size_t PersistentTrainingQueue::recover_inflight(std::string message) {
     std::lock_guard lock(mutex_);
     const auto previous = jobs_;
@@ -306,7 +349,12 @@ void PersistentTrainingQueue::persist_locked() const {
             {"id", job.id}, {"coalesce_key", job.coalesce_key}, {"skill", job.skill},
             {"candidate_id", job.candidate_id}, {"parent_generation", job.parent_generation},
             {"state", std::string(to_string(job.state))},
-            {"checkpoint_path", job.checkpoint_path.string()}, {"message", job.message},
+            {"checkpoint_path", job.checkpoint_path.string()},
+            {"training_dataset", job.training_dataset.string()},
+            {"evaluation_dataset", job.evaluation_dataset.string()},
+            {"bootstrap_target_steps", static_cast<double>(job.bootstrap_target_steps)},
+            {"initialize_internal_model", job.initialize_internal_model},
+            {"message", job.message},
             {"attempts", static_cast<double>(job.attempts)},
             {"created_unix_ms", static_cast<double>(job.created_unix_ms)},
             {"updated_unix_ms", static_cast<double>(job.updated_unix_ms)},

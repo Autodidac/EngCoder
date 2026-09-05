@@ -851,6 +851,22 @@ void test_knowledge_classifier_routes_volatile_state_to_retrieval() {
             "volatile project state must remain outside weights");
     require(!decision.eligible_for_weight_training,
             "volatile state must never be weight-training input");
+
+    const auto private_decision = classifier.classify(threadspire::ai::memory::Episode{
+        .id = "private",
+        .skill = "english-conversation",
+        .prompt = "Please remember my email is user@example.com",
+        .response = "I will remember that.",
+        .model_id = "human-approved",
+        .score = 1.0,
+        .human_accepted = true,
+    }, 12U);
+    require(private_decision.destination ==
+                threadspire::ai::learning::KnowledgeDestination::reject &&
+                !private_decision.eligible_for_weight_training &&
+                threadspire::ai::learning::private_or_nonpublic_training_text(
+                    "Use this API key: secret-value"),
+            "central learning admission must reject private or credential-like content even outside Live Auto UI capture");
 }
 
 void test_knowledge_classifier_batches_diverse_conversation_lessons() {
@@ -1283,6 +1299,272 @@ void test_targeted_and_custom_training_import() {
                     retained_live_ledger.progress.retry_pending == 1U &&
                     retained_live_ledger.progress.next_seed_offset == 0U,
                 "a retryable review failure must leave the exact live interaction pending instead of silently consuming it");
+
+        threadspire::ai::models::ModelProfile qwen;
+        qwen.id = "qwen";
+        qwen.display_name = "Qwen";
+        qwen.model_name = "qwen/qwen3.8-27b";
+        qwen.endpoint = "http://127.0.0.1:1234/v1";
+        qwen.capabilities = {"chat"};
+        threadspire::ai::models::ModelProfile qwen_alias = qwen;
+        qwen_alias.id = "qwen-alias";
+        qwen_alias.display_name = "Qwen duplicate registry entry";
+        auto alias_request = live_request;
+        alias_request.teachers = {qwen, qwen_alias};
+        alias_request.verifiers = {qwen_alias};
+        alias_request.completion = [](
+            const threadspire::ai::models::ModelProfile&,
+            const std::string_view,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = R"({"action":"accept","score":0.99,"answer":"","reason":"accepted"})",
+            };
+        };
+        const auto aliased_self_review =
+            threadspire::ai::learning::run_piggyback_foundry(alias_request, service);
+        require(aliased_self_review.succeeded &&
+                    aliased_self_review.progress.retry_pending == 1U &&
+                    aliased_self_review.progress.next_seed_offset == 0U,
+                "a second registry ID for the source endpoint/model must not count as an independent Live Auto reviewer");
+
+        threadspire::ai::models::ModelProfile nemotron;
+        nemotron.id = "nemotron";
+        nemotron.display_name = "Nemotron";
+        nemotron.model_name = "nvidia/nemotron-3-nano-4b";
+        nemotron.endpoint = "http://127.0.0.1:1234/v1";
+        nemotron.capabilities = {"chat"};
+        std::vector<std::string> review_calls;
+        auto accepted_request = live_request;
+        accepted_request.generate_teacher_variations = false;
+        accepted_request.teachers = {qwen, nemotron};
+        accepted_request.verifiers = {qwen, nemotron};
+        accepted_request.completion = [&review_calls](
+            const threadspire::ai::models::ModelProfile& model,
+            const std::string_view,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            review_calls.push_back(model.id);
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = R"({"action":"accept","score":0.99,"answer":"","reason":"independently accepted"})",
+            };
+        };
+        const auto independently_accepted =
+            threadspire::ai::learning::run_piggyback_foundry(accepted_request, service);
+        require(independently_accepted.succeeded &&
+                    independently_accepted.progress.verified == 1U &&
+                    independently_accepted.progress.retry_pending == 0U &&
+                    independently_accepted.progress.next_seed_offset == 1U &&
+                    review_calls == std::vector<std::string>{"nemotron"},
+                "an unchanged live reply must need one genuinely independent review, not a redundant second call to its source model");
+
+        const auto revised_dataset = root / "live-revision.jsonl";
+        {
+            std::ofstream stream(revised_dataset, std::ios::binary | std::ios::trunc);
+            stream << R"({"candidate_id":"live-revision","domain":"live-interaction","skill":"english-conversation","prompt":"What is up?","response":"Bad draft.","source_model_id":"qwen","needs_current_information":false,"compiler_passed":false,"tests_passed":false})"
+                   << '\n';
+        }
+        std::vector<std::string> revision_calls;
+        auto revision_request = accepted_request;
+        revision_request.seed_dataset = revised_dataset;
+        revision_request.audit_log = root / "live-revision-audit.jsonl";
+        revision_request.completion = [&revision_calls](
+            const threadspire::ai::models::ModelProfile& model,
+            const std::string_view,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            revision_calls.push_back(model.id);
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = model.id == "nemotron"
+                    ? R"({"action":"revise","score":0.95,"answer":"Not much. What is on your mind?","reason":"replace weak draft"})"
+                    : R"({"action":"accept","score":0.99,"answer":"","reason":"revision confirmed"})",
+            };
+        };
+        const auto revised =
+            threadspire::ai::learning::run_piggyback_foundry(revision_request, service);
+        require(revised.succeeded && revised.progress.verified == 1U &&
+                    revised.progress.revised == 1U &&
+                    revision_calls == std::vector<std::string>({"nemotron", "qwen"}),
+                "a revised live answer must be confirmed once by a model independent of the reviser");
+
+        const auto current_dataset = root / "live-current.jsonl";
+        {
+            std::ofstream stream(current_dataset, std::ios::binary | std::ios::trunc);
+            stream << R"({"candidate_id":"live-current","domain":"live-interaction","skill":"english-conversation","prompt":"What is the current weather?","response":"It is sunny.","source_model_id":"qwen","needs_current_information":true,"tool_trace_hash":"trace-1","compiler_passed":false,"tests_passed":false})"
+                   << '\n';
+        }
+        auto invalid_receipt_request = accepted_request;
+        invalid_receipt_request.seed_dataset = current_dataset;
+        auto invalid_receipt_model_calls = 0U;
+        invalid_receipt_request.completion = [&invalid_receipt_model_calls](
+            const threadspire::ai::models::ModelProfile&,
+            const std::string_view,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            ++invalid_receipt_model_calls;
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = R"({"action":"accept","score":0.99,"answer":"","reason":"accepted"})",
+            };
+        };
+        const auto invalid_receipt = threadspire::ai::learning::run_piggyback_foundry(
+            invalid_receipt_request,
+            service);
+        require(invalid_receipt.succeeded && invalid_receipt.progress.needs_evidence == 1U &&
+                    invalid_receipt.progress.verified == 0U &&
+                    invalid_receipt_model_calls == 0U,
+                "a caller-supplied current-fact string must not bypass evidence gating unless it is a valid tool-trace-v1 receipt");
+
+        const auto gap_dataset = root / "measured-conversation-gaps.jsonl";
+        const auto rejected_dataset = root / "live-measured-gap.jsonl";
+        {
+            std::ofstream stream(rejected_dataset, std::ios::binary | std::ios::trunc);
+            stream << R"({"candidate_id":"live-gap","domain":"live-interaction","skill":"english-conversation","prompt":"How would you politely ask someone to repeat themselves?","response":"What?","source_model_id":"qwen","needs_current_information":false,"compiler_passed":false,"tests_passed":false})"
+                   << '\n';
+        }
+        auto gap_review_request = accepted_request;
+        gap_review_request.seed_dataset = rejected_dataset;
+        gap_review_request.measured_gap_dataset = gap_dataset;
+        gap_review_request.completion = [](
+            const threadspire::ai::models::ModelProfile&,
+            const std::string_view,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = R"({"action":"reject","score":0.20,"answer":"","coverage_gap":true,"reason":"the answer is needlessly abrupt"})",
+            };
+        };
+        const auto measured_gap = threadspire::ai::learning::run_piggyback_foundry(
+            gap_review_request,
+            service);
+        require(measured_gap.succeeded && measured_gap.progress.coverage_gaps == 1U &&
+                    measured_gap.progress.rejected == 1U &&
+                    read_text_file(gap_dataset).find("\"negative_evidence\":true") != std::string::npos,
+                "a reusable independently rejected conversation failure must enter the separate measured-gap ledger as negative evidence");
+
+        std::vector<std::string> gap_teacher_calls;
+        auto deep_gap_request = live_request;
+        deep_gap_request.seed_dataset = gap_dataset;
+        deep_gap_request.target_skill = "english-conversation";
+        deep_gap_request.untrusted_live_examples = false;
+        deep_gap_request.measured_gap_analysis = true;
+        deep_gap_request.wrap_seed_dataset = false;
+        deep_gap_request.teachers = {qwen};
+        deep_gap_request.verifiers = {nemotron};
+        deep_gap_request.maximum_parallel_per_teacher = 1U;
+        deep_gap_request.audit_log = root / "measured-gap-audit.jsonl";
+        deep_gap_request.completion = [&gap_teacher_calls](
+            const threadspire::ai::models::ModelProfile& model,
+            const std::string_view system_prompt,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            gap_teacher_calls.push_back(model.id);
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = system_prompt.find("dataset verifier") != std::string_view::npos
+                    ? R"({"accepted":true,"score":0.99,"reason":"polite and reusable"})"
+                    : R"({"prompt":"A colleague's last sentence was unclear. Ask for one courteous repetition without blaming them.","answer":"Could you please repeat that last part? I want to make sure I understood you correctly."})",
+            };
+        };
+        const auto deep_gap = threadspire::ai::learning::run_piggyback_foundry(
+            deep_gap_request,
+            service);
+        if (!(deep_gap.succeeded && deep_gap.progress.deep_gap_verified == 1U &&
+              deep_gap.progress.stored == 1U &&
+              gap_teacher_calls == std::vector<std::string>({"qwen", "nemotron"}))) {
+            std::cerr << "deep gap diagnostics: succeeded=" << deep_gap.succeeded
+                      << " examined=" << deep_gap.progress.examined
+                      << " generated=" << deep_gap.progress.generated
+                      << " verified=" << deep_gap.progress.verified
+                      << " deep=" << deep_gap.progress.deep_gap_verified
+                      << " stored=" << deep_gap.progress.stored
+                      << " rejected=" << deep_gap.progress.rejected
+                      << " retry=" << deep_gap.progress.retry_pending
+                      << " excluded=" << deep_gap.progress.excluded
+                      << " calls=" << gap_teacher_calls.size()
+                      << " error=" << deep_gap.error << '\n';
+        }
+        require(deep_gap.succeeded && deep_gap.progress.deep_gap_verified == 1U &&
+                    deep_gap.progress.stored == 1U &&
+                    gap_teacher_calls == std::vector<std::string>({"qwen", "nemotron"}) &&
+                    read_text_file(deep_gap_request.audit_log).find("measured-gap-qwen-audit") != std::string::npos,
+                "Qwen must wake for a measured gap at one request while Nemotron independently verifies the repaired example");
+
+        const auto retry_dataset = root / "live-derived-retry.jsonl";
+        const auto retry_audit = root / "live-derived-retry-audit.jsonl";
+        {
+            std::ofstream stream(retry_dataset, std::ios::binary | std::ios::trunc);
+            stream << R"({"candidate_id":"live-derived-retry","domain":"live-interaction","skill":"english-conversation","prompt":"Could you greet a neighbor?","response":"Good morning!","source_model_id":"qwen","needs_current_information":false,"compiler_passed":false,"tests_passed":false})"
+                   << '\n';
+        }
+        auto verifier_outage = true;
+        auto derived_request = live_request;
+        derived_request.seed_dataset = retry_dataset;
+        derived_request.audit_log = retry_audit;
+        derived_request.teachers = {nemotron};
+        derived_request.verifiers = {qwen, nemotron};
+        derived_request.completion = [&verifier_outage](
+            const threadspire::ai::models::ModelProfile&,
+            const std::string_view system_prompt,
+            const std::string_view,
+            const std::size_t,
+            const double,
+            const std::stop_token) {
+            if (system_prompt.find("live-training reviewer") != std::string_view::npos) {
+                return threadspire::ai::learning::PiggybackCompletionResponse{
+                    .succeeded = true,
+                    .content = R"({"action":"accept","score":0.99,"answer":"","reason":"independently accepted"})",
+                };
+            }
+            if (system_prompt.find("independent strict dataset verifier") != std::string_view::npos) {
+                if (verifier_outage) {
+                    verifier_outage = false;
+                    return threadspire::ai::learning::PiggybackCompletionResponse{
+                        .succeeded = false,
+                        .error = "temporary verifier outage",
+                    };
+                }
+                return threadspire::ai::learning::PiggybackCompletionResponse{
+                    .succeeded = true,
+                    .content = R"({"accepted":true,"score":0.99,"reason":"verified"})",
+                };
+            }
+            return threadspire::ai::learning::PiggybackCompletionResponse{
+                .succeeded = true,
+                .content = R"({"prompt":"Offer a warm morning greeting.","answer":"Good morning! 😀"})",
+            };
+        };
+        const auto derived_retry =
+            threadspire::ai::learning::run_piggyback_foundry(derived_request, service);
+        require(derived_retry.succeeded && derived_retry.progress.retry_pending == 1U &&
+                    derived_retry.progress.rejected == 0U &&
+                    derived_retry.progress.next_seed_offset == 0U &&
+                    read_text_file(retry_audit).find("\"auto_action\":\"retry-pending\"") !=
+                        std::string::npos,
+                "a transient verifier failure for a derived Live Auto example must retain the bounded source batch for retry without recording a rejection");
+        const auto derived_completed =
+            threadspire::ai::learning::run_piggyback_foundry(derived_request, service);
+        require(derived_completed.succeeded && derived_completed.progress.retry_pending == 0U &&
+                    derived_completed.progress.next_seed_offset == 1U &&
+                    derived_completed.progress.stored == 1U &&
+                    read_text_file(retry_audit).find("😀") == std::string::npos,
+                "a retained derived example must resume, deduplicate its already accepted source, and audit only the emoji-free training form");
         service.request_stop();
     }
     std::filesystem::remove_all(root);
@@ -1318,7 +1600,7 @@ void test_internal_model_lifecycle_state_and_progress() {
         progress << "{\n"
                  << "  \"phase\": \"training\",\n"
                  << "  \"message\": \"resuming\",\n"
-                 << "  \"bootstrap_policy\": \"verified-hybrid-conversation-v6\",\n"
+                 << "  \"bootstrap_policy\": \"verified-hybrid-conversation-v7\",\n"
                  << "  \"heartbeat_unix_ms\": " << now_ms << ",\n"
                  << "  \"step\": 6,\n"
                  << "  \"maximum_steps\": 1196,\n"
@@ -1338,10 +1620,39 @@ void test_internal_model_lifecycle_state_and_progress() {
 
     const auto progress = threadspire::ai::runtime::read_internal_model_progress(paths);
     require(progress.available && !progress.stale && progress.step == 6U &&
+                progress.bootstrap_policy == "verified-hybrid-conversation-v7" &&
                 progress.bootstrap_policy_current,
             "live progress heartbeat, policy, and exact checkpoint step must be readable");
     require(progress.percent > 0.8 && progress.percent < 0.9,
             "overall bootstrap percent must include prior promoted steps");
+
+    const auto write_ready_manifest = [&](const std::string_view policy) {
+        std::ofstream manifest(generation_root / "manifest.json", std::ios::trunc);
+        manifest << "{\n"
+                 << "  \"name\": \"EngCoder\",\n"
+                 << "  \"status\": \"trained\",\n"
+                 << "  \"parameter_count\": 22527360,\n"
+                 << "  \"tokens_seen\": 200000,\n"
+                 << "  \"steps\": 1200,\n"
+                 << "  \"bootstrap_target_steps\": 1200,\n"
+                 << "  \"bootstrap_policy\": \"" << policy << "\",\n"
+                 << "  \"full_backbone_trained\": true,\n"
+                 << "  \"generation_ready\": true,\n"
+                 << "  \"bootstrap_complete\": true\n"
+                 << "}\n";
+    };
+    write_ready_manifest("verified-hybrid-conversation-v6");
+    const auto stale_ready = threadspire::ai::runtime::inspect_internal_model_state(paths);
+    require(stale_ready.manifest_valid && !stale_ready.bootstrap_policy_current &&
+                !stale_ready.generation_ready && !stale_ready.bootstrap_complete &&
+                threadspire::ai::runtime::default_bootstrap_target(stale_ready) == 24000U,
+            "a v6 manifest must remain quarantined even when its obsolete ready flags are true");
+    write_ready_manifest("verified-hybrid-conversation-v7");
+    const auto current_ready = threadspire::ai::runtime::inspect_internal_model_state(paths);
+    require(current_ready.bootstrap_policy_current && current_ready.generation_ready &&
+                current_ready.bootstrap_complete &&
+                threadspire::ai::runtime::default_bootstrap_target(current_ready) == 1200U,
+            "a fully trained v7 manifest must be recognized as the current ready generation");
     std::filesystem::remove_all(root);
 }
 
@@ -1632,6 +1943,8 @@ void test_windows_ui_source_contract() {
     const auto episode_store = read_text_file(source / "src/memory/episode_store.cpp");
     require(learning_gate.find("model errors, corrupt drafts, and private reasoning") !=
                 std::string::npos &&
+                learning_gate.find("private_or_nonpublic_training_text") != std::string::npos &&
+                learning_gate.find("personal, credential, private, or machine-specific content") != std::string::npos &&
                 learning_gate.find("minimum_diverse_human_approvals = 4U") != std::string::npos &&
                 learning_service.find("contains_positive_prompt") != std::string::npos &&
                 episode_store.find("positive_prompt_keys_") != std::string::npos,
@@ -1681,13 +1994,20 @@ void test_windows_ui_source_contract() {
                 foundry.find("review_live_example") != std::string::npos &&
                 foundry.find("Current information needs a cited research/tool result") != std::string::npos &&
                 foundry.find("Coding material needs compiler and test evidence") != std::string::npos &&
-                foundry.find("Second-model confirmation failed") != std::string::npos &&
+                foundry.find("Revision was not independently confirmed") != std::string::npos &&
+                foundry.find("same_model_identity") != std::string::npos &&
                 foundry.find("revised-and-accepted") != std::string::npos &&
                 foundry.find("needs-evidence") != std::string::npos &&
+                foundry.find("valid_tool_trace_receipt") != std::string::npos &&
+                foundry.find("tool-trace-v1:") != std::string::npos &&
+                foundry.find("measured-gap-qwen-teacher") != std::string::npos &&
+                foundry.find("coverage_gap") != std::string::npos &&
                 foundry.find("accepted_source_models.push_back") != std::string::npos &&
+                ui.find("measured-conversation-gaps.jsonl") != std::string::npos &&
+                ui.find("measured_gap_trigger = 3U") != std::string::npos &&
                 ui.find("result->progress.accepted_source_models") != std::string::npos &&
                 ui.find("model_registry_.record_feedback(model_id, true)") != std::string::npos,
-            "Live Auto Training must remain a separate visible control, use only the two authorized loopback models, redact private exclusions, stage skills, and require evidence plus two-model confirmation");
+            "Live Auto Training must remain a separate visible control, use only the two authorized loopback models, redact private exclusions, stage skills, and require evidence plus genuinely independent review");
     require(ui.find("Build English Foundation — explicit, one-time, resumable") != std::string::npos &&
                 ui.find("L\"Build / resume\"") != std::string::npos &&
                 ui.find("L\"Rebuild from source\"") != std::string::npos &&
@@ -1698,10 +2018,12 @@ void test_windows_ui_source_contract() {
                 ui.find("active neural weights") != std::string::npos,
             "the one-time foundation build must be explicit, resumable, foreground-preemptible, persistently visible, and fully auditable");
     require(ui.find("if (!deterministic_result && checked(id::chat_auto_learning))") != std::string::npos &&
-                ui.find("(!live_candidates && pipeline.queued_updates > 0U)") != std::string::npos &&
-                ui.find("(!run_live_pass && learning_pipeline.queued_updates > 0U)") != std::string::npos &&
+                ui.find("(!live_candidates && pipeline.queued_updates > 0U)") == std::string::npos &&
+                ui.find("const auto example_pass_blocked = learning_pipeline.active_job.has_value()") != std::string::npos &&
+                ui.find("descriptor.kind == runtime::CapabilityPackKind::compact_native_inference") != std::string::npos &&
+                ui.find("learning_service_->set_python_executable(selected_python_)") != std::string::npos &&
                 ui.find("Neural weights remain 0 B because the optional Internal PyTorch Training pack is not installed") != std::string::npos,
-            "Live Auto must use its own checkbox, start despite a merely queued weight job, and explain when the optional neural trainer is absent");
+            "automatic evidence generation must continue despite a merely queued weight job, expose the internal trainer separately from inference, reconnect it after installation, and explain when it is absent");
 
     require(ui.find("normalize_edit_newlines") != std::string::npos &&
                 ui.find("SS_LEFTNOWORDWRAP") != std::string::npos &&
@@ -1758,7 +2080,8 @@ void test_windows_ui_source_contract() {
                 ui.find("header_brush") == std::string::npos &&
                 ui.find("accent_rule") == std::string::npos &&
                 ui.find("id::skills_overview_card") != std::string::npos &&
-                ui.find("compact_actions = conversation_inner_width < scaled(550, dpi_)") != std::string::npos &&
+                ui.find("expanded_review_min_width") != std::string::npos &&
+                ui.find("conversation_inner_width < expanded_review_min_width") != std::string::npos &&
                 ui.find("const auto surface_padding = scaled(12, dpi_)") != std::string::npos &&
                 ui.find("compact_bottom_actions") != std::string::npos &&
                 ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
@@ -2017,7 +2340,8 @@ void test_windows_ui_source_contract() {
                 ui.find("DeferWindowPos") != std::string::npos &&
                 ui.find("moves_by_parent_") != std::string::npos &&
                 ui.find("client_width - margin * 2 - scaled(36, dpi_)") != std::string::npos &&
-                ui.find("::MulDiv(tab_space / tab_count, 96") != std::string::npos &&
+                ui.find("const auto tab_width = std::max(1, tab_space / tab_count)") != std::string::npos &&
+                ui.find("::MulDiv(tab_space / tab_count, 96") == std::string::npos &&
                 ui.find("parent's complete group directly") != std::string::npos &&
                 page_host_layout != std::string::npos &&
                 leaf_layout_batch != std::string::npos &&
@@ -2033,12 +2357,17 @@ void test_windows_ui_source_contract() {
                 ui.find("every hidden page on every drag event") != std::string::npos &&
                 ui.find("currently_visible != visible") != std::string::npos &&
                 ui.find("visible_page_was_visible") != std::string::npos &&
+                ui.find("case WM_ENTERSIZEMOVE") != std::string::npos &&
+                ui.find("if (!interactive_resize_)") != std::string::npos &&
                 ui.find("case WM_EXITSIZEMOVE") != std::string::npos &&
-                ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") != std::string::npos &&
+                ui.find("RDW_ALLCHILDREN | RDW_UPDATENOW") == std::string::npos &&
                 ui.find("Commit every queued child move before showing a page") != std::string::npos &&
                 ui.find("page_windows_[static_cast<std::size_t>(page_)]") != std::string::npos &&
                 ui.find("RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW") == std::string::npos,
             "live resizing must use the EpochGui layout boundary, coalesce resize storms, skip hidden and unchanged controls, avoid synchronous per-drag child-tree repaints, and perform one final dark-tree repaint");
+    require(ui.find("std::chrono::milliseconds(650), token") != std::string::npos &&
+                ui.find(".message = \"discovery cancelled\"") != std::string::npos,
+            "localhost AI discovery must honor shutdown cancellation instead of delaying app exit");
 
     const auto launcher = read_text_file(source / "build-and-run.cmd");
     require(launcher.find("call build.cmd") != std::string::npos &&
@@ -2146,7 +2475,20 @@ void test_worker_and_resource_contract() {
             "candidate verification must serve an exact unpromoted generation in an isolated shadow host");
     const auto internal_model = read_text_file(source / "resources/internal_model.py");
     const auto curriculum_guard = read_text_file(source / "resources/curriculum_guard.py");
+    const auto internal_model_state = read_text_file(
+        source / "src/runtime/internal_model_state.cpp");
+    const auto clean_foundation_migration = read_text_file(
+        source / "tools/migrate_to_clean_english_foundation.ps1");
     const auto lifecycle_ui = read_text_file(source / "src/app/main_window.cpp");
+    require(internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                curriculum_guard.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                internal_model_state.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                clean_foundation_migration.find("verified-hybrid-conversation-v7") != std::string::npos &&
+                internal_model.find("verified-hybrid-conversation-v6") == std::string::npos &&
+                curriculum_guard.find("verified-hybrid-conversation-v6") == std::string::npos &&
+                internal_model_state.find("verified-hybrid-conversation-v6") == std::string::npos &&
+                clean_foundation_migration.find("verified-hybrid-conversation-v6") == std::string::npos,
+            "trainer, curriculum guard, runtime state, and migration must share the v7 bootstrap policy exactly");
     require(internal_model.find("threadspire.internal-progress.v1") != std::string::npos &&
                 internal_model.find("bootstrap_complete") != std::string::npos &&
                 internal_model.find("full_backbone_trained") != std::string::npos &&
@@ -2165,12 +2507,14 @@ void test_worker_and_resource_contract() {
     require(internal_model.find("verified-hybrid-conversation-v7") != std::string::npos &&
                 internal_model.find("foundation_anchor_gate") != std::string::npos &&
                 internal_model.find("len(anchors) >= 320") != std::string::npos &&
+                internal_model.find("allow_verified_shortcuts=False") != std::string::npos &&
+                internal_model.find("readiness_samples.get(name, False)") != std::string::npos &&
                 internal_model.find("None if requested_scope == \"english-foundation\" else scope_filter") != std::string::npos &&
                 internal_model.find("limit=None if anchors else 32") != std::string::npos &&
                 internal_model.find("structural_output_gate_passed") != std::string::npos &&
                 internal_model.find("identity_gate_passed") != std::string::npos &&
                 internal_model.find("privacy_gate_passed") != std::string::npos,
-            "foundation promotion must evaluate every held-out anchor and expose structural, identity, and privacy gates");
+            "foundation promotion must evaluate every held-out anchor, exercise neural weights without retrieval shortcuts, and enforce structural, identity, and privacy gates");
     require(lifecycle_ui.find("automatic_bootstrap_targets{24000U, 36000U, 50000U}") != std::string::npos &&
                 lifecycle_ui.find("adaptive_bootstrap_target") != std::string::npos &&
                 lifecycle_ui.find("saved_learning_steps(progress) >= automatic_bootstrap_targets.back()") != std::string::npos &&
@@ -2356,6 +2700,52 @@ void test_autonomous_english_foundation_pipeline() {
                 line_count(root / "prepared" / "sources.jsonl") == prepared_again.sources.size() &&
                 line_count(root / "prepared" / "chunks.jsonl") == prepared_again.chunks.size(),
             "resuming source preparation must rewrite current manifests instead of duplicating them");
+
+    const auto transactional_root = root / "transactional-preparation";
+    std::filesystem::create_directories(transactional_root);
+    const std::vector<std::pair<std::filesystem::path, std::string>> existing_curriculum_files{
+        {transactional_root / "sources.jsonl", "existing sources\n"},
+        {transactional_root / "chunks.jsonl", "existing chunks\n"},
+        {transactional_root / "competency-map.jsonl", "existing competency map\n"},
+        {transactional_root / "foundation-training.jsonl", "existing training\n"},
+        {transactional_root / "foundation-heldout.jsonl", "existing heldout\n"},
+        {transactional_root / "foundation-state.json", "existing state\n"},
+        {transactional_root / "foundation-evaluation.jsonl", "existing evaluation\n"},
+    };
+    for (const auto& [path, text] : existing_curriculum_files) {
+        std::ofstream(path, std::ios::binary) << text;
+    }
+    const auto invalid_utf8_source = root / "invalid-utf8.txt";
+    {
+        std::ofstream stream(invalid_utf8_source, std::ios::binary);
+        const char invalid_utf8[] = {static_cast<char>(0xC3), '('};
+        stream.write(invalid_utf8, static_cast<std::streamsize>(sizeof(invalid_utf8)));
+    }
+    const auto invalid_sources = std::vector<learning::CurriculumSourceInput>{
+        input,
+        learning::CurriculumSourceInput{
+            .path = invalid_utf8_source,
+            .rights = learning::CurriculumRights::user_owned,
+        },
+    };
+    const auto prior_files_preserved = [&] {
+        return std::ranges::all_of(existing_curriculum_files, [](const auto& entry) {
+            return read_text_file(entry.first) == entry.second;
+        });
+    };
+    const auto invalid_resume = learning::prepare_english_foundation_sources(
+        invalid_sources, transactional_root, false);
+    require(!invalid_resume.succeeded &&
+                invalid_resume.error.find("UTF-8") != std::string::npos &&
+                prior_files_preserved(),
+            "invalid UTF-8 in a resumed batch must not truncate current source or chunk manifests");
+    const auto invalid_rebuild = learning::prepare_english_foundation_sources(
+        invalid_sources, transactional_root, true);
+    require(!invalid_rebuild.succeeded &&
+                invalid_rebuild.error.find("UTF-8") != std::string::npos &&
+                prior_files_preserved(),
+            "invalid UTF-8 in any later rebuild source must reject the whole preparation without deleting manifests, training data, evaluation data, or resumable state");
+
     const auto first_document = root / "first.txt";
     const auto second_document = root / "second.txt";
     {
@@ -2375,6 +2765,77 @@ void test_autonomous_english_foundation_pipeline() {
                 !whole_documents.chunks.front().held_out &&
                 whole_documents.chunks.back().held_out,
             "single-section sources must stay whole and split by document without train/evaluation leakage");
+
+    const auto numeric_hash_bucket = [](const std::string_view hash) {
+        std::size_t bucket = 0U;
+        for (const auto character : hash) {
+            const auto digit = character >= '0' && character <= '9'
+                ? static_cast<std::size_t>(character - '0')
+                : static_cast<std::size_t>(character - 'a') + 10U;
+            bucket = (bucket * 16U + digit) % 5U;
+        }
+        return bucket;
+    };
+    std::string numeric_split_text;
+    std::vector<std::pair<std::string, std::string>> numeric_split_sections;
+    bool split_fixture_exposes_character_bucket = false;
+    for (std::size_t salt = 0U; salt < 512U && !split_fixture_exposes_character_bucket; ++salt) {
+        numeric_split_text.clear();
+        numeric_split_sections.clear();
+        for (std::size_t index = 0U; index < 8U; ++index) {
+            auto title = "Chapter " + std::to_string(index + 1U);
+            auto body = "Deterministic English section " + std::to_string(index + 1U) +
+                " uses split fixture " + std::to_string(salt) + ".";
+            numeric_split_text += "# " + title + "\n" + body + "\n";
+            numeric_split_sections.emplace_back(std::move(title), std::move(body));
+        }
+        const auto normalized = learning::sanitize_training_text(numeric_split_text);
+        const auto source_id = "source-" + threadspire::ai::memory::make_content_hash(
+            "foundation-source", normalized, "");
+        bool has_numeric_training_holdout = false;
+        bool differs_from_character_bucket = false;
+        for (std::size_t index = 0U; index + 1U < numeric_split_sections.size(); ++index) {
+            const auto& [title, body] = numeric_split_sections[index];
+            const auto hash = threadspire::ai::memory::make_content_hash(
+                source_id, title + body, "");
+            const auto numeric_holdout = numeric_hash_bucket(hash) == 0U;
+            const auto old_character_holdout =
+                static_cast<unsigned char>(hash.back()) % 5U == 0U;
+            has_numeric_training_holdout = has_numeric_training_holdout || numeric_holdout;
+            differs_from_character_bucket = differs_from_character_bucket ||
+                numeric_holdout != old_character_holdout;
+        }
+        split_fixture_exposes_character_bucket =
+            has_numeric_training_holdout && differs_from_character_bucket;
+    }
+    require(split_fixture_exposes_character_bucket,
+            "numeric split fixture must distinguish parsed hash values from character codes");
+    const auto numeric_split_source = root / "numeric-split.md";
+    std::ofstream(numeric_split_source, std::ios::binary) << numeric_split_text;
+    const auto numeric_split = learning::prepare_english_foundation_sources(
+        {learning::CurriculumSourceInput{
+            .path = numeric_split_source,
+            .rights = learning::CurriculumRights::user_owned,
+        }},
+        root / "numeric-split",
+        true);
+    require(numeric_split.succeeded &&
+                numeric_split.chunks.size() == numeric_split_sections.size(),
+            "multi-section split fixture must prepare one semantic chunk per section");
+    bool prior_numeric_holdout = false;
+    for (std::size_t index = 0U; index < numeric_split.chunks.size(); ++index) {
+        const auto& chunk = numeric_split.chunks[index];
+        const auto section_hash = threadspire::ai::memory::make_content_hash(
+            numeric_split.sources.front().id,
+            chunk.section + chunk.text,
+            "");
+        const auto natural_holdout = numeric_hash_bucket(section_hash) == 0U;
+        const auto expected_holdout = natural_holdout ||
+            (index + 1U == numeric_split.chunks.size() && !prior_numeric_holdout);
+        require(chunk.held_out == expected_holdout,
+                "document split must use the numeric hexadecimal hash value, not the final character code");
+        prior_numeric_holdout = prior_numeric_holdout || expected_holdout;
+    }
 
     learning::LearningSettings settings;
     settings.python_executable = root / "missing-python.exe";
@@ -2733,6 +3194,18 @@ void test_autonomous_english_foundation_pipeline() {
         }, service);
     require(!self_review.succeeded && self_review.error.find("distinct") != std::string::npos,
             "a teacher must never approve its own foundation output");
+    auto aliased_qwen = qwen;
+    aliased_qwen.id = "second-registry-id-for-the-same-qwen";
+    aliased_qwen.display_name = "Qwen alias";
+    const auto aliased_self_review = learning::run_english_foundation_build(
+        learning::FoundationBuildRequest{
+            .curriculum_root = root / "aliased-self-review",
+            .sources = {input}, .qwen = qwen, .nemotron = aliased_qwen,
+            .completion = completion, .maximum_source_chunks = 1U, .rebuild = true,
+        }, service);
+    require(!aliased_self_review.succeeded &&
+                aliased_self_review.error.find("distinct") != std::string::npos,
+            "different registry IDs for the same endpoint/model must not bypass independent review");
     service.request_stop();
     std::filesystem::remove_all(root);
 }

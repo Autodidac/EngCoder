@@ -34,5 +34,6 @@ public:
 [[nodiscard]] std::string sanitize_training_response(
     std::string_view value,
     std::string_view source_model_id);
+[[nodiscard]] bool private_or_nonpublic_training_text(std::string_view value);
 
 } // namespace threadspire::ai::learning

@@ -26,6 +26,7 @@ struct SeedExample final {
     std::string candidate_id;
     std::string source_model_id;
     std::string tool_trace_hash;
+    std::string gap_reason;
     bool needs_current_information{false};
     bool compiler_passed{false};
     bool tests_passed{false};
@@ -36,6 +37,8 @@ struct Verification final {
     bool revised{false};
     bool needs_evidence{false};
     bool retryable{false};
+    bool excluded{false};
+    bool coverage_gap{false};
     double score{0.0};
     std::string reason;
     std::string response;
@@ -80,6 +83,92 @@ struct VariationAttempt final {
         return static_cast<char>(std::tolower(character));
     });
     return lowered;
+}
+
+[[nodiscard]] std::string canonical_model_identity(
+    const models::ModelProfile& model) {
+    auto endpoint = lower_ascii(model.endpoint);
+    while (!endpoint.empty() && endpoint.back() == '/') {
+        endpoint.pop_back();
+    }
+    auto model_name = lower_ascii(model.model_name);
+    if (model_name.empty()) {
+        model_name = lower_ascii(model.id);
+    }
+    return endpoint + '|' + model_name;
+}
+
+[[nodiscard]] bool same_model_identity(
+    const models::ModelProfile& left,
+    const models::ModelProfile& right) {
+    return left.id == right.id ||
+           canonical_model_identity(left) == canonical_model_identity(right);
+}
+
+[[nodiscard]] const models::ModelProfile* find_model_by_id(
+    const PiggybackRequest& request,
+    const std::string_view id) {
+    const auto find = [id](const std::vector<models::ModelProfile>& models)
+        -> const models::ModelProfile* {
+        const auto found = std::ranges::find(models, id, &models::ModelProfile::id);
+        return found == models.end() ? nullptr : &*found;
+    };
+    if (const auto* found = find(request.teachers); found != nullptr) {
+        return found;
+    }
+    if (const auto* found = find(request.verifiers); found != nullptr) {
+        return found;
+    }
+    if (request.teacher.id == id) {
+        return &request.teacher;
+    }
+    if (request.verifier.has_value() && request.verifier->id == id) {
+        return &*request.verifier;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] PiggybackCompletionResponse complete_teacher_request(
+    const PiggybackRequest& request,
+    const models::ModelProfile& model,
+    const std::string_view system_prompt,
+    const std::string_view prompt,
+    const std::size_t maximum_output_tokens,
+    const double temperature,
+    const std::stop_token stop_token) {
+    if (request.completion) {
+        return request.completion(
+            model,
+            system_prompt,
+            prompt,
+            maximum_output_tokens,
+            temperature,
+            stop_token);
+    }
+    backend::CompletionClient client;
+    const auto result = client.complete(
+        request.internal_base_url,
+        model,
+        backend::CompletionRequest{
+            .system_prompt = std::string(system_prompt),
+            .prompt = std::string(prompt),
+            .messages = {},
+            .max_output_tokens = maximum_output_tokens,
+            .temperature = temperature,
+            .adapter_path = {},
+            .module_path = {},
+            .tools_json = {},
+            .stream = true,
+            .on_token = {},
+            .should_stop = [stop_token] { return stop_token.stop_requested(); },
+        });
+    return PiggybackCompletionResponse{
+        .succeeded = result.succeeded,
+        .content = result.content,
+        .error = result.error,
+        .prompt_tokens = result.prompt_tokens,
+        .completion_tokens = result.completion_tokens,
+    };
 }
 
 [[nodiscard]] std::string skill_for_seed(const SeedExample& example) {
@@ -147,6 +236,7 @@ struct VariationAttempt final {
         example.candidate_id = core::json::string_or(document->find("candidate_id"));
         example.source_model_id = core::json::string_or(document->find("source_model_id"));
         example.tool_trace_hash = core::json::string_or(document->find("tool_trace_hash"));
+        example.gap_reason = core::json::string_or(document->find("gap_reason"));
         example.needs_current_information = core::json::bool_or(
             document->find("needs_current_information"), false);
         example.compiler_passed = core::json::bool_or(document->find("compiler_passed"), false);
@@ -212,7 +302,9 @@ struct VariationAttempt final {
         : normalize_skill_id(request.target_skill);
 }
 
-[[nodiscard]] std::string teacher_system_prompt(const std::string_view target_skill) {
+[[nodiscard]] std::string teacher_system_prompt(
+    const std::string_view target_skill,
+    const bool measured_gap_analysis) {
     const auto normalized = normalize_skill_id(target_skill);
     std::string target_instruction;
     if (normalized.starts_with("english")) {
@@ -228,6 +320,15 @@ struct VariationAttempt final {
             "Use correct CMake, MSVC, compiler-diagnostic, and reproducible-build behavior.";
     } else {
         target_instruction = "Stay inside the selected skill: " + normalized + ".";
+    }
+    if (measured_gap_analysis) {
+        return
+            "Repair one measured conversational coverage gap for a compact offline assistant. "
+            "The supplied answer failed an independent review and is negative evidence, never a trusted answer. "
+            "Return JSON only with this exact shape: {\"prompt\":\"clean reusable task\",\"answer\":\"correct standalone answer\"}. "
+            "Preserve the useful intent, but correct the behavior and never copy the failed answer. "
+            "Do not add names, personal facts, current events, trivia, hidden reasoning, grading, provider identity, or training commentary. " +
+            target_instruction;
     }
     return
         "Generate one genuinely different supervised example for a compact offline assistant. "
@@ -258,39 +359,38 @@ struct VariationAttempt final {
     const std::string_view candidate_response,
     const std::stop_token stop_token) {
     Verification verification;
-    backend::CompletionClient client;
     const auto prompt =
-        "Judge whether a new supervised example teaches the same reusable behavior as a trusted example. "
-        "The new prompt must be genuinely different, and its answer must be correct for that new prompt, standalone, "
+        std::string(request.measured_gap_analysis
+            ? "Judge whether this proposed repair correctly closes a measured conversational coverage gap. "
+              "The prior answer failed review and is negative evidence, never a trusted reference. "
+              "The repaired answer must be correct for the task, standalone, natural, and reusable. "
+            : "Judge whether a new supervised example teaches the same reusable behavior as a trusted example. "
+              "The new prompt must be genuinely different, and its answer must be correct for that new prompt, standalone, ") +
         "fluent, and free of personal facts, current facts, unsupported claims, or copied boilerplate. "
         "Return JSON only with this exact shape: "
         "{\"accepted\":true|false,\"score\":0.0,\"reason\":\"brief reason\"}.\n\n"
         "SOURCE TASK:\n" + example.prompt +
-        "\n\nTRUSTED ANSWER:\n" + example.reference +
+        (request.measured_gap_analysis
+            ? "\n\nFAILED ANSWER (NEGATIVE EVIDENCE):\n"
+            : "\n\nTRUSTED ANSWER:\n") + example.reference +
         "\n\nNEW TASK:\n" + std::string(candidate_prompt) +
         "\n\nNEW ANSWER:\n" + std::string(candidate_response);
-    const auto result = client.complete(
-        request.internal_base_url,
+    const auto result = complete_teacher_request(
+        request,
         verifier,
-        backend::CompletionRequest{
-            .system_prompt = "You are an independent strict dataset verifier. Output valid JSON only.",
-            .prompt = prompt,
-            .messages = {},
-            .max_output_tokens = 192,
-            .temperature = 0.0,
-            .adapter_path = {},
-            .module_path = {},
-            .tools_json = {},
-            .stream = true,
-            .on_token = {},
-            .should_stop = [stop_token] { return stop_token.stop_requested(); },
-        });
+        "You are an independent strict dataset verifier. Output valid JSON only.",
+        prompt,
+        192,
+        0.0,
+        stop_token);
     if (!result.succeeded) {
+        verification.retryable = true;
         verification.reason = "Verifier failed: " + result.error;
         return verification;
     }
     const auto document = extract_json_object(result.content);
     if (!document.has_value()) {
+        verification.retryable = true;
         verification.reason = "Verifier returned malformed JSON.";
         return verification;
     }
@@ -307,11 +407,20 @@ struct VariationAttempt final {
     return verification;
 }
 
+[[nodiscard]] bool valid_tool_trace_receipt(const std::string_view value) {
+    constexpr std::string_view prefix{"tool-trace-v1:"};
+    return value.starts_with(prefix) && value.size() == prefix.size() + 16U &&
+        std::ranges::all_of(value.substr(prefix.size()), [](const unsigned char character) {
+            return std::isxdigit(character) != 0;
+        });
+}
+
 [[nodiscard]] bool evidence_constrained_live_example(const SeedExample& example) {
     const auto skill = normalize_skill_id(example.declared_skill);
     const auto coding = skill.starts_with("cpp23") || skill == "build-systems" ||
         skill == "msvc-cmake";
-    return (example.needs_current_information && example.tool_trace_hash.empty()) ||
+    return (example.needs_current_information &&
+            !valid_tool_trace_receipt(example.tool_trace_hash)) ||
            (coding && !(example.compiler_passed && example.tests_passed));
 }
 
@@ -332,7 +441,6 @@ struct VariationAttempt final {
         return verification;
     }
 
-    backend::CompletionClient client;
     const auto action_shape = allow_revision
         ? "accept|revise|reject|needs-evidence"
         : "accept|reject|needs-evidence";
@@ -347,30 +455,24 @@ struct VariationAttempt final {
         (allow_revision
             ? std::string{"If the behavior is useful but the answer is weak, return a corrected standalone answer. "}
             : std::string{"Do not revise in this confirmation pass. "}) +
+        "Set coverage_gap true only when rejection exposes a reusable conversational skill EngCoder should learn; "
+        "keep it false for privacy, identity, current facts, unsupported knowledge, junk, or formatting noise. "
         "Return JSON only with this exact shape: "
         "{\"action\":\"" + action_shape +
-        "\",\"score\":0.0,\"answer\":\"corrected answer or empty\",\"reason\":\"brief reason\"}.\n\n"
+        "\",\"score\":0.0,\"answer\":\"corrected answer or empty\",\"coverage_gap\":true|false,\"reason\":\"brief reason\"}.\n\n"
         "SKILL:\n" + skill_for_seed(example) +
         "\n\nUSER MESSAGE:\n" + example.prompt +
         "\n\nPROPOSED ANSWER:\n" + std::string(response) +
         "\n\nTOOL EVIDENCE HASH:\n" +
         (example.tool_trace_hash.empty() ? std::string{"none"} : example.tool_trace_hash);
-    const auto result = client.complete(
-        request.internal_base_url,
+    const auto result = complete_teacher_request(
+        request,
         reviewer,
-        backend::CompletionRequest{
-            .system_prompt = "You are EngCoder's strict independent live-training reviewer. Output valid JSON only.",
-            .prompt = prompt,
-            .messages = {},
-            .max_output_tokens = 320,
-            .temperature = 0.0,
-            .adapter_path = {},
-            .module_path = {},
-            .tools_json = {},
-            .stream = true,
-            .on_token = {},
-            .should_stop = [stop_token] { return stop_token.stop_requested(); },
-        });
+        "You are EngCoder's strict independent live-training reviewer. Output valid JSON only.",
+        prompt,
+        320,
+        0.0,
+        stop_token);
     if (!result.succeeded) {
         verification.retryable = true;
         verification.reason = "Reviewer failed: " + result.error;
@@ -393,6 +495,8 @@ struct VariationAttempt final {
     } else if (action == "needs-evidence") {
         verification.needs_evidence = true;
     }
+    verification.coverage_gap = action == "reject" &&
+        core::json::bool_or(document->find("coverage_gap"), false);
     if (verification.reason.empty()) {
         verification.reason = verification.accepted
             ? "Independent reviewer accepted the reusable live behavior."
@@ -423,6 +527,8 @@ struct VariationAttempt final {
     const auto created = memory::now_unix_ms();
     const auto action = verification.retryable
         ? "retry-pending"
+        : verification.excluded
+        ? "excluded"
         : verification.accepted
         ? (verification.revised ? "revised-and-accepted" : "accepted")
         : (verification.needs_evidence ? "needs-evidence" : "rejected");
@@ -452,9 +558,11 @@ struct VariationAttempt final {
         {"provenance", "live-auto-training"},
         {"knowledge_destination", verification.retryable
             ? "pending-review"
+            : (verification.excluded
+                ? "excluded"
             : (verification.accepted
                 ? "lora-incubation"
-                : (verification.needs_evidence ? "needs-evidence" : "quarantine"))},
+                : (verification.needs_evidence ? "needs-evidence" : "quarantine")))},
         {"tool_trace_hash", example.tool_trace_hash},
         {"created_unix_ms", static_cast<double>(created)},
     };
@@ -463,6 +571,63 @@ struct VariationAttempt final {
         return false;
     }
     stream << core::json::stringify(core::json::Value(std::move(record))) << '\n';
+    stream.flush();
+    return static_cast<bool>(stream);
+}
+
+[[nodiscard]] bool append_measured_gap_candidate(
+    const PiggybackRequest& request,
+    const SeedExample& example,
+    const std::string_view reason) {
+    if (request.measured_gap_dataset.empty()) {
+        return true;
+    }
+    const auto prompt = sanitize_training_text(example.prompt);
+    const auto failed_response = sanitize_training_response(
+        example.reference,
+        example.source_model_id);
+    if (prompt.empty() || failed_response.empty()) {
+        return false;
+    }
+    const auto content_hash = memory::make_content_hash(
+        "measured-conversation-gap",
+        prompt,
+        failed_response);
+    std::error_code error;
+    std::filesystem::create_directories(
+        request.measured_gap_dataset.parent_path(),
+        error);
+    if (error) {
+        return false;
+    }
+    if (std::filesystem::is_regular_file(request.measured_gap_dataset)) {
+        std::ifstream existing(request.measured_gap_dataset, std::ios::binary);
+        const std::string contents{
+            std::istreambuf_iterator<char>{existing},
+            std::istreambuf_iterator<char>{}};
+        if (contents.find(content_hash) != std::string::npos) {
+            return true;
+        }
+    }
+    core::json::Value::Object candidate{
+        {"candidate_id", "measured-gap-" + content_hash},
+        {"content_hash", content_hash},
+        {"domain", "measured-conversation-gap"},
+        {"skill", skill_for_seed(example)},
+        {"prompt", prompt},
+        {"response", failed_response},
+        {"source_model_id", example.source_model_id},
+        {"gap_reason", std::string(reason)},
+        {"negative_evidence", true},
+        {"created_unix_ms", static_cast<double>(memory::now_unix_ms())},
+    };
+    std::ofstream stream(
+        request.measured_gap_dataset,
+        std::ios::binary | std::ios::app);
+    if (!stream) {
+        return false;
+    }
+    stream << core::json::stringify(core::json::Value(std::move(candidate))) << '\n';
     stream.flush();
     return static_cast<bool>(stream);
 }
@@ -482,43 +647,47 @@ struct VariationAttempt final {
         .verifier = verifier,
     };
     try {
-        backend::CompletionClient client;
-        const auto generated = client.complete(
-            request.internal_base_url,
+        const auto generated = complete_teacher_request(
+            request,
             teacher,
-            backend::CompletionRequest{
-                .system_prompt = teacher_system_prompt(target_skill),
-                .prompt =
-                    "SOURCE TASK:\n" + example.prompt +
-                    "\n\nTRUSTED ANSWER:\n" + example.reference +
-                    "\n\nCreate one new task and answer that teach the same behavior.",
-                .messages = {},
-                .max_output_tokens = request.maximum_output_tokens,
-                .temperature = 0.45,
-                .adapter_path = {},
-                .module_path = {},
-                .tools_json = {},
-                .stream = true,
-                .on_token = {},
-                .should_stop = [stop_token] { return stop_token.stop_requested(); },
-            });
+            teacher_system_prompt(target_skill, request.measured_gap_analysis),
+            "SOURCE TASK:\n" + example.prompt +
+                (request.measured_gap_analysis
+                    ? "\n\nFAILED ANSWER (NEGATIVE EVIDENCE):\n"
+                    : "\n\nTRUSTED ANSWER:\n") + example.reference +
+                (example.gap_reason.empty()
+                    ? std::string{}
+                    : "\n\nREVIEWED GAP:\n" + example.gap_reason) +
+                (request.measured_gap_analysis
+                    ? "\n\nReturn a clean task and corrected answer that close this measured gap."
+                    : "\n\nCreate one new task and answer that teach the same behavior."),
+            request.maximum_output_tokens,
+            0.45,
+            stop_token);
         if (!generated.succeeded || generated.content.empty()) {
             attempt.error = generated.error.empty()
                 ? "Teacher returned no content."
                 : "Teacher failed: " + generated.error;
+            attempt.verification.retryable = true;
             attempt.verification.reason = attempt.error;
             return attempt;
         }
         const auto document = extract_json_object(generated.content);
         if (!document.has_value()) {
             attempt.error = "Teacher returned malformed JSON.";
+            attempt.verification.retryable = true;
             attempt.verification.reason = attempt.error;
             return attempt;
         }
         attempt.candidate_prompt = core::json::string_or(document->find("prompt"));
         attempt.candidate_response = core::json::string_or(document->find("answer"));
+        attempt.candidate_prompt = sanitize_training_text(attempt.candidate_prompt);
+        attempt.candidate_response = sanitize_training_response(
+            attempt.candidate_response,
+            teacher.id);
         if (attempt.candidate_prompt.empty() || attempt.candidate_response.empty()) {
-            attempt.error = "Teacher JSON omitted the new prompt or answer.";
+            attempt.error =
+                "Teacher JSON omitted a usable prompt or answer after the training-only privacy, identity, and noise filter.";
             attempt.verification.reason = attempt.error;
             return attempt;
         }
@@ -536,6 +705,7 @@ struct VariationAttempt final {
             stop_token);
     } catch (const std::exception& error) {
         attempt.error = "Teacher attempt failed: " + std::string(error.what());
+        attempt.verification.retryable = true;
         attempt.verification.reason = attempt.error;
     }
     return attempt;
@@ -572,8 +742,19 @@ struct VariationAttempt final {
         {"score", attempt.verification.accepted ? attempt.verification.score : 0.0},
         {"verification_notes", attempt.verification.reason},
         {"generation_error", attempt.error},
-        {"provenance", "parallel-local-teacher-audit"},
-        {"knowledge_destination", attempt.verification.accepted ? "lora-incubation" : "quarantine"},
+        {"provenance", request.measured_gap_analysis
+            ? "measured-gap-qwen-audit"
+            : "parallel-local-teacher-audit"},
+        {"auto_action", attempt.verification.retryable
+            ? "retry-pending"
+            : (attempt.verification.excluded
+                ? "excluded"
+                : (attempt.verification.accepted ? "accepted" : "rejected"))},
+        {"knowledge_destination", attempt.verification.retryable
+            ? "pending-review"
+            : (attempt.verification.excluded
+                ? "excluded"
+                : (attempt.verification.accepted ? "lora-incubation" : "quarantine"))},
         {"source_prompt", attempt.seed.prompt},
         {"trusted_reference", attempt.seed.reference},
         {"created_unix_ms", static_cast<double>(created)},
@@ -611,7 +792,7 @@ PiggybackResult run_piggyback_foundry(
     std::vector<models::ModelProfile> unique_teachers;
     for (const auto& teacher : teachers) {
         if (std::ranges::none_of(unique_teachers, [&](const auto& existing) {
-                return existing.id == teacher.id;
+                return same_model_identity(existing, teacher);
             })) {
             unique_teachers.push_back(teacher);
         }
@@ -620,7 +801,7 @@ PiggybackResult run_piggyback_foundry(
     std::vector<models::ModelProfile> verifiers = request.verifiers;
     if (request.verifier.has_value() &&
         std::ranges::none_of(verifiers, [&](const auto& existing) {
-            return existing.id == request.verifier->id;
+            return same_model_identity(existing, *request.verifier);
         })) {
         verifiers.push_back(*request.verifier);
     }
@@ -628,7 +809,7 @@ PiggybackResult run_piggyback_foundry(
     std::vector<std::pair<models::ModelProfile, models::ModelProfile>> assignments;
     for (const auto& teacher : unique_teachers) {
         const auto verifier = std::ranges::find_if(verifiers, [&](const auto& candidate) {
-            return candidate.id != teacher.id;
+            return !same_model_identity(candidate, teacher);
         });
         if (verifier != verifiers.end()) {
             assignments.emplace_back(teacher, *verifier);
@@ -676,8 +857,10 @@ PiggybackResult run_piggyback_foundry(
                 std::to_string(examples.size()) + " with an independent local model.";
             publish_progress(on_progress, result.progress);
 
+            const auto* source_model = find_model_by_id(request, example.source_model_id);
             const auto reviewer_it = std::ranges::find_if(verifiers, [&](const auto& candidate) {
-                return candidate.id != example.source_model_id;
+                return candidate.id != example.source_model_id &&
+                    (source_model == nullptr || !same_model_identity(candidate, *source_model));
             });
             Verification verification;
             const models::ModelProfile* reviewer = nullptr;
@@ -697,9 +880,20 @@ PiggybackResult run_piggyback_foundry(
                     true,
                     stop_token);
                 if (verification.revised) {
-                    reviewed_response = verification.response;
+                    reviewed_response = sanitize_training_response(
+                        verification.response,
+                        reviewer->id);
+                    if (reviewed_response.empty()) {
+                        verification.accepted = false;
+                        verification.revised = false;
+                        verification.excluded = true;
+                        verification.reason =
+                            "The proposed revision was empty after the training-only privacy, identity, and noise filter.";
+                    }
+                }
+                if (verification.revised) {
                     const auto confirmer_it = std::ranges::find_if(verifiers, [&](const auto& candidate) {
-                        return candidate.id != reviewer->id;
+                        return !same_model_identity(candidate, *reviewer);
                     });
                     if (confirmer_it == verifiers.end()) {
                         verification.accepted = false;
@@ -728,35 +922,54 @@ PiggybackResult run_piggyback_foundry(
                                 confirmation.reason;
                         }
                     }
-                } else if (verification.accepted) {
-                    const auto confirmer_it = std::ranges::find_if(verifiers, [&](const auto& candidate) {
-                        return candidate.id != reviewer->id;
-                    });
-                    if (confirmer_it == verifiers.end()) {
-                        verification.accepted = false;
-                        verification.retryable = true;
-                        verification.reason =
-                            "Acceptance needs confirmation from the second authorized local model.";
-                    } else {
-                        confirmer = &*confirmer_it;
-                        auto confirmation = review_live_example(
-                            request,
-                            example,
-                            *confirmer,
-                            reviewed_response,
-                            false,
-                            stop_token);
-                        if (confirmation.accepted) {
-                            confirmation.response = reviewed_response;
-                            verification = std::move(confirmation);
-                        } else {
-                            verification.accepted = false;
-                            verification.needs_evidence = confirmation.needs_evidence;
-                            verification.retryable = confirmation.retryable;
-                            verification.reason = "Second-model confirmation failed: " +
-                                confirmation.reason;
-                        }
-                    }
+                }
+            }
+
+            std::optional<memory::Episode> admitted_episode;
+            auto original_already_stored = false;
+            if (verification.accepted) {
+                memory::Episode candidate_episode{
+                    .id = {},
+                    .skill = target_skill_for(request, example),
+                    .prompt = example.prompt,
+                    .response = reviewed_response,
+                    .model_id = example.source_model_id,
+                    .score = verification.score,
+                    .compiler_passed = example.compiler_passed,
+                    .tests_passed = example.tests_passed,
+                    .human_accepted = false,
+                    .human_rejected = false,
+                    .deterministic_verified = example.compiler_passed && example.tests_passed,
+                    .reference_verified = true,
+                    .self_generated = true,
+                    .eligible_for_training = false,
+                    .verifier_model_id = confirmer != nullptr ? confirmer->id : reviewer->id,
+                    .verification_notes = verification.reason,
+                    .provenance = verification.revised
+                        ? "live-auto-training-revised"
+                        : "live-auto-training",
+                    .knowledge_destination = "lora-incubation",
+                    .content_hash = {},
+                    .correction = {},
+                    .tool_trace_hash = example.tool_trace_hash,
+                    .created_unix_ms = 0,
+                };
+                const auto admission = learning_service.preview(candidate_episode);
+                if (admission.duplicate) {
+                    original_already_stored = true;
+                    candidate_episode.prompt = admission.stored_prompt;
+                    candidate_episode.response = admission.stored_response;
+                    reviewed_response = candidate_episode.response;
+                } else if (!admission.would_store) {
+                    verification.accepted = false;
+                    verification.excluded = true;
+                    verification.reason = "Admission gate excluded the reviewed interaction: " +
+                        admission.reason;
+                } else {
+                    candidate_episode.prompt = admission.stored_prompt;
+                    candidate_episode.response = admission.stored_response;
+                    reviewed_response = candidate_episode.response;
+                    admitted_episode = std::move(candidate_episode);
                 }
             }
 
@@ -789,12 +1002,34 @@ PiggybackResult run_piggyback_foundry(
             result.progress.next_seed_offset =
                 request.seed_offset + result.progress.examined;
             if (!verification.accepted) {
-                ++result.progress.rejected;
-                if (!verification.needs_evidence && !example.source_model_id.empty()) {
+                if (verification.coverage_gap &&
+                    !append_measured_gap_candidate(
+                        request,
+                        example,
+                        verification.reason)) {
+                    result.error = "Could not append the measured conversation-gap ledger.";
+                    result.progress.message = result.error;
+                    publish_progress(on_progress, result.progress);
+                    return result;
+                }
+                if (verification.coverage_gap) {
+                    ++result.progress.coverage_gaps;
+                }
+                if (verification.excluded) {
+                    ++result.progress.excluded;
+                } else {
+                    ++result.progress.rejected;
+                }
+                if (!verification.needs_evidence && !verification.excluded &&
+                    !example.source_model_id.empty()) {
                     result.progress.rejected_source_models.push_back(example.source_model_id);
                 }
-                result.progress.message = verification.needs_evidence
+                result.progress.message = verification.excluded
+                    ? "Live interaction excluded by the final admission gate: " + verification.reason
+                    : verification.needs_evidence
                     ? "Live interaction held for evidence or a user answer: " + verification.reason
+                    : verification.coverage_gap
+                    ? "Live interaction rejected, retained in the audit, and counted as a measured conversation gap: " + verification.reason
                     : "Live interaction rejected and retained in the audit: " + verification.reason;
                 publish_progress(on_progress, result.progress);
                 continue;
@@ -803,46 +1038,37 @@ PiggybackResult run_piggyback_foundry(
             auto accepted_example = example;
             accepted_example.reference = reviewed_response;
             variation_examples.push_back(accepted_example);
-            ++result.progress.verified;
-            if (!verification.revised && !accepted_example.source_model_id.empty()) {
-                result.progress.accepted_source_models.push_back(accepted_example.source_model_id);
-            } else if (verification.revised && !accepted_example.source_model_id.empty()) {
-                result.progress.rejected_source_models.push_back(accepted_example.source_model_id);
+            if (!original_already_stored) {
+                ++result.progress.verified;
+                if (!verification.revised && !accepted_example.source_model_id.empty()) {
+                    result.progress.accepted_source_models.push_back(accepted_example.source_model_id);
+                } else if (verification.revised && !accepted_example.source_model_id.empty()) {
+                    result.progress.rejected_source_models.push_back(accepted_example.source_model_id);
+                }
             }
-            const auto stored = learning_service.submit(memory::Episode{
-                .id = {},
-                .skill = target_skill_for(request, accepted_example),
-                .prompt = accepted_example.prompt,
-                .response = accepted_example.reference,
-                .model_id = accepted_example.source_model_id,
-                .score = verification.score,
-                .compiler_passed = accepted_example.compiler_passed,
-                .tests_passed = accepted_example.tests_passed,
-                .human_accepted = false,
-                .human_rejected = false,
-                .deterministic_verified =
-                    accepted_example.compiler_passed && accepted_example.tests_passed,
-                .reference_verified = true,
-                .self_generated = true,
-                .eligible_for_training = false,
-                .verifier_model_id = confirmer != nullptr ? confirmer->id : reviewer->id,
-                .verification_notes = verification.reason,
-                .provenance = verification.revised
-                    ? "live-auto-training-revised"
-                    : "live-auto-training",
-                .knowledge_destination = "lora-incubation",
-                .content_hash = {},
-                .correction = {},
-                .tool_trace_hash = accepted_example.tool_trace_hash,
-                .created_unix_ms = 0,
-            });
+            const auto stored = admitted_episode.has_value() &&
+                learning_service.submit(std::move(*admitted_episode));
             if (stored) {
                 ++result.progress.stored;
             }
-            result.progress.message = verification.revised
+            result.progress.message = original_already_stored
+                ? "Previously accepted interaction was reused only to retry its derived example."
+                : verification.revised
                 ? "Live interaction was revised, cross-checked, and accepted once."
                 : "Live interaction passed an independent check and was accepted once.";
             publish_progress(on_progress, result.progress);
+            continue;
+        }
+
+        if (request.measured_gap_analysis) {
+            // The seed answer is the failed output that exposed the gap. It is
+            // negative evidence for Qwen's repair prompt and must never be
+            // submitted to verified memory or the weight-training queue.
+            result.progress.message = "Loading measured conversation gap " +
+                std::to_string(result.progress.examined) + " of " +
+                std::to_string(examples.size()) + " as negative evidence.";
+            publish_progress(on_progress, result.progress);
+            variation_examples.push_back(example);
             continue;
         }
 
@@ -909,6 +1135,7 @@ PiggybackResult run_piggyback_foundry(
     }
 
     const auto wave_capacity = std::max<std::size_t>(1U, result.progress.maximum_parallel);
+    auto retry_variation_batch = false;
     for (std::size_t wave_begin = 0; wave_begin < variation_examples.size();
          wave_begin += wave_capacity) {
         if (stop_token.stop_requested()) {
@@ -951,6 +1178,51 @@ PiggybackResult run_piggyback_foundry(
                 ? attempt.seed.prompt
                 : attempt.candidate_prompt;
 
+            std::optional<memory::Episode> admitted_episode;
+            if (attempt.verification.accepted) {
+                memory::Episode candidate_episode{
+                    .id = {},
+                    .skill = target_skill_for(request, attempt.seed),
+                    .prompt = attempt.candidate_prompt,
+                    .response = attempt.candidate_response,
+                    .model_id = attempt.teacher.id,
+                    .score = attempt.verification.score,
+                    .compiler_passed = false,
+                    .tests_passed = false,
+                    .human_accepted = false,
+                    .human_rejected = false,
+                    .deterministic_verified = false,
+                    .reference_verified = true,
+                    .self_generated = true,
+                    .eligible_for_training = false,
+                    .verifier_model_id = attempt.verifier.has_value()
+                        ? attempt.verifier->id
+                        : std::string{},
+                    .verification_notes = attempt.verification.reason,
+                    .provenance = request.measured_gap_analysis
+                        ? "measured-gap-qwen-teacher"
+                        : "parallel-local-teacher",
+                    .knowledge_destination = "lora-incubation",
+                    .content_hash = {},
+                    .correction = {},
+                    .tool_trace_hash = {},
+                    .created_unix_ms = 0,
+                };
+                const auto admission = learning_service.preview(candidate_episode);
+                if (!admission.would_store) {
+                    attempt.verification.accepted = false;
+                    attempt.verification.excluded = true;
+                    attempt.verification.reason =
+                        "Admission gate excluded the generated example: " + admission.reason;
+                } else {
+                    candidate_episode.prompt = admission.stored_prompt;
+                    candidate_episode.response = admission.stored_response;
+                    attempt.candidate_prompt = candidate_episode.prompt;
+                    attempt.candidate_response = candidate_episode.response;
+                    admitted_episode = std::move(candidate_episode);
+                }
+            }
+
             if (!append_teacher_audit(request, attempt, result.progress.target_skill)) {
                 result.error = "Could not append the teacher-attempt audit log.";
                 result.progress.message = result.error;
@@ -961,49 +1233,52 @@ PiggybackResult run_piggyback_foundry(
             if (!attempt.candidate_prompt.empty() && !attempt.candidate_response.empty()) {
                 ++result.progress.generated;
             }
-            if (!attempt.verification.accepted) {
-                ++result.progress.rejected;
+            if (attempt.verification.retryable) {
+                ++result.progress.retry_pending;
+                retry_variation_batch = true;
                 result.progress.message =
-                    attempt.teacher.display_name + " attempt rejected and retained in the audit: " +
+                    attempt.teacher.display_name +
+                    " attempt retained for retry; no negative decision was recorded: " +
+                    attempt.verification.reason;
+                publish_progress(on_progress, result.progress);
+                continue;
+            }
+            if (!attempt.verification.accepted) {
+                if (attempt.verification.excluded) {
+                    ++result.progress.excluded;
+                } else {
+                    ++result.progress.rejected;
+                }
+                result.progress.message = attempt.teacher.display_name +
+                    (attempt.verification.excluded
+                        ? " attempt excluded by the final admission gate: "
+                        : " attempt rejected and retained in the audit: ") +
                     attempt.verification.reason;
                 publish_progress(on_progress, result.progress);
                 continue;
             }
 
             ++result.progress.verified;
-            const auto stored = learning_service.submit(memory::Episode{
-                .id = {},
-                .skill = target_skill_for(request, attempt.seed),
-                .prompt = attempt.candidate_prompt,
-                .response = attempt.candidate_response,
-                .model_id = attempt.teacher.id,
-                .score = attempt.verification.score,
-                .compiler_passed = false,
-                .tests_passed = false,
-                .human_accepted = false,
-                .human_rejected = false,
-                .deterministic_verified = false,
-                .reference_verified = true,
-                .self_generated = true,
-                .eligible_for_training = false,
-                .verifier_model_id = attempt.verifier.has_value()
-                    ? attempt.verifier->id
-                    : std::string{},
-                .verification_notes = attempt.verification.reason,
-                .provenance = "parallel-local-teacher",
-                .knowledge_destination = "lora-incubation",
-                .content_hash = {},
-                .correction = {},
-                .tool_trace_hash = {},
-                .created_unix_ms = 0,
-            });
+            const auto stored = admitted_episode.has_value() &&
+                learning_service.submit(std::move(*admitted_episode));
             if (stored) {
                 ++result.progress.stored;
+                if (request.measured_gap_analysis) {
+                    ++result.progress.deep_gap_verified;
+                }
             }
             result.progress.message =
                 attempt.teacher.display_name + " produced an independently verified diverse example.";
             publish_progress(on_progress, result.progress);
         }
+    }
+
+    if ((request.untrusted_live_examples || request.measured_gap_analysis) &&
+        retry_variation_batch) {
+        // Re-run the bounded source batch after backoff so a transient teacher
+        // or verifier failure cannot silently lose its derived example. Exact
+        // accepted episodes deduplicate on the retry.
+        result.progress.next_seed_offset = request.seed_offset;
     }
 
     result.succeeded = result.progress.examined > 0U;
@@ -1014,6 +1289,7 @@ PiggybackResult run_piggyback_foundry(
                 std::to_string(result.progress.revised) + " revised, " +
                 std::to_string(result.progress.needs_evidence) + " need evidence, " +
                 std::to_string(result.progress.retry_pending) + " retry pending, " +
+                std::to_string(result.progress.excluded) + " excluded, " +
                 std::to_string(result.progress.rejected) + " rejected."
             : "Audited teacher-data batch complete: " +
                 std::to_string(result.progress.verified) + " verified, " +

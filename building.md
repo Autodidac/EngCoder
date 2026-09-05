@@ -7,7 +7,7 @@ Requirements:
 - Windows 10 or newer
 - Visual Studio 2022 with **Desktop development with C++**
 - Windows 10/11 SDK
-- CMake 3.30 or newer
+- CMake 4.4 or newer
 - Git for repository-agent work
 
 Python, PyTorch, Transformers, PEFT, and media engines are not base build or runtime dependencies.
@@ -39,7 +39,7 @@ Models and optional packs are excluded from the base budget. The installed base 
 
 ## C++23 modules
 
-CMake 3.30 `FILE_SET CXX_MODULES` publishes these named modules:
+CMake 4.4 `FILE_SET CXX_MODULES` publishes these named modules:
 
 - `threadspire.core`
 - `threadspire.platform`
@@ -68,6 +68,16 @@ Supported pack classes are:
 - optional audio engine
 
 A prepared pack source must contain every file declared for that pack; EngCoder writes the installed `pack.json` only after validation and an atomic commit. Python is needed only inside packs that declare it. Internal training payloads include `model_worker.py`, `internal_model.py`, and `curriculum_guard.py`; these files are source assets for pack assembly and are not embedded in the base executable.
+
+On a Windows training machine, prepare that pack without touching the base install:
+
+```powershell
+.\tools\prepare_internal_training_pack.ps1
+```
+
+The script creates an isolated Python runtime, installs PyTorch and Safetensors, runs the backend doctor and CUDA checks, records the exact installed dependency versions, and only then atomically places the completed payload in EngCoder's `pack-inbox`. It downloads no model weights. Pass `-Wheelhouse` for an offline, controlled wheel source. `-AllowCpuTraining` is intended only for slow smoke tests; normal internal training requires CUDA.
+
+Normal builds never migrate, quarantine, or rewrite `%LOCALAPPDATA%\EngCoder`. The legacy English-foundation migration is an explicit maintenance action under `tools`; run it only when intentionally upgrading old application data.
 
 ## Validation
 

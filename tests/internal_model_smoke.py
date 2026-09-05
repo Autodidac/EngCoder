@@ -28,6 +28,8 @@ def main() -> int:
     import internal_model as model  # pylint: disable=import-outside-toplevel
     import model_worker as worker  # pylint: disable=import-outside-toplevel
 
+    assert model.BOOTSTRAP_POLICY == "verified-hybrid-conversation-v7"
+
     training_records = [
         json.loads(line)
         for line in (source_root / "resources" / "bootstrap.jsonl").read_text(

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0 — 2026-09-05 measured-gap autonomy and durable training safety
+
+- Added measured conversational-gap learning: three independently reviewed reusable failures wake Qwen for one-at-a-time deep repair, then Nemotron independently verifies the replacement. Failed replies remain negative evidence and never enter positive memory or weights.
+- Kept normal automatic curriculum generation asymmetric and efficient: Nemotron produces routine short/medium English variants with adaptive concurrency up to four while Qwen verifies; Qwen generates only for the explicit English foundation or measured difficult gaps.
+- Centralized privacy admission so credentials, personal identifiers, private/nonpublic material, provider identity, emoji-only noise, model errors, corrupt drafts, and unsupported current facts cannot bypass a secondary learning path.
+- Required exact tool-trace receipts for volatile/current claims and kept needs-evidence records visible but weight-ineligible.
+- Made the optional **Internal PyTorch Training** pack installable from an isolated, version-recorded environment without bundling Python, PyTorch, Safetensors, or model weights into the portable base application.
+- Bound each weight candidate to a frozen training/evaluation snapshot, exact durable job, parent generation, checkpoint, and compare-and-swap promotion path. Restart reconciliation now restores one job per interrupted candidate instead of duplicating queued work.
+- Made durable candidate binding and training/evaluation/promotion state transitions fail closed; a stale, mismatched, or unauditable candidate cannot replace the active model.
+- Strengthened first-foundation evaluation so retrieval shortcuts cannot make untrained neural weights appear competent and all structural, identity, privacy, held-out, and regression gates must pass before promotion.
+- Kept three approved replies visible as three durable teachings while accurately reporting a separately coalesced neural-weight job count.
+- Reduced Win32 UI stalls by formatting only streamed text deltas, caching unchanged EpochGui bounds, batching native moves by parent, skipping hidden pages, coalescing resize storms, and pausing disk/model/queue telemetry reads during an active window drag.
+- Made localhost AI discovery cancellation-aware so closing EngCoder or starting foreground work cannot wait for the complete server scan.
+- Preserved the always-visible activity card, last-completed operation, transcript tail inset, source/model routing details, and exact Training Library decisions.
+- Expanded source and runtime tests for privacy, current-fact evidence, measured gaps, restart reconciliation, candidate generation binding, foreground preemption, and responsive UI contracts.
+
 ## 0.8.0 — 2026-08-30 autonomous English foundation
 
 - Added an explicit, one-time, resumable **Build English Foundation** action that is independent of Live Auto Training and manual neural retraining.
@@ -52,7 +68,7 @@
 - Removed synchronous full-child-tree repainting, redundant page visibility changes, hidden-page movement, and unchanged control moves from the live-resize path.
 - Clarified that the immediately available native retrieval layer uses curated examples with 0 B neural weights and is not a trained LLM; only a promoted candidate weight artifact is a neural model.
 
-## Unreleased
+### Additional 0.6.0 cleanup
 
 - Separated bundled curriculum, held-out checks, automatic teacher attempts, and user approvals/rejections in the Training Library so totals describe their actual purpose.
 - Identified the zero-weight native foundation explicitly in Chat, Activity, and documentation; a 0 B neural-model history no longer implies hidden model training or server use.
@@ -62,7 +78,7 @@
 - Changed the live product identity from the obsolete ThreadSpire application-data and build paths to EngCoder, including the executable target, compact native host, reset guard, capability-pack file contract, and current documentation. Legacy ThreadSpire names remain only where required by the published C++ module/ABI contract or historical migration records.
 - Revalidated a true fresh start after the rename: clean Release and Debug builds passed all five `engcoder_*` tests, the exact EngCoder data root passed the no-follow reset guard, and both current and legacy application-data roots remain absent for first launch.
 
-## 0.6.0
+### Earlier 0.6.0 foundation changes
 
 - Converted the native library, Win32 application, and tests to eleven named C++23 modules built with CMake `FILE_SET CXX_MODULES`.
 - Unified interactive text, coding, repository, image, audio, and tool execution behind one streaming/cancellable provider contract; Coding Agent and Long Horizon are execution profiles.

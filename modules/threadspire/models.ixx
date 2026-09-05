@@ -2,6 +2,7 @@ module;
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -79,7 +80,8 @@ struct ProviderDiscoveryReport final {
 };
 
 [[nodiscard]] ProviderDiscoveryReport discover_local_models(
-    std::chrono::milliseconds timeout_per_endpoint = std::chrono::milliseconds(700));
+    std::chrono::milliseconds timeout_per_endpoint = std::chrono::milliseconds(700),
+    std::stop_token stop_token = {});
 
 [[nodiscard]] bool merge_discovered_models(
     ModelRegistry& registry,

@@ -39,9 +39,11 @@ one foreground AI completes a reply
   -> append one candidate to candidates/live-interactions.jsonl
   -> wait for foreground work to become idle
   -> require both authorized loopback model families
-  -> model A reviews: accept, revise, reject, or needs-evidence
-  -> model B independently confirms every acceptance or revision
+  -> the model family that did not write the reply reviews it: accept, revise, reject, or needs-evidence
+  -> an unchanged answer needs that one genuinely independent review
+  -> a revised answer is confirmed by the other model family before acceptance
   -> append the complete decision to logs/live-training-attempts.jsonl
+  -> if a completed rejection identifies a reusable conversational skill gap, append only the failed prompt/answer as negative evidence
   -> accepted behavior enters the normal admission classifier once
   -> a diverse variation may be proposed and cross-checked
   -> eligible episodes increment the skill microbatch
@@ -57,12 +59,14 @@ Every candidate ends in one of these visible states:
 
 | State | Result |
 |---|---|
-| Accepted | Both local reviewers accepted the reusable behavior at the configured score gate. |
+| Accepted | One model family wrote the answer and the other family independently accepted the unchanged reusable behavior at the configured score gate. |
 | Revised and accepted | One reviewer corrected a useful but weak answer and the other reviewer accepted the corrected standalone answer. |
 | Needs evidence | Current information lacks a tool trace, or coding material lacks compiler and test evidence. It does not enter weights. |
 | Retry pending | A required local reviewer was cancelled, failed, or returned malformed output. The interaction stays at the ledger cursor and is retried after a bounded backoff; it is neither accepted nor rejected. |
 | Rejected | The behavior is wrong, brittle, parroting, branded, noisy, malformed, or otherwise not reusable. |
 | Excluded | A pre-review boundary detected private, credential, nonpublic, machine-specific, error, or empty material. Sensitive text is redacted from the audit. |
+
+A reviewer may mark a completed rejection as a **coverage gap** only when the failure exposes reusable conversational behavior EngCoder should learn. Privacy, identity, unsupported knowledge, current facts, malformed output, and formatting noise can never become coverage gaps. The failed answer is retained only as negative evidence; it is never submitted as a trusted example.
 
 Two models agreeing is not proof that a factual claim is true. Reviewers are instructed not to infer truth from model agreement.
 
@@ -98,7 +102,9 @@ Other volatile or unsupported task types remain outside the live weight path. Th
 
 Foreground Chat always uses one routed or manually selected AI. Live Auto does not invoke a second foreground answer and does not alter manual no-fallback selection.
 
-Background variation work is bounded to two authorized model families and up to four workers per model. A batch can therefore run at most eight audited attempts in parallel. Review and confirmation preserve model identity so a model cannot approve itself as the only judge.
+Routine background variation work uses Nemotron as the high-throughput generator, with up to four concurrent attempts, and Qwen as its independent verifier. Qwen is not used as a second routine generator. After three independently reviewed reusable conversation failures accumulate, Live Auto starts a measured-gap pass: Qwen repairs those gaps one request at a time and Nemotron independently verifies each proposed replacement. The failed answers remain negative evidence and are never copied into verified memory. The gap ledger has its own durable cursor, so restart, retry, and normal seed-curriculum work cannot consume one another's progress.
+
+A foreground reply from either family is reviewed by the other family. A changed answer needs another independent confirmation, while an unchanged answer is not sent back to its original author merely to manufacture a second vote. Endpoint-and-model identity is preserved across aliases so a model cannot approve itself under another registry name.
 
 Chat, media generation, and repository work have priority. The live pass waits while they run. Weight training checkpoints and yields at safe boundaries.
 
@@ -131,7 +137,7 @@ Automatic routing can therefore favor EngCoder more often only after its observe
 
 ## Visibility and audit
 
-The always-visible Activity strip shows queued live work, readiness of both authorized model families, the current review operation message, user-taught reply count, queued neural-weight jobs, and the last completed operation. Fast operations remain visible until another activity begins. A retry-pending review remains named in the strip instead of disappearing into a generic ready state.
+The always-visible Activity strip shows queued live work, measured gaps waiting, readiness of both authorized model families, the current reviewer/generator operation, user-taught reply count, queued neural-weight jobs, and the last completed operation. Fast operations remain visible until another activity begins. Retry-pending and measured-gap work remain named in the strip instead of disappearing into a generic ready state.
 
 The Training Library has a dedicated **Live Auto Training** source filter. It shows the full cleaned prompt and answer, decision, reason, source model, reviewer, confirmer, destination, and weight eligibility. Private exclusions show a redacted placeholder rather than the sensitive input.
 
@@ -142,7 +148,9 @@ Important persistent files:
 | `config/live-auto-training.txt` | Live interaction automation preference. |
 | `config/automatic-training.txt` | Separate idle seed/practice generation preference. |
 | `candidates/live-interactions.jsonl` | Append-only cleaned interaction ledger. |
+| `candidates/measured-conversation-gaps.jsonl` | Deduplicated failed prompt/answer records retained only as negative evidence for Qwen repair. |
 | `logs/live-training-attempts.jsonl` | Accepted, revised, needs-evidence, retry-pending, rejected, and excluded decisions. |
+| `logs/teacher-attempts.jsonl` | Routine Nemotron/Qwen attempts and measured-gap Qwen/Nemotron repair decisions. |
 | `memory/episodes.jsonl` | Admitted retrieval and weight-eligible episodes. |
 | `experts/registry/*.ini` | Per-skill accepted counts, pending microbatch count, validation, and generations. |
 | `jobs/` and `candidates/` | Persistent shadow-training state and candidate artifacts. |
@@ -151,10 +159,12 @@ Important persistent files:
 
 - Missing Qwen or Nemotron: the candidate remains queued and Activity names the missing family.
 - Reviewer cancellation, endpoint error, or malformed JSON: the audit records **retry pending**, the ledger cursor does not advance, and the same interaction is retried after a 30-second backoff. It is not trained or counted as rejected.
-- Revision without a second confirmer: rejected.
+- Revision without a second independent confirmer: retry pending; no learning decision is made.
 - Current fact without evidence: held as needs evidence.
 - Coding record without compiler and tests: held as needs evidence.
 - Duplicate interaction: not appended again.
+- Fewer than three measured reusable failures: keep them visible and wait; do not wake Qwen as a generator yet.
+- Measured-gap repair failure: keep its gap cursor retryable or advance with a visible rejection; never promote the failed answer.
 - Neural trainer absent: accepted evidence and the pending weight update remain stored; Live Auto review continues.
 - Weight candidate fails evaluation or host checks: the working model and active pointer remain unchanged.
 - App restart: the ledger cursor, episodes, expert counters, jobs, and checkpoints resume from disk.

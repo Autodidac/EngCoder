@@ -1,0 +1,21 @@
+EngCoder third-party notices
+==============================
+
+EpochGui
+--------
+
+EngCoder includes the backend-neutral EpochGui library from the exact vendored
+source recorded in third_party/EpochGui/engcoder-provenance.md.
+
+EpochGui is Copyright (c) 2026 Adam Rushford and is distributed under the
+LicenseRef-MIT-NoSell terms reproduced in licenses/EpochGui-LICENSE.txt. That
+license and its permission notice must remain with all copies or substantial
+portions of EpochGui.
+
+Microsoft Windows SDK import libraries
+--------------------------------------
+
+The Windows build links against operating-system APIs supplied by Windows.
+Release binaries use the static Microsoft C/C++ runtime selected by CMake, so
+the portable archive does not require users to install a separate Visual C++
+Redistributable package.

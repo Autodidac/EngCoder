@@ -306,6 +306,32 @@ void publish_file(
     }
 }
 
+[[nodiscard]] std::string read_file_bytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("unable to read training input: " + path.string());
+    }
+    return {
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+}
+
+[[nodiscard]] std::string freeze_training_file(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination,
+    const bool required) {
+    if (source.empty() || !std::filesystem::is_regular_file(source)) {
+        if (required) {
+            throw std::runtime_error("required training input is missing: " + source.string());
+        }
+        publish_file(destination, {});
+        return memory::make_content_hash("candidate-snapshot", "", "");
+    }
+    const auto bytes = read_file_bytes(source);
+    publish_file(destination, bytes);
+    return memory::make_content_hash("candidate-snapshot", bytes, "");
+}
+
 } // namespace
 
 std::string_view to_string(const LearningJobState state) noexcept {
@@ -547,6 +573,36 @@ void ContinualLearningService::request_skill_update(std::string skill) {
     });
 }
 
+void ContinualLearningService::request_foundation_update(
+    std::filesystem::path training_dataset,
+    std::filesystem::path evaluation_dataset,
+    std::size_t bootstrap_target_steps) {
+    if (!std::filesystem::is_regular_file(training_dataset) ||
+        !std::filesystem::is_regular_file(evaluation_dataset)) {
+        return;
+    }
+    LearningSettings settings;
+    {
+        std::lock_guard lock(mutex_);
+        settings = settings_;
+        auto& module = expert_registry_.ensure("english-foundation", settings_.base_model);
+        module.updated_unix_ms = memory::now_unix_ms();
+        expert_registry_.save(module);
+    }
+    if (bootstrap_target_steps == 0U) {
+        bootstrap_target_steps = settings.foundation_bootstrap_steps;
+    }
+    queue_request(LearningRequest{
+        .skill = "english-foundation",
+        .candidate_id = std::nullopt,
+        .kind = CandidateKind::full_rank_skill,
+        .training_dataset = std::move(training_dataset),
+        .evaluation_dataset = std::move(evaluation_dataset),
+        .bootstrap_target_steps = bootstrap_target_steps,
+        .initialize_internal_model = true,
+    });
+}
+
 void ContinualLearningService::queue_request(LearningRequest request) {
     try {
         const auto key = request.candidate_id.has_value()
@@ -555,7 +611,12 @@ void ContinualLearningService::queue_request(LearningRequest request) {
         const auto durable = persistent_queue_.submit(
             key,
             request.skill,
-            request.candidate_id.value_or(""));
+            request.candidate_id.value_or(""),
+            {},
+            request.training_dataset,
+            request.evaluation_dataset,
+            request.bootstrap_target_steps,
+            request.initialize_internal_model);
         request.job_id = durable.job.id;
     } catch (...) {
         // Never launch an update that could not first be serialized.
@@ -628,8 +689,12 @@ void ContinualLearningService::request_stop() {
 }
 
 void ContinualLearningService::set_python_executable(std::filesystem::path path) {
-    std::lock_guard lock(mutex_);
-    settings_.python_executable = std::move(path);
+    {
+        std::lock_guard lock(mutex_);
+        settings_.python_executable = std::move(path);
+    }
+    recover_persisted_requests();
+    condition_.notify_all();
 }
 
 void ContinualLearningService::set_base_model(std::string model) {
@@ -751,20 +816,26 @@ std::vector<LearningJobStatus> ContinualLearningService::statuses() const {
 }
 
 LearningPipelineSnapshot ContinualLearningService::pipeline_snapshot() const {
-    std::lock_guard lock(mutex_);
-    LearningPipelineSnapshot snapshot{
-        .queued_updates = queue_.size(),
-        .active_job = std::nullopt,
-    };
-    const auto active = std::ranges::find_if(
-        statuses_.rbegin(),
-        statuses_.rend(),
-        [](const LearningJobStatus& status) {
-            return !terminal_state(status.state);
-        });
-    if (active != statuses_.rend()) {
-        snapshot.active_job = *active;
+    LearningPipelineSnapshot snapshot;
+    {
+        std::lock_guard lock(mutex_);
+        const auto active = std::ranges::find_if(
+            statuses_.rbegin(),
+            statuses_.rend(),
+            [](const LearningJobStatus& status) {
+                return !terminal_state(status.state);
+            });
+        if (active != statuses_.rend()) {
+            snapshot.active_job = *active;
+        }
     }
+    const auto durable = persistent_queue_.snapshot();
+    snapshot.queued_updates = static_cast<std::size_t>(std::ranges::count_if(
+        durable,
+        [](const SerializedTrainingJob& job) {
+            return job.state == TrainingState::queued ||
+                   job.state == TrainingState::recoverable_failed;
+        }));
     return snapshot;
 }
 
@@ -800,6 +871,10 @@ void ContinualLearningService::recover_persisted_requests() {
                 ? std::nullopt
                 : std::optional<std::string>(job.candidate_id),
             .kind = CandidateKind::lora_overlay,
+            .training_dataset = job.training_dataset,
+            .evaluation_dataset = job.evaluation_dataset,
+            .bootstrap_target_steps = job.bootstrap_target_steps,
+            .initialize_internal_model = job.initialize_internal_model,
         };
         if (request.candidate_id.has_value()) {
             if (const auto* candidate = candidate_registry_.find(*request.candidate_id);
@@ -811,7 +886,15 @@ void ContinualLearningService::recover_persisted_requests() {
             request.kind = candidate_kind_from_string(
                 std::string_view(job.coalesce_key).substr(separator + 1U));
         }
-        queue_.push_back(std::move(request));
+        std::lock_guard lock(mutex_);
+        const auto already_queued = std::ranges::any_of(
+            queue_,
+            [&request](const LearningRequest& pending) {
+                return pending.job_id == request.job_id;
+            });
+        if (!already_queued) {
+            queue_.push_back(std::move(request));
+        }
     }
 }
 
@@ -836,7 +919,25 @@ void ContinualLearningService::recover_interrupted_candidates() {
     if (!settings_.resume_interrupted_candidates) {
         return;
     }
+    const auto durable_jobs = persistent_queue_.snapshot();
     for (auto candidate = interrupted.rbegin(); candidate != interrupted.rend(); ++candidate) {
+        const auto already_serialized = std::ranges::any_of(
+            durable_jobs,
+            [&candidate](const SerializedTrainingJob& job) {
+                const auto resumable = job.state == TrainingState::queued ||
+                    job.state == TrainingState::preparing ||
+                    job.state == TrainingState::training ||
+                    job.state == TrainingState::evaluating ||
+                    job.state == TrainingState::promoting ||
+                    job.state == TrainingState::recoverable_failed;
+                return resumable && job.candidate_id == candidate->id;
+            });
+        if (already_serialized) {
+            // recover_persisted_requests() already restored this exact job. A
+            // second candidate-keyed submission would strand the original
+            // durable record and make one teaching look like two weight jobs.
+            continue;
+        }
         queue_request(LearningRequest{
             .skill = candidate->skill,
             .candidate_id = candidate->id,
@@ -974,7 +1075,10 @@ void ContinualLearningService::process_request(
             settings, active_module, status, request.candidate_id, request.job_id, stop_token);
     } else if (active_module.base_model.starts_with("threadspire://")) {
         completed = run_internal_update(
-            settings, active_module, status, request.candidate_id, request.job_id, stop_token);
+            settings, active_module, status, request.candidate_id, request.job_id,
+            request.training_dataset, request.evaluation_dataset,
+            request.bootstrap_target_steps, request.initialize_internal_model,
+            stop_token);
     } else {
         completed = run_lora_update(
             settings, active_module, status, request.candidate_id, request.job_id, stop_token);
@@ -1029,6 +1133,25 @@ void ContinualLearningService::process_request(
         transition_durable_phase(
             request.job_id, TrainingState::promoting, TrainingState::recoverable_failed,
             status.progress_path, message);
+        if (status.state == LearningJobState::interrupted &&
+            !stop_token.stop_requested()) {
+            auto resume = request;
+            if (!status.candidate_id.empty()) {
+                resume.candidate_id = status.candidate_id;
+            }
+            {
+                std::lock_guard lock(mutex_);
+                const auto already_queued = std::ranges::any_of(
+                    queue_,
+                    [&resume](const LearningRequest& pending) {
+                        return pending.job_id == resume.job_id;
+                    });
+                if (!already_queued) {
+                    queue_.push_front(std::move(resume));
+                }
+            }
+            condition_.notify_all();
+        }
     }
 }
 bool ContinualLearningService::run_internal_update(
@@ -1037,6 +1160,10 @@ bool ContinualLearningService::run_internal_update(
     LearningJobStatus& status,
     const std::optional<std::string> resume_candidate_id,
     const std::string_view durable_job_id,
+    const std::filesystem::path& training_dataset,
+    const std::filesystem::path& evaluation_dataset,
+    const std::size_t bootstrap_target_steps,
+    const bool initialize_internal_model,
     const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         status.state = LearningJobState::cancelled;
@@ -1050,6 +1177,48 @@ bool ContinualLearningService::run_internal_update(
         status.message = "Python/PyTorch backend is not installed or selected";
         update_status(status);
         return false;
+    }
+
+    const auto full_foundation = initialize_internal_model &&
+        bootstrap_target_steps > 0U &&
+        normalize_skill(active_module.skill) == "english-foundation";
+    const auto active_manifest = settings.state_root / "models" / "internal" / "active.json";
+    if (full_foundation && !std::filesystem::is_regular_file(active_manifest)) {
+        status.state = LearningJobState::training_internal;
+        status.message = "initializing EngCoder's random internal weights before foundation training";
+        update_status(status);
+        const auto initialization = platform::run_process(
+            platform::ProcessSpec{
+                .executable = settings.python_executable,
+                .arguments = {
+                    settings.worker_script.string(),
+                    "init-internal",
+                    "--state-root", settings.state_root.string(),
+                    "--profile", "micro",
+                    "--progress-file", status.progress_path.string(),
+                },
+                .working_directory = settings.state_root,
+                .log_file = status.log_path,
+                .append_log = true,
+            },
+            [this, stop_token] {
+                return stop_token.stop_requested() || interactive_busy();
+            });
+        if (initialization.cancelled || stop_token.stop_requested() || interactive_busy()) {
+            status.state = LearningJobState::interrupted;
+            status.message = "foundation initialization yielded to Chat; the durable job remains resumable";
+            update_status(status);
+            return false;
+        }
+        if (!initialization.launched || initialization.exit_code != 0 ||
+            !std::filesystem::is_regular_file(active_manifest)) {
+            status.state = LearningJobState::failed;
+            status.message = initialization.error.empty()
+                ? "internal model initialization failed; no working model was replaced"
+                : initialization.error;
+            update_status(status);
+            return false;
+        }
     }
 
     CandidateRecord candidate;
@@ -1069,6 +1238,19 @@ bool ContinualLearningService::run_internal_update(
             return false;
         }
         candidate = *stored_candidate;
+        const auto resumable_state = candidate.state == CandidateState::staged ||
+            candidate.state == CandidateState::training ||
+            candidate.state == CandidateState::evaluating ||
+            candidate.state == CandidateState::interrupted;
+        if (!resumable_state || candidate.skill != active_module.skill ||
+            candidate.base_model != active_module.base_model ||
+            candidate.parent_generation != active_module.generation) {
+            status.state = LearningJobState::failed;
+            status.message =
+                "resumable internal candidate no longer matches the active skill generation";
+            update_status(status);
+            return false;
+        }
     } else {
         {
             std::lock_guard lock(mutex_);
@@ -1088,12 +1270,83 @@ bool ContinualLearningService::run_internal_update(
         candidate.log_path = root / "internal-training.log";
         candidate.message = "internal skill candidate staged beside the active generation";
         commit_candidate(candidate);
+        if (!durable_job_id.empty()) {
+            auto bound = false;
+            try {
+                bound = persistent_queue_.bind_candidate(
+                    durable_job_id,
+                    candidate.id,
+                    std::to_string(candidate.parent_generation));
+            } catch (...) {
+                bound = false;
+            }
+            if (!bound) {
+                candidate.state = CandidateState::rejected;
+                candidate.message =
+                    "candidate could not bind to its durable training job; active weights remain unchanged";
+                candidate.updated_unix_ms = memory::now_unix_ms();
+                commit_candidate(candidate);
+                status.state = LearningJobState::failed;
+                status.message = candidate.message;
+                update_status(status);
+                return false;
+            }
+        }
     }
 
     status.candidate_id = candidate.id;
     status.log_path = candidate.log_path;
     status.progress_path = candidate.job_directory / "progress.json";
     std::filesystem::create_directories(candidate.job_directory);
+
+    const auto snapshot_directory = candidate.job_directory / "dataset";
+    const auto frozen_seed = snapshot_directory / "training.jsonl";
+    const auto frozen_episodes = snapshot_directory / "episodes.jsonl";
+    const auto frozen_anchors = snapshot_directory / "evaluation.jsonl";
+    if (!resume_candidate_id.has_value()) {
+        try {
+            const auto seed_source = training_dataset.empty()
+                ? settings.seed_dataset
+                : training_dataset;
+            const auto anchor_source = evaluation_dataset.empty()
+                ? settings.anchor_dataset
+                : evaluation_dataset;
+            const auto seed_hash = freeze_training_file(seed_source, frozen_seed, true);
+            const auto episode_hash = freeze_training_file(
+                full_foundation ? std::filesystem::path{} : memory_store_.path(),
+                frozen_episodes,
+                false);
+            const auto anchor_hash = freeze_training_file(anchor_source, frozen_anchors, true);
+            std::ostringstream manifest;
+            manifest << "{\n"
+                     << "  \"format\": \"engcoder.candidate-dataset.v1\",\n"
+                     << "  \"skill\": \"" << active_module.skill << "\",\n"
+                     << "  \"full_foundation\": " << (full_foundation ? "true" : "false") << ",\n"
+                     << "  \"bootstrap_target_steps\": " << bootstrap_target_steps << ",\n"
+                     << "  \"training_content_hash\": \"" << seed_hash << "\",\n"
+                     << "  \"episode_content_hash\": \"" << episode_hash << "\",\n"
+                     << "  \"evaluation_content_hash\": \"" << anchor_hash << "\"\n"
+                     << "}\n";
+            publish_file(snapshot_directory / "manifest.json", manifest.str());
+        } catch (const std::exception& exception) {
+            candidate.state = CandidateState::rejected;
+            candidate.message = std::string("unable to freeze candidate data: ") + exception.what();
+            candidate.updated_unix_ms = memory::now_unix_ms();
+            commit_candidate(candidate);
+            status.state = LearningJobState::failed;
+            status.message = candidate.message;
+            update_status(status);
+            return false;
+        }
+    }
+    if (!std::filesystem::is_regular_file(frozen_seed) ||
+        !std::filesystem::is_regular_file(frozen_anchors) ||
+        !std::filesystem::is_regular_file(snapshot_directory / "manifest.json")) {
+        status.state = LearningJobState::failed;
+        status.message = "the frozen candidate dataset is incomplete; active weights remain unchanged";
+        update_status(status);
+        return false;
+    }
 
     resource::TrainingBudget budget;
     while (!stop_token.stop_requested()) {
@@ -1123,7 +1376,9 @@ bool ContinualLearningService::run_internal_update(
     }
 
     candidate.state = CandidateState::training;
-    candidate.message = "training a shadow full-weight internal skill module";
+    candidate.message = full_foundation
+        ? "training a resumable full-backbone English foundation candidate"
+        : "training a shadow bounded internal skill module";
     candidate.updated_unix_ms = memory::now_unix_ms();
     commit_candidate(candidate);
     status.state = LearningJobState::training_internal;
@@ -1131,16 +1386,20 @@ bool ContinualLearningService::run_internal_update(
     update_status(status);
 
     const auto metrics_path = candidate.job_directory / "metrics.json";
-    const auto training_scope = internal_training_scope(active_module.skill);
+    const auto training_scope = full_foundation
+        ? std::string{"english-foundation"}
+        : internal_training_scope(active_module.skill);
+    const auto requested_steps = full_foundation
+        ? bootstrap_target_steps
+        : std::max<std::size_t>(4U, budget.max_steps);
     std::vector<std::string> arguments{
         settings.worker_script.string(),
         "train-internal",
         "--state-root", settings.state_root.string(),
-        "--seed-dataset", settings.seed_dataset.string(),
-        "--episodes", memory_store_.path().string(),
-        "--anchors", settings.anchor_dataset.string(),
+        "--seed-dataset", frozen_seed.string(),
+        "--anchors", frozen_anchors.string(),
         "--scope", training_scope,
-        "--max-steps", std::to_string(std::max<std::size_t>(4U, budget.max_steps)),
+        "--max-steps", std::to_string(requested_steps),
         "--learning-rate", std::to_string(settings.learning_rate),
         "--batch-size", "2",
         "--accumulation-steps", "2",
@@ -1150,6 +1409,14 @@ bool ContinualLearningService::run_internal_update(
         "--progress-file", status.progress_path.string(),
         "--defer-promotion",
     };
+    if (!full_foundation && std::filesystem::file_size(frozen_episodes) > 0U) {
+        arguments.emplace_back("--episodes");
+        arguments.emplace_back(frozen_episodes.string());
+    }
+    if (full_foundation) {
+        arguments.emplace_back("--bootstrap-target-steps");
+        arguments.emplace_back(std::to_string(bootstrap_target_steps));
+    }
     if (settings.require_cuda) {
         arguments.emplace_back("--require-cuda");
     }
@@ -1195,13 +1462,6 @@ bool ContinualLearningService::run_internal_update(
         status.state = LearningJobState::interrupted;
         status.message = candidate.message;
         update_status(status);
-        if (resumable_preemption) {
-            queue_request(LearningRequest{
-                .skill = candidate.skill,
-                .candidate_id = candidate.id,
-                .kind = CandidateKind::full_rank_skill,
-            });
-        }
         return false;
     }
     if (!result.launched || result.exit_code != 0) {
@@ -1217,9 +1477,30 @@ bool ContinualLearningService::run_internal_update(
         return false;
     }
 
-    transition_durable_phase(
-        durable_job_id, TrainingState::training, TrainingState::evaluating,
-        status.progress_path, "candidate training complete; evaluating held-out gates");
+    if (!durable_job_id.empty()) {
+        auto transitioned = false;
+        try {
+            transitioned = persistent_queue_.transition(
+                durable_job_id,
+                TrainingState::training,
+                TrainingState::evaluating,
+                status.progress_path,
+                "candidate training complete; evaluating held-out gates");
+        } catch (...) {
+            transitioned = false;
+        }
+        if (!transitioned) {
+            candidate.state = CandidateState::interrupted;
+            candidate.message =
+                "candidate evaluation was held because its durable job state could not advance";
+            candidate.updated_unix_ms = memory::now_unix_ms();
+            commit_candidate(candidate);
+            status.state = LearningJobState::interrupted;
+            status.message = candidate.message;
+            update_status(status);
+            return false;
+        }
+    }
     candidate.validation_score = read_metric(metrics_path, "validation_score", 0.0);
     candidate.regression_score = read_metric(metrics_path, "regression_score", 1.0);
     const auto passed_evaluation = read_metric(
@@ -1254,9 +1535,30 @@ bool ContinualLearningService::run_internal_update(
         settings.state_root, internal_generation);
     candidate.updated_unix_ms = memory::now_unix_ms();
     commit_candidate(candidate);
-    transition_durable_phase(
-        durable_job_id, TrainingState::evaluating, TrainingState::promoting,
-        status.progress_path, "candidate passed evaluation; verifying isolated candidate host");
+    if (!durable_job_id.empty()) {
+        auto transitioned = false;
+        try {
+            transitioned = persistent_queue_.transition(
+                durable_job_id,
+                TrainingState::evaluating,
+                TrainingState::promoting,
+                status.progress_path,
+                "candidate passed evaluation; verifying isolated candidate host");
+        } catch (...) {
+            transitioned = false;
+        }
+        if (!transitioned) {
+            candidate.state = CandidateState::interrupted;
+            candidate.message =
+                "candidate promotion was held because its durable job state could not advance";
+            candidate.updated_unix_ms = memory::now_unix_ms();
+            commit_candidate(candidate);
+            status.state = LearningJobState::interrupted;
+            status.message = candidate.message;
+            update_status(status);
+            return false;
+        }
+    }
 
     std::lock_guard promotion_lock(promotion_mutex_);
     auto registry_stale = false;

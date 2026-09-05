@@ -200,6 +200,7 @@ public:
 [[nodiscard]] std::string sanitize_training_response(
     std::string_view value,
     std::string_view source_model_id);
+[[nodiscard]] bool private_or_nonpublic_training_text(std::string_view value);
 
 } // namespace threadspire::ai::learning
 
@@ -218,6 +219,7 @@ struct LearningSettings final {
     std::size_t micro_steps{12};
     std::size_t maximum_sequence_tokens{2048};
     std::size_t checkpoint_steps{3};
+    std::size_t foundation_bootstrap_steps{24'000};
     std::chrono::milliseconds inference_preemption_grace{1500};
     double learning_rate{1.0e-4};
     std::size_t full_rank_steps{6};
@@ -286,6 +288,10 @@ public:
     [[nodiscard]] LearningSubmissionPreview preview(memory::Episode episode) const;
     [[nodiscard]] bool submit(memory::Episode episode);
     void request_skill_update(std::string skill);
+    void request_foundation_update(
+        std::filesystem::path training_dataset,
+        std::filesystem::path evaluation_dataset,
+        std::size_t bootstrap_target_steps = 0);
     [[nodiscard]] std::size_t request_pending_updates();
     void set_interactive_busy(bool value);
     void request_stop();
@@ -312,6 +318,10 @@ private:
         std::string skill;
         std::optional<std::string> candidate_id;
         CandidateKind kind{CandidateKind::lora_overlay};
+        std::filesystem::path training_dataset;
+        std::filesystem::path evaluation_dataset;
+        std::size_t bootstrap_target_steps{0};
+        bool initialize_internal_model{false};
     };
 
     void worker_loop(std::stop_token stop_token);
@@ -322,6 +332,10 @@ private:
         LearningJobStatus& status,
         std::optional<std::string> resume_candidate_id,
         std::string_view durable_job_id,
+        const std::filesystem::path& training_dataset,
+        const std::filesystem::path& evaluation_dataset,
+        std::size_t bootstrap_target_steps,
+        bool initialize_internal_model,
         std::stop_token stop_token);
     [[nodiscard]] bool run_lora_update(
         const LearningSettings& settings,
@@ -374,19 +388,38 @@ private:
 
 namespace threadspire::ai::learning {
 
+struct PiggybackCompletionResponse final {
+    bool succeeded{false};
+    std::string content;
+    std::string error;
+    std::size_t prompt_tokens{0};
+    std::size_t completion_tokens{0};
+};
+
+using PiggybackCompletion = std::function<PiggybackCompletionResponse(
+    const models::ModelProfile& model,
+    std::string_view system_prompt,
+    std::string_view prompt,
+    std::size_t maximum_output_tokens,
+    double temperature,
+    std::stop_token stop_token)>;
+
 struct PiggybackRequest final {
     std::filesystem::path seed_dataset;
     std::string target_skill{"english-foundation"};
     bool restrict_to_target_domain{true};
     bool generate_teacher_variations{true};
     bool untrusted_live_examples{false};
+    bool measured_gap_analysis{false};
     bool wrap_seed_dataset{true};
     std::string internal_base_url;
     models::ModelProfile teacher;
     std::optional<models::ModelProfile> verifier;
     std::vector<models::ModelProfile> teachers;
     std::vector<models::ModelProfile> verifiers;
+    PiggybackCompletion completion;
     std::filesystem::path audit_log;
+    std::filesystem::path measured_gap_dataset;
     std::size_t maximum_parallel_per_teacher{4};
     std::size_t seed_offset{0};
     std::size_t maximum_examples{16};
@@ -403,6 +436,9 @@ struct PiggybackProgress final {
     std::size_t revised{0};
     std::size_t needs_evidence{0};
     std::size_t retry_pending{0};
+    std::size_t excluded{0};
+    std::size_t coverage_gaps{0};
+    std::size_t deep_gap_verified{0};
     std::vector<std::string> accepted_source_models;
     std::vector<std::string> rejected_source_models;
     std::size_t stored{0};

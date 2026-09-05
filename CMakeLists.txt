@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.4)
 
 project(
     EngCoder
-    VERSION 0.8.0
+    VERSION 0.9.0
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -14,6 +14,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+if(MSVC)
+    # Release archives are genuinely portable and do not rely on a separately
+    # installed Visual C++ runtime. Debug keeps the matching static debug CRT.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -189,6 +194,11 @@ if(WIN32)
             Winhttp)
     set_target_properties(EngCoder PROPERTIES OUTPUT_NAME "EngCoder")
     install(TARGETS EngCoder RUNTIME DESTINATION .)
+    install(FILES license.txt third-party-notices.txt DESTINATION .)
+    install(
+        FILES third_party/EpochGui/LICENSE
+        DESTINATION licenses
+        RENAME EpochGui-LICENSE.txt)
 
     add_executable(EngCoderNativeHost src/native_host/main.cpp)
     target_link_libraries(
@@ -281,5 +291,26 @@ if(THREADSPIRE_AI_BUILD_TESTS)
                 "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/curriculum_guard_smoke.py"
                 --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -c "import torch, safetensors"
+            RESULT_VARIABLE THREADSPIRE_PYTORCH_READY
+            OUTPUT_QUIET
+            ERROR_QUIET)
+        if(THREADSPIRE_PYTORCH_READY EQUAL 0)
+            add_test(
+                NAME engcoder_internal_model_smoke
+                COMMAND
+                    "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_model_smoke.py"
+                    --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+            add_test(
+                NAME engcoder_internal_server_smoke
+                COMMAND
+                    "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_server_smoke.py"
+                    --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        else()
+            message(STATUS "PyTorch/Safetensors not present; tensor smoke tests are available after installing the optional Internal PyTorch Training pack")
+        endif()
     endif()
 endif()

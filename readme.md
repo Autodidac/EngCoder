@@ -19,7 +19,7 @@ The Training Library shows six sources independently:
 
 - **Bundled curriculum:** 4,247 English and C++23 examples shipped with the executable. These are not user learning history.
 - **Your learning:** explicit approved replies, corrections, and rejected drafts. Repeated approval of the same prompt/reply does not add weight.
-- **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, retry-pending, rejected, and privacy-excluded decisions remain inspectable.
+- **Live Auto Training:** cleaned live conversations reviewed by the authorized local Qwen and Nemotron pair. Accepted, revised, needs-evidence, retry-pending, rejected, privacy-excluded, and measured-gap decisions remain inspectable.
 - **Automatic teacher attempts:** candidate examples proposed by connected local AI servers and checked independently. Accepted, rejected, and failed attempts remain inspectable.
 - **Generated foundation curriculum:** licensed/user-owned long-form sources transformed by Qwen and Nemotron, independently cross-reviewed, and split by document section before examples are generated.
 - **Held-out checks:** 320 message-disjoint examples used only to evaluate candidates. They never train weights.
@@ -31,7 +31,7 @@ Emoji and provider branding are removed at the training boundary. Error cards, p
 EngCoder keeps four learning processes separate:
 
 - **Immediate approved memory** makes an accepted or corrected answer retrievable without retraining.
-- **Live Auto Training** cleans each successful live interaction, lets the authorized loopback Qwen and Nemotron models accept, revise, reject, or hold it for evidence, and automatically feeds only independently accepted reusable behavior into bounded weight batches.
+- **Live Auto Training** cleans each successful live interaction, lets the authorized loopback Qwen and Nemotron models accept, revise, reject, or hold it for evidence, and automatically feeds only independently accepted reusable behavior into bounded weight batches. After three independently reviewed reusable conversation failures, Qwen repairs measured gaps one at a time and Nemotron verifies the replacements; the failed answers remain negative evidence.
 - **Automatic idle learning** separately gathers and verifies seed-curriculum practice examples while the app is idle.
 - **Neural weight retraining** is automatically queued when a verified microbatch fills. **Compile data and retrain model** can force a smaller pending batch. Training is serialized, resumable, checkpointed, and preempted by Chat.
 
@@ -106,13 +106,13 @@ The Release executable is created at:
 out\build\windows-vs2022\bin\Release\EngCoder.exe
 ```
 
-Application data remains under the legacy compatibility path:
+Application data is stored under:
 
 ```text
 %LOCALAPPDATA%\EngCoder
 ```
 
-The directory name is retained for safe upgrades; it is not the product name.
+Legacy `%LOCALAPPDATA%\ThreadSpire` data is never recreated automatically. The old name remains only in published C++ module/ABI identifiers and explicit migration tools.
 
 ## Verification
 
@@ -135,6 +135,7 @@ Useful documents:
 - [Live Auto queue repair verification report](docs/session-report-2026-08-29-0.7.1.md)
 - [0.7.2 retained-review and EpochGui verification report](docs/session-report-2026-08-30-0.7.2.md)
 - [0.8.0 autonomous curriculum and training report](docs/session-report-2026-08-30-0.8.0.md)
+- [0.9.0 measured-gap autonomy and durable-training report](docs/session-report-2026-09-05-0.9.0.md)
 
 ## License
 

@@ -1,6 +1,4 @@
 @echo off
-call "%~dp0tools\apply-english-foundation-migration.cmd"
-if errorlevel 1 exit /b %errorlevel%
 setlocal EnableExtensions
 pushd "%~dp0"
 
@@ -26,7 +24,7 @@ cmake --preset %PRESET%
 if errorlevel 1 goto :failed
 
 echo ^> Building Release
-cmake --build --preset %PRESET%-release --parallel
+cmake --build --preset %PRESET%-release -- /m:1
 if errorlevel 1 goto :failed
 
 echo ^> Running tests

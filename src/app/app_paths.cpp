@@ -41,6 +41,29 @@ namespace {
     return path;
 }
 
+[[nodiscard]] std::optional<std::filesystem::path> explicit_data_root() {
+    constexpr auto variable = L"ENGCODER_DATA_ROOT";
+    const auto required = ::GetEnvironmentVariableW(variable, nullptr, 0U);
+    if (required == 0U) {
+        return std::nullopt;
+    }
+    std::wstring value(required, L'\0');
+    const auto written = ::GetEnvironmentVariableW(
+        variable,
+        value.data(),
+        static_cast<DWORD>(value.size()));
+    if (written == 0U || written >= value.size()) {
+        throw std::runtime_error("ENGCODER_DATA_ROOT could not be read");
+    }
+    value.resize(written);
+    auto path = std::filesystem::path(std::move(value)).lexically_normal();
+    if (!path.is_absolute() || path == path.root_path()) {
+        throw std::runtime_error(
+            "ENGCODER_DATA_ROOT must be an absolute, non-root test or portable-data directory");
+    }
+    return path;
+}
+
 void write_resource(
     const int identifier,
     const std::filesystem::path& destination,
@@ -86,7 +109,7 @@ void write_resource(
 AppPaths make_app_paths() {
     AppPaths paths;
     paths.executable = executable_path();
-    paths.root = local_app_data() / "EngCoder";
+    paths.root = explicit_data_root().value_or(local_app_data() / "EngCoder");
     paths.packs = paths.root / "packs";
     paths.outputs = paths.root / "outputs";
     paths.cache = paths.root / "cache";

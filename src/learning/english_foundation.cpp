@@ -79,6 +79,28 @@ struct CandidateStorage final {
     const std::string_view value) {
     return memory::make_content_hash(domain, value, "");
 }
+[[nodiscard]] std::size_t hexadecimal_hash_bucket(
+    const std::string_view hash,
+    const std::size_t bucket_count) {
+    if (hash.empty() || bucket_count == 0U) {
+        throw std::invalid_argument("a hexadecimal curriculum hash and bucket count are required");
+    }
+    std::size_t bucket = 0U;
+    for (const auto character : hash) {
+        std::size_t digit = 0U;
+        if (character >= '0' && character <= '9') {
+            digit = static_cast<std::size_t>(character - '0');
+        } else if (character >= 'a' && character <= 'f') {
+            digit = static_cast<std::size_t>(character - 'a') + 10U;
+        } else if (character >= 'A' && character <= 'F') {
+            digit = static_cast<std::size_t>(character - 'A') + 10U;
+        } else {
+            throw std::invalid_argument("curriculum content hash is not hexadecimal");
+        }
+        bucket = (bucket * 16U + digit) % bucket_count;
+    }
+    return bucket;
+}
 [[nodiscard]] std::optional<core::json::Value> extract_json_object(
     const std::string_view text) {
     const auto begin = text.find('{');
@@ -115,6 +137,77 @@ void publish_file(const std::filesystem::path& path, const std::string_view text
         throw std::runtime_error("unable to publish curriculum state: " + error.message());
     }
 }
+void publish_files_transactionally(
+    const std::vector<std::pair<std::filesystem::path, std::string>>& files) {
+    struct StagedFile final {
+        std::filesystem::path target;
+        std::filesystem::path temporary;
+        std::filesystem::path backup;
+        bool backed_up{false};
+        bool installed{false};
+    };
+
+    const auto transaction = memory::make_episode_id();
+    std::vector<StagedFile> staged;
+    staged.reserve(files.size());
+    try {
+        for (const auto& [target, text] : files) {
+            std::filesystem::create_directories(target.parent_path());
+            auto item = StagedFile{
+                .target = target,
+                .temporary = std::filesystem::path(
+                    target.string() + "." + transaction + ".tmp"),
+                .backup = std::filesystem::path(
+                    target.string() + "." + transaction + ".bak"),
+            };
+            staged.push_back(std::move(item));
+            {
+                std::ofstream stream(staged.back().temporary, std::ios::binary | std::ios::trunc);
+                if (!stream) {
+                    throw std::runtime_error(
+                        "unable to stage curriculum manifest: " + target.string());
+                }
+                stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+                stream.flush();
+                if (!stream) {
+                    throw std::runtime_error(
+                        "unable to finish staged curriculum manifest: " + target.string());
+                }
+            }
+        }
+
+        for (auto& item : staged) {
+            if (std::filesystem::exists(item.target)) {
+                std::filesystem::rename(item.target, item.backup);
+                item.backed_up = true;
+            }
+        }
+        for (auto& item : staged) {
+            std::filesystem::rename(item.temporary, item.target);
+            item.installed = true;
+        }
+        for (const auto& item : staged) {
+            if (item.backed_up) {
+                std::error_code ignored;
+                std::filesystem::remove(item.backup, ignored);
+            }
+        }
+    } catch (...) {
+        for (auto item = staged.rbegin(); item != staged.rend(); ++item) {
+            std::error_code ignored;
+            if (item->installed) {
+                std::filesystem::remove(item->target, ignored);
+            }
+            if (item->backed_up && std::filesystem::exists(item->backup)) {
+                ignored.clear();
+                std::filesystem::rename(item->backup, item->target, ignored);
+            }
+            ignored.clear();
+            std::filesystem::remove(item->temporary, ignored);
+        }
+        throw;
+    }
+}
 void append_json(const std::filesystem::path& path, core::json::Value::Object object) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream stream(path, std::ios::binary | std::ios::app);
@@ -149,6 +242,48 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
         value.erase(0U, 3U);
     }
     return value;
+}
+[[nodiscard]] bool valid_utf8(const std::string_view value) noexcept {
+    for (std::size_t offset = 0U; offset < value.size();) {
+        const auto first = static_cast<unsigned char>(value[offset]);
+        if (first <= 0x7FU) {
+            ++offset;
+            continue;
+        }
+
+        std::size_t width = 0U;
+        std::uint32_t codepoint = 0U;
+        if (first >= 0xC2U && first <= 0xDFU) {
+            width = 2U;
+            codepoint = first & 0x1FU;
+        } else if (first >= 0xE0U && first <= 0xEFU) {
+            width = 3U;
+            codepoint = first & 0x0FU;
+        } else if (first >= 0xF0U && first <= 0xF4U) {
+            width = 4U;
+            codepoint = first & 0x07U;
+        } else {
+            return false;
+        }
+        if (offset + width > value.size()) {
+            return false;
+        }
+        for (std::size_t index = 1U; index < width; ++index) {
+            const auto continuation = static_cast<unsigned char>(value[offset + index]);
+            if ((continuation & 0xC0U) != 0x80U) {
+                return false;
+            }
+            codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+        }
+        if ((width == 3U && codepoint < 0x800U) ||
+            (width == 4U && codepoint < 0x10000U) ||
+            (codepoint >= 0xD800U && codepoint <= 0xDFFFU) ||
+            codepoint > 0x10FFFFU) {
+            return false;
+        }
+        offset += width;
+    }
+    return true;
 }
 [[nodiscard]] bool supported_source_extension(const std::filesystem::path& path) {
     const auto extension = lower_ascii(path.extension().string());
@@ -255,6 +390,24 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
         }
     }
     return false;
+}
+[[nodiscard]] std::string canonical_teacher_identity(
+    const models::ModelProfile& model) {
+    auto endpoint = lower_ascii(model.endpoint);
+    while (!endpoint.empty() && endpoint.back() == '/') {
+        endpoint.pop_back();
+    }
+    auto model_name = lower_ascii(model.model_name);
+    if (model_name.empty()) {
+        model_name = lower_ascii(model.id);
+    }
+    return endpoint + '|' + model_name;
+}
+[[nodiscard]] bool same_teacher_identity(
+    const models::ModelProfile& left,
+    const models::ModelProfile& right) {
+    return left.id == right.id ||
+           canonical_teacher_identity(left) == canonical_teacher_identity(right);
 }
 [[nodiscard]] CurriculumTeacherResponse default_completion(
     const FoundationBuildRequest& request,
@@ -391,7 +544,7 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
     const models::ModelProfile& generator,
     const models::ModelProfile& verifier,
     const std::stop_token stop_token) {
-    if (generator.id == verifier.id) {
+    if (same_teacher_identity(generator, verifier)) {
         return Review{.reason = "a teacher may not approve its own output"};
     }
     if (unsafe_curriculum_text(lesson.prompt, lesson.answer) ||
@@ -496,10 +649,9 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
     return attempt;
 }
 
-void persist_source_record(
-    const std::filesystem::path& root,
+[[nodiscard]] core::json::Value::Object source_record_object(
     const CurriculumSourceRecord& source) {
-    append_json(root / "sources.jsonl", {
+    return {
         {"id", source.id}, {"title", source.title}, {"origin", source.origin},
         {"permission", source.permission}, {"rights", std::string(to_string(source.rights))},
         {"content_hash", source.content_hash},
@@ -509,14 +661,25 @@ void persist_source_record(
         {"chunks", static_cast<double>(source.chunks)},
         {"held_out_chunks", static_cast<double>(source.held_out_chunks)},
         {"redistribution_permitted", source.redistribution_permitted},
-    });
+    };
 }
-void persist_chunk(const std::filesystem::path& root, const CurriculumChunk& chunk) {
-    append_json(root / "chunks.jsonl", {
+[[nodiscard]] core::json::Value::Object chunk_record_object(const CurriculumChunk& chunk) {
+    return {
         {"id", chunk.id}, {"source_id", chunk.source_id}, {"section", chunk.section},
         {"source_span", chunk.source_span}, {"content_hash", chunk.content_hash},
         {"split", chunk.held_out ? "held-out" : "training"}, {"text", chunk.text},
-    });
+    };
+}
+template <typename Records, typename Serializer>
+[[nodiscard]] std::string serialize_jsonl(
+    const Records& records,
+    Serializer&& serializer) {
+    std::string text;
+    for (const auto& record : records) {
+        text += core::json::stringify(core::json::Value(serializer(record)));
+        text.push_back('\n');
+    }
+    return text;
 }
 void persist_progress(const std::filesystem::path& root, const FoundationBuildProgress& progress) {
     const auto value = core::json::Value(core::json::Value::Object{
@@ -739,22 +902,9 @@ CurriculumPreparationResult prepare_english_foundation_sources(
         return result;
     }
     try {
-        std::filesystem::create_directories(curriculum_root);
-        if (rebuild) {
-            for (const auto* name : {
-                     "sources.jsonl", "chunks.jsonl", "competency-map.jsonl",
-                     "foundation-training.jsonl", "foundation-heldout.jsonl",
-                     "foundation-state.json",
-                     "foundation-evaluation.jsonl"}) {
-                std::error_code error;
-                std::filesystem::remove(curriculum_root / name, error);
-            }
-        }
-        // Source and chunk manifests describe the current admitted corpus, not
-        // a history of resume attempts. Rebuild them deterministically on every
-        // invocation while preserving the durable attempt/training ledgers.
-        publish_file(curriculum_root / "sources.jsonl", {});
-        publish_file(curriculum_root / "chunks.jsonl", {});
+        // Validate and stage the complete corpus in memory before touching any
+        // durable manifest or rebuild output. A bad later file must not erase a
+        // previously admitted, resumable foundation corpus.
         std::unordered_set<std::string> seen_chunks;
         for (std::size_t source_index = 0U; source_index < sources.size(); ++source_index) {
             const auto& input = sources[source_index];
@@ -763,10 +913,14 @@ CurriculumPreparationResult prepare_english_foundation_sources(
                 return result;
             }
             if (!std::filesystem::is_regular_file(input.path) || !supported_source_extension(input.path)) {
-                result.error = "foundation sources must be existing UTF-8 .txt or .md files: " + input.path.string();
+                result.error = "foundation sources must be existing UTF-8 .txt, .md, or .markdown files: " + input.path.string();
                 return result;
             }
             const auto raw = read_text_file(input.path);
+            if (!valid_utf8(raw)) {
+                result.error = "foundation source is not valid UTF-8: " + input.path.string();
+                return result;
+            }
             const auto normalized = sanitize_training_text(raw);
             if (normalized.empty()) {
                 result.error = "source is empty after normalization: " + input.path.string();
@@ -790,7 +944,7 @@ CurriculumPreparationResult prepare_english_foundation_sources(
                 const auto& [section_title, section_text] = sections[section_index];
                 const auto section_hash = stable_hash(record.id, section_title + section_text);
                 auto held_out = !sections.empty() &&
-                    (static_cast<unsigned char>(section_hash.back()) % 5U == 0U);
+                    hexadecimal_hash_bucket(section_hash, 5U) == 0U;
                 if (sections.size() == 1U && sources.size() >= 2U) {
                     // A one-section document stays entirely on one side. With
                     // multiple such documents, reserve the final document and
@@ -820,11 +974,9 @@ CurriculumPreparationResult prepare_english_foundation_sources(
                     };
                     ++record.chunks;
                     record.held_out_chunks += held_out ? 1U : 0U;
-                    persist_chunk(curriculum_root, chunk);
                     result.chunks.push_back(std::move(chunk));
                 }
             }
-            persist_source_record(curriculum_root, record);
             result.sources.push_back(std::move(record));
         }
         const auto training_chunks = std::ranges::count_if(result.chunks, [](const auto& chunk) {
@@ -840,6 +992,22 @@ CurriculumPreparationResult prepare_english_foundation_sources(
             result.error =
                 "document-level evaluation needs at least two chapters or two separate documents";
             return result;
+        }
+
+        const auto source_manifest = serialize_jsonl(result.sources, source_record_object);
+        const auto chunk_manifest = serialize_jsonl(result.chunks, chunk_record_object);
+        publish_files_transactionally({
+            {curriculum_root / "sources.jsonl", source_manifest},
+            {curriculum_root / "chunks.jsonl", chunk_manifest},
+        });
+        if (rebuild) {
+            for (const auto* name : {
+                     "competency-map.jsonl", "foundation-training.jsonl",
+                     "foundation-heldout.jsonl", "foundation-state.json",
+                     "foundation-evaluation.jsonl"}) {
+                std::error_code ignored;
+                std::filesystem::remove(curriculum_root / name, ignored);
+            }
         }
         result.succeeded = true;
     } catch (const std::exception& error) {
@@ -911,8 +1079,9 @@ FoundationBuildResult run_english_foundation_build(
     progress.message = "Preparing source manifest, semantic chunks, and held-out chapters.";
     publish_progress(on_progress, progress);
 
-    if (request.qwen.id.empty() || request.nemotron.id.empty() || request.qwen.id == request.nemotron.id) {
-        result.error = "the foundation build requires distinct Qwen and Nemotron model profiles";
+    if (request.qwen.id.empty() || request.nemotron.id.empty() ||
+        same_teacher_identity(request.qwen, request.nemotron)) {
+        result.error = "the foundation build requires distinct Qwen and Nemotron model identities";
         progress.stage = FoundationStage::failed;
         progress.message = result.error;
         publish_progress(on_progress, progress);
@@ -1199,7 +1368,9 @@ FoundationBuildResult run_english_foundation_build(
         return result;
     }
     learning_service.set_anchor_dataset(evaluation.path);
-    learning_service.request_skill_update("english-foundation");
+    learning_service.request_foundation_update(
+        request.curriculum_root / "foundation-training.jsonl",
+        evaluation.path);
     result.training_queued = true;
     progress.queued_weight_jobs = learning_service.pipeline_snapshot().queued_updates;
     progress.stage = FoundationStage::queued_training;

@@ -3,6 +3,7 @@
 #include "threadspire/ai/models/model_registry.hpp"
 
 #include <chrono>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -18,7 +19,8 @@ struct ProviderDiscoveryReport final {
 };
 
 [[nodiscard]] ProviderDiscoveryReport discover_local_models(
-    std::chrono::milliseconds timeout_per_endpoint = std::chrono::milliseconds(700));
+    std::chrono::milliseconds timeout_per_endpoint = std::chrono::milliseconds(700),
+    std::stop_token stop_token = {});
 
 [[nodiscard]] bool merge_discovered_models(
     ModelRegistry& registry,
