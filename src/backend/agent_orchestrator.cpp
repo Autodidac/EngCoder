@@ -83,7 +83,7 @@ namespace {
 [[nodiscard]] bool can_execute(
     const models::ModelProfile& model,
     const routing::TaskAnalysis& analysis) {
-    if (!model.enabled || model.reliability < 0.20) {
+    if (!model.enabled || !model.runtime_ready || model.reliability < 0.20) {
         return false;
     }
     if (analysis.kind == routing::TaskKind::conversation &&
@@ -246,25 +246,28 @@ AgentResult AgentOrchestrator::execute(
         return result;
     }
 
-    const auto minimum_compute_candidate =
-        active_options_.prefer_minimum_compute &&
-        (result.plan.mode == routing::RouteMode::cascade ||
-         result.plan.mode == routing::RouteMode::hedged) &&
-        active_analysis_.tier != routing::ComplexityTier::deep &&
-        !active_analysis_.needs_repository &&
-        !active_analysis_.needs_tools &&
-        active_analysis_.risk < 0.58 &&
-        active_analysis_.ambiguity < 0.48;
-    if (minimum_compute_candidate) {
-        auto stage = result.plan.stages.front();
+    // A foreground request has one answer owner. The router may still expose
+    // a richer decomposition for diagnostics and dedicated repository loops,
+    // but interactive Chat must not quietly send one prompt through planning,
+    // drafting, verification, or hedged model lanes. Pick the route's actual
+    // execution owner and contact another model only if the explicitly enabled
+    // automatic fallback policy observes a real failure.
+    if (result.plan.mode != routing::RouteMode::direct) {
+        const auto* selected_stage = result.plan.mode == routing::RouteMode::agentic
+            ? find_stage(result.plan, "execute")
+            : result.plan.mode == routing::RouteMode::hedged
+                ? find_stage(result.plan, "specialist-candidate")
+                : find_stage(result.plan, "draft");
+        auto stage = selected_stage == nullptr
+            ? result.plan.stages.front()
+            : *selected_stage;
         stage.role = "answer";
         stage.parallel = false;
         result.plan.mode = routing::RouteMode::direct;
         result.plan.stages = {std::move(stage)};
         result.plan.rationale =
-            "Interactive minimum-compute route: stream the fastest capable model directly. "
-            "Multi-model planning and review remain enabled for deep, ambiguous, tool-driven, "
-            "or repository-scale requests.";
+            "Foreground single-answer route: one selected model owns this response. "
+            "Another model may be contacted only after a real failure when automatic fallback is enabled.";
     }
 
     if (!active_options_.allow_automatic_fallback) {
@@ -773,9 +776,9 @@ std::string AgentOrchestrator::skill_for(const routing::TaskAnalysis& analysis) 
     case routing::TaskKind::code_debugging:
         return "cpp23-debugging";
     case routing::TaskKind::code_generation:
-        return "cpp23-generation";
+        return "cpp23-core";
     case routing::TaskKind::repository_task:
-        return "cpp23-repository";
+        return "cpp23-core";
     case routing::TaskKind::image_generation:
         return "image-generation";
     case routing::TaskKind::audio_generation:

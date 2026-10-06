@@ -48,6 +48,8 @@ constexpr int assistant_id = 5;
 constexpr int separator_id = 6;
 constexpr int byte_offset = 16;
 constexpr int byte_vocab_size = byte_offset + 256;
+constexpr std::string_view internal_model_format = "threadspire.internal.v1";
+constexpr std::string_view current_bootstrap_policy = "minimal-behavior-curriculum-v8";
 
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
@@ -338,6 +340,14 @@ struct ModelConfig final {
     std::vector<std::string> skills;
 };
 
+[[nodiscard]] bool manifest_is_ready_for_native_inference(const Value& manifest) {
+    return json::string_or(manifest.find("status")) == "trained" &&
+        json::bool_or(manifest.find("bootstrap_complete"), false) &&
+        json::bool_or(manifest.find("full_backbone_trained"), false) &&
+        json::bool_or(manifest.find("generation_ready"), false) &&
+        json::string_or(manifest.find("bootstrap_policy")) == current_bootstrap_policy;
+}
+
 struct SwiWeights final {
     TensorView gate;
     TensorView up;
@@ -434,17 +444,27 @@ public:
     explicit NativeModel(std::filesystem::path state_root)
         : state_root_(std::move(state_root)) {
         load_curated_responses();
+        std::error_code pointer_error;
+        const auto pointer_status = std::filesystem::symlink_status(
+            state_root_ / "models" / "internal" / "active.json",
+            pointer_error);
+        const auto active_pointer_present = !pointer_error &&
+            pointer_status.type() != std::filesystem::file_type::not_found;
         try {
             generation_path_ = resolve_generation();
+            requested_generation_ = generation_;
             manifest_ = json::parse(read_text(generation_path_ / "manifest.json"));
+            if (json::string_or(manifest_.find("format")) != internal_model_format ||
+                json::string_or(manifest_.find("generation")) != generation_) {
+                throw std::runtime_error("active model manifest is incompatible");
+            }
+            if (!manifest_is_ready_for_native_inference(manifest_)) {
+                throw std::runtime_error("active model generation is not ready for inference");
+            }
             config_ = load_config(generation_path_ / json::string_or(
                 manifest_.find("config_file"), "config.json"));
             weights_ = validated_weights_path();
             safetensors_ = std::make_unique<SafeTensorFile>(weights_);
-            if (json::string_or(manifest_.find("format")) != "threadspire.internal.v1" ||
-                json::string_or(manifest_.find("generation")) != generation_) {
-                throw std::runtime_error("active model manifest is incompatible");
-            }
             embedding_ = safetensors_->tensor("embedding.weight", {byte_vocab_size, config_.width});
             final_norm_ = safetensors_->tensor("final_norm.weight", {config_.width});
             for (std::size_t layer = 0; layer < config_.layers; ++layer) {
@@ -472,12 +492,25 @@ public:
                 blocks_.push_back(std::move(block));
             }
             neural_ready_ = true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& exception) {
+            if (active_pointer_present) {
+                if (requested_generation_.empty()) {
+                    requested_generation_ = generation_.empty()
+                        ? "<unresolved>"
+                        : generation_;
+                }
+                fallback_reason_ = exception.what();
+            }
             generation_ = "foundation";
             generation_path_.clear();
+            manifest_ = {};
+            config_ = {};
             weights_.clear();
             safetensors_.reset();
+            embedding_ = {};
+            final_norm_ = {};
             blocks_.clear();
+            neural_ready_ = false;
         }
     }
 
@@ -528,6 +561,13 @@ public:
     }
 
     [[nodiscard]] const std::string& generation() const noexcept { return generation_; }
+    [[nodiscard]] const std::string& requested_generation() const noexcept {
+        return requested_generation_;
+    }
+    [[nodiscard]] const std::string& fallback_reason() const noexcept {
+        return fallback_reason_;
+    }
+    [[nodiscard]] bool degraded() const noexcept { return !fallback_reason_.empty(); }
     [[nodiscard]] std::uintmax_t weights_bytes() const noexcept {
         if (!neural_ready_ || weights_.empty()) {
             return 0U;
@@ -1096,6 +1136,8 @@ private:
 
     std::filesystem::path state_root_;
     std::string generation_;
+    std::string requested_generation_;
+    std::string fallback_reason_;
     std::filesystem::path generation_path_;
     Value manifest_;
     ModelConfig config_;
@@ -1169,6 +1211,17 @@ private:
            << ",\"tokens_per_second\":" << tokens_per_second
            << ",\"elapsed_ms\":" << result.elapsed_ms << '}';
     return output.str();
+}
+
+[[nodiscard]] std::string health_json(const NativeModel& model) {
+    const auto& requested = model.requested_generation().empty()
+        ? model.generation()
+        : model.requested_generation();
+    return "{\"status\":\"ok\",\"engine\":\"engcoder-native-v1\",\"generation\":\"" +
+        json::escape(model.generation()) +
+        "\",\"requested_generation\":\"" + json::escape(requested) +
+        "\",\"degraded\":" + (model.degraded() ? "true" : "false") +
+        ",\"fallback_reason\":\"" + json::escape(model.fallback_reason()) + "\"}";
 }
 
 [[nodiscard]] std::string streaming_json(
@@ -1326,6 +1379,23 @@ void write_ready_file(const std::filesystem::path& path, const unsigned short po
     if (!valid_utf8(valid) || valid_utf8(overlong) || valid_utf8(surrogate)) {
         throw std::runtime_error("native UTF-8 validation contract failed");
     }
+    const auto ready_manifest = json::parse(
+        R"({"status":"trained","bootstrap_complete":true,"full_backbone_trained":true,"generation_ready":true,"bootstrap_policy":"minimal-behavior-curriculum-v8"})");
+    const auto incomplete_bootstrap = json::parse(
+        R"({"status":"trained","bootstrap_complete":false,"full_backbone_trained":true,"generation_ready":true,"bootstrap_policy":"minimal-behavior-curriculum-v8"})");
+    const auto unready_generation = json::parse(
+        R"({"status":"trained","bootstrap_complete":true,"full_backbone_trained":true,"generation_ready":false,"bootstrap_policy":"minimal-behavior-curriculum-v8"})");
+    const auto candidate_manifest = json::parse(
+        R"({"status":"trained-candidate","bootstrap_complete":true,"full_backbone_trained":true,"generation_ready":true,"bootstrap_policy":"minimal-behavior-curriculum-v8"})");
+    const auto stale_policy = json::parse(
+        R"({"status":"trained","bootstrap_complete":true,"full_backbone_trained":true,"generation_ready":true,"bootstrap_policy":"minimal-behavior-curriculum-v7"})");
+    if (!manifest_is_ready_for_native_inference(ready_manifest) ||
+        manifest_is_ready_for_native_inference(incomplete_bootstrap) ||
+        manifest_is_ready_for_native_inference(unready_generation) ||
+        manifest_is_ready_for_native_inference(candidate_manifest) ||
+        manifest_is_ready_for_native_inference(stale_policy)) {
+        throw std::runtime_error("native manifest readiness contract failed");
+    }
     const auto foundation_root = std::filesystem::temp_directory_path() /
         ("engcoder-native-foundation-contract-" + std::to_string(GetCurrentProcessId()));
     std::error_code cleanup_error;
@@ -1355,13 +1425,41 @@ void write_ready_file(const std::filesystem::path& path, const unsigned short po
     const auto approved = foundation.complete({{"user", "hello there"}}, "fast", 96U, 0.0F);
     const auto unknown = foundation.complete({{"user", "zzzxxyy"}}, "fast", 96U, 0.0F);
     const auto suppressed = foundation.complete({{"user", "obsolete answer"}}, "fast", 96U, 0.0F);
+    const auto rejected_generation = std::string{"g999999"};
+    const auto rejected_path = foundation_root / "models" / "internal" /
+        "generations" / rejected_generation;
+    std::filesystem::create_directories(rejected_path);
+    {
+        std::ofstream pointer(
+            foundation_root / "models" / "internal" / "active.json",
+            std::ios::binary);
+        pointer << R"({"generation":"g999999"})" << '\n';
+    }
+    {
+        std::ofstream manifest(rejected_path / "manifest.json", std::ios::binary);
+        manifest
+            << R"({"format":"threadspire.internal.v1","generation":"g999999","status":"trained","bootstrap_complete":true,"full_backbone_trained":true,"generation_ready":false,"bootstrap_policy":"minimal-behavior-curriculum-v8"})"
+            << '\n';
+    }
+    NativeModel degraded(foundation_root);
+    const auto degraded_health = health_json(degraded);
     std::filesystem::remove_all(foundation_root, cleanup_error);
     if (foundation.generation() != "foundation" || foundation.weights_bytes() != 0U ||
+        foundation.degraded() ||
         !curated.accepted || curated.text != "Reliable means consistently dependable or trustworthy." ||
         !approved.accepted || approved.text != "Hello there! What would you like to work on?" ||
         unknown.accepted || suppressed.accepted ||
         unknown.quality_reason != "the native foundation has not learned this request yet") {
         throw std::runtime_error("clean-install native foundation contract failed");
+    }
+    if (degraded.generation() != "foundation" ||
+        degraded.requested_generation() != rejected_generation ||
+        !degraded.degraded() ||
+        degraded.fallback_reason().find("not ready for inference") == std::string::npos ||
+        degraded_health.find("\"generation\":\"foundation\"") == std::string::npos ||
+        degraded_health.find("\"requested_generation\":\"g999999\"") == std::string::npos ||
+        degraded_health.find("\"degraded\":true") == std::string::npos) {
+        throw std::runtime_error("native degraded-generation health contract failed");
     }
     std::cout << "EngCoder native inference contract passed\n";
     return 0;
@@ -1449,9 +1547,7 @@ int wmain(const int count, wchar_t** values) {
                 const auto path = first.substr(first_space + 1U, second_space - first_space - 1U);
                 const auto body_offset = request->find("\r\n\r\n") + 4U;
                 if (method == "GET" && path == "/health") {
-                    respond(client, 200, "application/json",
-                        "{\"status\":\"ok\",\"engine\":\"engcoder-native-v1\",\"generation\":\"" +
-                        json::escape(model.generation()) + "\"}");
+                    respond(client, 200, "application/json", health_json(model));
                 } else if (method == "POST" && path == "/shutdown") {
                     respond(client, 200, "application/json", "{\"status\":\"stopping\"}");
                     stopping = true;

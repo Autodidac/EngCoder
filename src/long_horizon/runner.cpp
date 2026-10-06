@@ -675,7 +675,8 @@ Result run(const Request& request, const std::stop_token stop_token) {
         };
         return result;
     }
-    if (request.backend_base_url.empty() || !request.repair_model.enabled) {
+    if (request.backend_base_url.empty() || !request.repair_model.enabled ||
+        !request.repair_model.runtime_ready) {
         result.operation = {
             .state = util::OperationState::failed,
             .exit_code = -1,

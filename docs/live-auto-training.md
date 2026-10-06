@@ -27,6 +27,7 @@ The controls remain independent:
 - **Compile data and retrain model** forces a smaller pending verified batch when the normal microbatch has not filled.
 
 Disabling Live Auto stops an active live review pass but does not disable idle practice generation, delete accepted evidence, erase checkpoints, or change the selected foreground AI.
+Disabling idle practice generation does not stop an active Live Auto or measured-gap review pass.
 
 ## End-to-end state flow
 
@@ -42,10 +43,11 @@ one foreground AI completes a reply
   -> the model family that did not write the reply reviews it: accept, revise, reject, or needs-evidence
   -> an unchanged answer needs that one genuinely independent review
   -> a revised answer is confirmed by the other model family before acceptance
-  -> append the complete decision to logs/live-training-attempts.jsonl
   -> if a completed rejection identifies a reusable conversational skill gap, append only the failed prompt/answer as negative evidence
-  -> accepted behavior enters the normal admission classifier once
+  -> accepted behavior enters the normal admission classifier and durable episode store once
+  -> append the complete decision to logs/live-training-attempts.jsonl; accepted is terminal only after durable storage or a confirmed duplicate
   -> a diverse variation may be proposed and cross-checked
+  -> store an accepted variation before writing its terminal teacher-attempt slot; storage or review failure remains retry-pending
   -> eligible episodes increment the skill microbatch
   -> the persistent shadow trainer queues automatically at threshold
   -> candidate trains, evaluates, starts in isolation, and is promoted or rejected
@@ -158,7 +160,8 @@ Important persistent files:
 ## Failure behavior
 
 - Missing Qwen or Nemotron: the candidate remains queued and Activity names the missing family.
-- Reviewer cancellation, endpoint error, or malformed JSON: the audit records **retry pending**, the ledger cursor does not advance, and the same interaction is retried after a 30-second backoff. It is not trained or counted as rejected.
+- Reviewer cancellation, endpoint error, malformed JSON, or an incomplete review object (for example, `accept` without its numeric score): the audit records **retry pending**, the ledger cursor does not advance, and the same interaction is retried after a 30-second backoff. It is not trained or counted as rejected.
+- Accepted-record storage failure: record **retry pending**, preserve the bounded batch-start cursor, and do not write an accepted terminal slot. A retry skips terminal sibling slots and reruns only unresolved source/teacher/verifier work.
 - Revision without a second independent confirmer: retry pending; no learning decision is made.
 - Current fact without evidence: held as needs evidence.
 - Coding record without compiler and tests: held as needs evidence.

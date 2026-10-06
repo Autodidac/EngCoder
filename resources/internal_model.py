@@ -61,6 +61,33 @@ def manifest_uses_current_bootstrap_policy(manifest: dict[str, Any]) -> bool:
     return str(manifest.get("bootstrap_policy", "")) == BOOTSTRAP_POLICY
 
 
+def manifest_is_ready_for_inference(manifest: dict[str, Any]) -> bool:
+    """Return whether a trained generation satisfies every activation invariant."""
+
+    return bool(
+        manifest.get("status") == "trained"
+        and manifest.get("bootstrap_complete") is True
+        and manifest.get("full_backbone_trained") is True
+        and manifest.get("generation_ready") is True
+        and manifest_uses_current_bootstrap_policy(manifest)
+    )
+
+
+def _promotion_readiness_failures(manifest: dict[str, Any]) -> list[str]:
+    failures = [
+        field
+        for field in (
+            "bootstrap_complete",
+            "full_backbone_trained",
+            "generation_ready",
+        )
+        if manifest.get(field) is not True
+    ]
+    if not manifest_uses_current_bootstrap_policy(manifest):
+        failures.append("bootstrap_policy")
+    return failures
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -988,6 +1015,23 @@ def save_generation(
     generation_ready: bool = False,
     bootstrap_policy: str = BOOTSTRAP_POLICY,
 ) -> Path:
+    if promote and parent is not None:
+        if status != "trained":
+            raise RuntimeError(
+                "internal candidate is not ready for promotion: status must be trained"
+            )
+        promotion_manifest = {
+            "bootstrap_complete": bootstrap_complete,
+            "full_backbone_trained": full_backbone_trained,
+            "generation_ready": generation_ready,
+            "bootstrap_policy": bootstrap_policy,
+        }
+        failures = _promotion_readiness_failures(promotion_manifest)
+        if failures:
+            raise RuntimeError(
+                "internal candidate is not ready for promotion: "
+                + ", ".join(failures)
+            )
     root = internal_root(state_root)
     destination = root / "generations" / generation
     temporary = root / "generations" / (generation + ".tmp")
@@ -3201,7 +3245,13 @@ def train_candidate(
         eta_seconds=None,
     )
     model.to(device="cpu", dtype=torch.float32)
-    promoted = passed_evaluation and not defer_promotion
+    promotion_ready = bool(
+        passed_evaluation
+        and bootstrap_complete
+        and full_backbone_trained
+        and generation_ready
+    )
+    promoted = promotion_ready and not defer_promotion
     candidate_status = (
         "trained" if promoted else
         ("trained-candidate" if passed_evaluation else "candidate-rejected")
@@ -3267,6 +3317,8 @@ def train_candidate(
         "privacy_gate_passed": privacy_gate,
         "passed_evaluation": 1.0 if passed_evaluation else 0.0,
         "passed_evaluation_bool": passed_evaluation,
+        "promotion_ready": 1.0 if promotion_ready else 0.0,
+        "promotion_ready_bool": promotion_ready,
         "promoted": 1.0 if promoted else 0.0,
         "promoted_bool": promoted,
         "promotion_deferred": defer_promotion,
@@ -3396,13 +3448,23 @@ def promote_generation(
         raise ValueError("invalid internal generation identifier")
     root = internal_root(state_root)
     candidate_path = root / "generations" / generation
-    manifest = generation_manifest(candidate_path)
-    if str(manifest.get("parent", "")) != expected_parent:
-        raise RuntimeError("candidate parent does not match the requested expected parent")
-    if str(manifest.get("status", "")) not in {"trained-candidate", "trained"}:
-        raise RuntimeError("internal candidate has not passed evaluation")
-
     with _promotion_lock(state_root):
+        # Candidate directories can be replaced by another process. Read and
+        # validate under the same lock that publishes the active pointer so a
+        # previously checked manifest cannot be swapped before promotion.
+        manifest = generation_manifest(candidate_path)
+        if str(manifest.get("generation", "")) != generation:
+            raise RuntimeError("candidate manifest does not match its generation directory")
+        if str(manifest.get("parent", "")) != expected_parent:
+            raise RuntimeError("candidate parent does not match the requested expected parent")
+        if str(manifest.get("status", "")) not in {"trained-candidate", "trained"}:
+            raise RuntimeError("internal candidate has not passed evaluation")
+        readiness_failures = _promotion_readiness_failures(manifest)
+        if readiness_failures:
+            raise RuntimeError(
+                "internal candidate is not ready for promotion: "
+                + ", ".join(readiness_failures)
+            )
         current_path = resolve_active_generation(state_root)
         current_manifest = generation_manifest(current_path)
         current_generation = str(current_manifest.get("generation", ""))
@@ -3456,10 +3518,18 @@ def activate_generation(
     if Path(generation).name != generation or Path(expected_current).name != expected_current:
         raise ValueError("invalid internal generation identifier")
     target_path = internal_root(state_root) / "generations" / generation
-    target = generation_manifest(target_path)
-    if str(target.get("status", "")) != "trained":
-        raise RuntimeError("rollback target is not a trained internal generation")
     with _promotion_lock(state_root):
+        target = generation_manifest(target_path)
+        if str(target.get("generation", "")) != generation:
+            raise RuntimeError("rollback manifest does not match its generation directory")
+        if str(target.get("status", "")) != "trained":
+            raise RuntimeError("rollback target is not a trained internal generation")
+        readiness_failures = _promotion_readiness_failures(target)
+        if readiness_failures:
+            raise RuntimeError(
+                "rollback target is not ready for inference: "
+                + ", ".join(readiness_failures)
+            )
         current_path = resolve_active_generation(state_root)
         current = generation_manifest(current_path)
         current_generation = str(current.get("generation", ""))
@@ -3485,13 +3555,7 @@ def status_payload(state_root: Path) -> dict[str, Any]:
     try:
         path = resolve_active_generation(state_root)
         manifest = generation_manifest(path)
-        ready = bool(
-            manifest.get("status") == "trained"
-            and manifest.get("bootstrap_complete", False)
-            and manifest.get("full_backbone_trained", False)
-            and manifest.get("generation_ready", False)
-            and manifest_uses_current_bootstrap_policy(manifest)
-        )
+        ready = manifest_is_ready_for_inference(manifest)
         return {
             "initialized": True,
             "ready": ready,

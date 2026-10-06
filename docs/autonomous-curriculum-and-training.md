@@ -2,7 +2,7 @@
 
 ## Purpose
 
-EngCoder 0.9.1 separates four operations that had previously been easy to confuse:
+EngCoder 0.9.2 separates four operations that had previously been easy to confuse:
 
 1. **Build English Foundation** is an explicit, one-time, resumable curriculum build. Qwen designs the deep curriculum, Nemotron supplies breadth, and each model verifies material produced by the other.
 2. **Live Auto Training** continuously reviews successful conversations and turns reusable behavior into verified microbatches.
@@ -10,6 +10,8 @@ EngCoder 0.9.1 separates four operations that had previously been easy to confus
 4. **Software self-iteration** changes application source in an isolated repository transaction. It is not model training and is outside this curriculum pipeline.
 
 None of these operations imports Qwen or Nemotron weights. The teachers produce evidence. The optional Internal PyTorch Training pack uses that evidence to optimize EngCoder's own compact transformer.
+
+No missing component is installed implicitly. The bundled zero-weight native answer host runs directly from the verified release payload. Optional neural training, PEFT, image, and audio software is installed only after the user selects a complete package and confirms **Install selected package**. Runtime loading of an already installed teacher model is a separate operation and never downloads software or weights.
 
 ## What is learned
 
@@ -75,6 +77,8 @@ Qwen 3.8 27B is the deep curriculum architect. For each source section it produc
 
 Nemotron 3 Nano 4B is the high-throughput generator. It produces one to four short and medium variants per training lesson. Its concurrency adapts from one to four according to CPU use, available RAM, available GPU memory, and thermal pressure.
 
+Teacher discovery distinguishes installed from loaded. Normal Chat routes only to currently loaded, healthy models. Live Auto and the explicit foundation builder may ask an authorized loopback LM Studio server to load the exact locally installed Qwen or Nemotron identifier on demand. They never download a model, unload an existing model, or reconfigure an already loaded model. If the server refuses, disappears, or is cancelled, the affected work remains retry-pending with its original audit identity.
+
 The generator cannot be its own independent verifier:
 
 - Nemotron-generated records are verified by Qwen.
@@ -127,6 +131,8 @@ The first English foundation candidate:
 
 After the foundation is promoted, shared weights are frozen by default and bounded skill experts receive verified microbatches. This is scoped full-weight expert training, not LoRA. Qwen returns for an explicit rebuild, measured coverage gap, or difficult long-context lesson; Nemotron remains the normal conversational generator.
 
+The initial foundation owns one durable full-rank training request. Intermediate accepted examples may update progress and the compiled dataset, but they cannot enqueue a smaller incremental job that hides or strands the foundation request. Normal post-foundation microbatches continue to coalesce by bounded skill scope.
+
 ### Measured conversational gaps
 
 Live Auto does not wake Qwen merely because one answer was rejected. An independent reviewer must classify a completed rejection as a reusable conversational coverage gap; privacy, identity, unsupported/current facts, junk, and formatting failures are excluded. EngCoder deduplicates the failed prompt/answer into a separate negative-evidence ledger. Once three unprocessed gaps exist, Qwen proposes repairs one at a time and Nemotron verifies them. Only the independently verified replacement enters normal admission. The failed answer itself never becomes trusted memory or positive weight data. The gap ledger and cursor survive restart independently of live-interaction and seed-curriculum cursors.
@@ -135,11 +141,13 @@ The base application can still show 0 B neural weights. That means no candidate 
 
 ## Progression and routing
 
-Conversation is the first curriculum. Planning opens only after conversation has enough accepted evidence, a promoted scoped generation, and its validation threshold. Coding opens only after planning reaches the corresponding threshold; positive coding evidence also requires compiler and test results.
+Conversation is the first curriculum. Planning opens only after conversation has enough accepted evidence, a promoted scoped generation, and its validation threshold. Coding opens only after planning reaches the corresponding threshold. Positive code-generation, debugging, or repository evidence additionally requires an execution receipt with successful compiler and test results; teacher approval or plausible prose cannot make unexecuted code weight-eligible.
 
 Automatic routing never favors EngCoder merely because a model file exists. It accumulates accepted outcome evidence and still applies response-quality gates. Exact manual model selection remains authoritative and never enables silent fallback.
 
 ## Interface contract
+
+The Workspace uses a Codex-like task hierarchy: compact session and routing controls, a dominant conversation, reply-local review controls, the composer, and an inspectable run-details rail. A persistent activity card remains on every page, wraps current detail, and retains the last completed operation long enough to read it. The Activity page keeps the full operation and resource history. The responsive layout preserves useful conversation/composer height and avoids forcing primary work into cramped rows.
 
 The foundation panel always exposes:
 
@@ -167,7 +175,8 @@ Build, Pause, Resume, and Rebuild are explicit. A Chat request pauses the founda
 - No accepted document holdouts: do not queue weights.
 - No safe non-held-out behavior survives compilation: fail the candidate preparation; never train an empty or contaminated dataset.
 - Evidence ledger changes during compilation: discard the derived output and retry from stable source hashes.
-- Missing internal trainer: preserve evidence and show the pending job while weights remain 0 B.
+- Missing internal trainer: preserve evidence and show the pending job while weights remain 0 B. Name **Internal PyTorch Training**, list each missing required file (`runtime/Scripts/python.exe`, `backend/model_worker.py`, `backend/internal_model.py`, `backend/curriculum_guard.py`, and `backend/curriculum_compiler.py`), and point to the explicit package-selection/install action. Never prepare or install it automatically.
+- Missing or unloaded teacher: foreground routing ignores it. Authorized background work may request an exact on-demand load only from the loopback server; failure remains retry-pending and never triggers download, unload, or configuration changes.
 - Measured-gap teacher/reviewer failure: leave that bounded batch retry-pending and keep its durable cursor; never treat the failed answer as a reference.
 - Failed evaluation or host check: preserve the current working model and retain the candidate/audit result.
 - Foreground Chat: checkpoint and yield; resume the same candidate afterward.

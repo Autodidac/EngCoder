@@ -1,11 +1,13 @@
 module;
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <filesystem>
 #include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <vector>
 
 export module threadspire.scheduler;
 
@@ -17,6 +19,8 @@ export {
 namespace threadspire::ai::runtime {
 
 [[nodiscard]] bool backend_files_present(const app::AppPaths& paths) noexcept;
+[[nodiscard]] std::vector<std::string> missing_backend_files(
+    const app::AppPaths& paths);
 [[nodiscard]] bool native_inference_files_present(const app::AppPaths& paths) noexcept;
 [[nodiscard]] bool native_inference_source_available(const app::AppPaths& paths) noexcept;
 
@@ -71,13 +75,21 @@ public:
     [[nodiscard]] bool healthy(std::string& message) const;
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] std::string base_url() const;
+    [[nodiscard]] std::string serving_generation() const;
+    [[nodiscard]] std::string degradation_message() const;
     [[nodiscard]] std::filesystem::path log_path() const;
 
 private:
     app::AppPaths paths_;
     mutable std::mutex mutex_;
+    std::condition_variable lifecycle_cv_;
     platform::ManagedProcess process_;
+    bool starting_{false};
+    bool stopping_{false};
+    bool stop_requested_{false};
     std::string base_url_;
+    std::string serving_generation_;
+    std::string degradation_message_;
     std::filesystem::path log_path_;
 };
 

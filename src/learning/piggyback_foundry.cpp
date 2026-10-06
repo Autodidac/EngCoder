@@ -6,6 +6,7 @@ module;
 #include <future>
 #include <iterator>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@ struct SeedExample final {
     std::string prompt;
     std::string reference;
     std::string candidate_id;
+    std::string source_id;
     std::string source_model_id;
     std::string tool_trace_hash;
     std::string gap_reason;
@@ -46,6 +48,7 @@ struct Verification final {
 
 struct VariationAttempt final {
     std::size_t seed_index{0};
+    std::string slot_id;
     SeedExample seed;
     models::ModelProfile teacher;
     std::optional<models::ModelProfile> verifier;
@@ -54,6 +57,79 @@ struct VariationAttempt final {
     std::string error;
     Verification verification;
 };
+
+[[nodiscard]] std::string canonical_model_identity(
+    const models::ModelProfile& model);
+
+[[nodiscard]] std::string variation_slot_id(
+    const SeedExample& example,
+    const models::ModelProfile& teacher,
+    const models::ModelProfile& verifier,
+    const std::string_view target_skill) {
+    return "derived-slot-" + memory::make_content_hash(
+        std::string(target_skill),
+        example.source_id + "|" + canonical_model_identity(teacher),
+        canonical_model_identity(verifier));
+}
+
+[[nodiscard]] std::unordered_set<std::string> completed_variation_slots(
+    const std::filesystem::path& audit_log,
+    std::string& error) {
+    std::unordered_set<std::string> result;
+    error.clear();
+    std::error_code status_error;
+    const auto present = std::filesystem::is_regular_file(audit_log, status_error);
+    if (status_error) {
+        if (status_error == std::errc::no_such_file_or_directory) {
+            return result;
+        }
+        error = "Could not inspect the teacher-attempt audit log: " +
+            status_error.message();
+        return result;
+    }
+    if (!present) {
+        return result;
+    }
+    std::ifstream stream(audit_log, std::ios::binary);
+    if (!stream) {
+        error = "Could not open the teacher-attempt audit log.";
+        return result;
+    }
+    std::string line;
+    while (std::getline(stream, line)) {
+        std::string parse_error;
+        const auto record = core::json::try_parse(line, parse_error);
+        if (!record.has_value()) {
+            continue;
+        }
+        const auto slot_id = core::json::string_or(record->find("slot_id"));
+        const auto action = core::json::string_or(record->find("auto_action"));
+        if (!slot_id.empty() &&
+            (action == "accepted" || action == "rejected" || action == "excluded")) {
+            result.insert(slot_id);
+        }
+    }
+    if (stream.bad()) {
+        error = "Could not finish reading the teacher-attempt audit log.";
+        result.clear();
+    }
+    return result;
+}
+
+[[nodiscard]] std::size_t stable_assignment_index(
+    const std::string_view source_id,
+    const std::size_t assignment_count) noexcept {
+    constexpr std::uint64_t offset_basis = 1469598103934665603ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    auto hash = offset_basis;
+    for (const auto raw : source_id) {
+        hash ^= static_cast<unsigned char>(raw);
+        hash *= prime;
+    }
+    return assignment_count == 0U
+        ? 0U
+        : static_cast<std::size_t>(hash % assignment_count);
+}
 
 [[nodiscard]] std::string normalize_skill_id(const std::string_view value) {
     std::string normalized;
@@ -144,6 +220,17 @@ struct VariationAttempt final {
             maximum_output_tokens,
             temperature,
             stop_token);
+    }
+    if (models::is_managed_lm_studio_teacher(model)) {
+        const auto activation = models::ensure_managed_lm_studio_teacher_ready(
+            model,
+            std::chrono::minutes(2),
+            stop_token);
+        if (!activation.ready) {
+            return PiggybackCompletionResponse{
+                .error = activation.message,
+            };
+        }
     }
     backend::CompletionClient client;
     const auto result = client.complete(
@@ -270,6 +357,12 @@ struct VariationAttempt final {
         }
         if (!example.prompt.empty() && !example.reference.empty() &&
             (!restrict_to_target_domain || seed_matches_target(example, target_skill))) {
+            example.source_id = example.candidate_id.empty()
+                ? "derived-source-" + memory::make_content_hash(
+                    "piggyback-source-record",
+                    line,
+                    "")
+                : example.candidate_id;
             available.push_back(std::move(example));
         }
     }
@@ -394,9 +487,20 @@ struct VariationAttempt final {
         verification.reason = "Verifier returned malformed JSON.";
         return verification;
     }
-    verification.accepted = core::json::bool_or(document->find("accepted"), false);
-    verification.score = std::clamp(core::json::number_or(document->find("score")), 0.0, 1.0);
-    verification.reason = core::json::string_or(document->find("reason"));
+    const auto* accepted_value = document->find("accepted");
+    const auto* score_value = document->find("score");
+    const auto* reason_value = document->find("reason");
+    if (accepted_value == nullptr || !accepted_value->is_bool() ||
+        score_value == nullptr || !score_value->is_number() ||
+        reason_value == nullptr || !reason_value->is_string()) {
+        verification.retryable = true;
+        verification.reason =
+            "Verifier returned incomplete review JSON; accepted, score, and reason are required.";
+        return verification;
+    }
+    verification.accepted = core::json::bool_or(accepted_value, false);
+    verification.score = std::clamp(core::json::number_or(score_value), 0.0, 1.0);
+    verification.reason = core::json::string_or(reason_value);
     verification.accepted = verification.accepted &&
                             verification.score >= request.minimum_verifier_score;
     if (verification.reason.empty()) {
@@ -484,19 +588,40 @@ struct VariationAttempt final {
         verification.reason = "Reviewer returned malformed JSON.";
         return verification;
     }
-    const auto action = lower_ascii(core::json::string_or(document->find("action")));
-    verification.score = std::clamp(core::json::number_or(document->find("score")), 0.0, 1.0);
-    verification.reason = core::json::string_or(document->find("reason"));
+    const auto* action_value = document->find("action");
+    const auto* score_value = document->find("score");
+    const auto* answer_value = document->find("answer");
+    const auto* coverage_gap_value = document->find("coverage_gap");
+    const auto* reason_value = document->find("reason");
+    if (action_value == nullptr || !action_value->is_string() ||
+        score_value == nullptr || !score_value->is_number() ||
+        reason_value == nullptr || !reason_value->is_string() ||
+        (answer_value != nullptr && !answer_value->is_string()) ||
+        (coverage_gap_value != nullptr && !coverage_gap_value->is_bool())) {
+        verification.retryable = true;
+        verification.reason =
+            "Reviewer returned incomplete review JSON; action, numeric score, and reason are required.";
+        return verification;
+    }
+    const auto action = lower_ascii(core::json::string_or(action_value));
+    verification.score = std::clamp(core::json::number_or(score_value), 0.0, 1.0);
+    verification.reason = core::json::string_or(reason_value);
     if (action == "accept") {
         verification.accepted = verification.score >= request.minimum_verifier_score;
     } else if (allow_revision && action == "revise") {
-        verification.response = core::json::string_or(document->find("answer"));
+        if (answer_value == nullptr) {
+            verification.retryable = true;
+            verification.reason =
+                "Reviewer selected revise without supplying the required corrected answer.";
+            return verification;
+        }
+        verification.response = core::json::string_or(answer_value);
         verification.revised = !verification.response.empty();
     } else if (action == "needs-evidence") {
         verification.needs_evidence = true;
     }
     verification.coverage_gap = action == "reject" &&
-        core::json::bool_or(document->find("coverage_gap"), false);
+        core::json::bool_or(coverage_gap_value, false);
     if (verification.reason.empty()) {
         verification.reason = verification.accepted
             ? "Independent reviewer accepted the reusable live behavior."
@@ -563,6 +688,7 @@ struct VariationAttempt final {
             : (verification.accepted
                 ? "lora-incubation"
                 : (verification.needs_evidence ? "needs-evidence" : "quarantine")))},
+        {"source_id", example.source_id},
         {"tool_trace_hash", example.tool_trace_hash},
         {"created_unix_ms", static_cast<double>(created)},
     };
@@ -639,9 +765,11 @@ struct VariationAttempt final {
     const models::ModelProfile& teacher,
     const models::ModelProfile& verifier,
     const std::string_view target_skill,
+    std::string slot_id,
     const std::stop_token stop_token) {
     VariationAttempt attempt{
         .seed_index = seed_index,
+        .slot_id = std::move(slot_id),
         .seed = example,
         .teacher = teacher,
         .verifier = verifier,
@@ -679,15 +807,33 @@ struct VariationAttempt final {
             attempt.verification.reason = attempt.error;
             return attempt;
         }
-        attempt.candidate_prompt = core::json::string_or(document->find("prompt"));
-        attempt.candidate_response = core::json::string_or(document->find("answer"));
+        const auto* prompt_value = document->find("prompt");
+        const auto* answer_value = document->find("answer");
+        if (prompt_value == nullptr || !prompt_value->is_string() ||
+            answer_value == nullptr || !answer_value->is_string()) {
+            attempt.error =
+                "Teacher returned incomplete JSON; string prompt and answer fields are required.";
+            attempt.verification.retryable = true;
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
+        attempt.candidate_prompt = core::json::string_or(prompt_value);
+        attempt.candidate_response = core::json::string_or(answer_value);
+        if (attempt.candidate_prompt.empty() || attempt.candidate_response.empty()) {
+            attempt.error =
+                "Teacher returned incomplete JSON; prompt and answer must not be empty.";
+            attempt.verification.retryable = true;
+            attempt.verification.reason = attempt.error;
+            return attempt;
+        }
         attempt.candidate_prompt = sanitize_training_text(attempt.candidate_prompt);
         attempt.candidate_response = sanitize_training_response(
             attempt.candidate_response,
             teacher.id);
         if (attempt.candidate_prompt.empty() || attempt.candidate_response.empty()) {
             attempt.error =
-                "Teacher JSON omitted a usable prompt or answer after the training-only privacy, identity, and noise filter.";
+                "Teacher output was excluded by the training-only privacy, identity, and noise filter.";
+            attempt.verification.excluded = true;
             attempt.verification.reason = attempt.error;
             return attempt;
         }
@@ -727,6 +873,7 @@ struct VariationAttempt final {
     core::json::Value::Object record{
         {"id", "teacher-attempt-" + std::to_string(created) + "-" +
             std::to_string(attempt.seed_index) + "-" + attempt.teacher.id},
+        {"slot_id", attempt.slot_id},
         {"skill", std::string(target_skill)},
         {"prompt", attempt.candidate_prompt.empty() ? attempt.seed.prompt : attempt.candidate_prompt},
         {"response", attempt.candidate_response},
@@ -741,7 +888,9 @@ struct VariationAttempt final {
         {"eligible_for_training", false},
         {"score", attempt.verification.accepted ? attempt.verification.score : 0.0},
         {"verification_notes", attempt.verification.reason},
-        {"generation_error", attempt.error},
+        {"generation_error", attempt.verification.retryable
+            ? attempt.verification.reason
+            : attempt.error},
         {"provenance", request.measured_gap_analysis
             ? "measured-gap-qwen-audit"
             : "parallel-local-teacher-audit"},
@@ -755,6 +904,7 @@ struct VariationAttempt final {
             : (attempt.verification.excluded
                 ? "excluded"
                 : (attempt.verification.accepted ? "lora-incubation" : "quarantine"))},
+        {"source_id", attempt.seed.source_id},
         {"source_prompt", attempt.seed.prompt},
         {"trusted_reference", attempt.seed.reference},
         {"created_unix_ms", static_cast<double>(created)},
@@ -784,6 +934,17 @@ PiggybackResult run_piggyback_foundry(
     const std::stop_token stop_token) {
     PiggybackResult result;
     result.progress.target_skill = normalize_skill_id(request.target_skill);
+    result.progress.next_seed_offset = request.seed_offset;
+
+    const auto model_less = [](const models::ModelProfile& left,
+                               const models::ModelProfile& right) {
+        const auto left_identity = canonical_model_identity(left);
+        const auto right_identity = canonical_model_identity(right);
+        if (left_identity != right_identity) {
+            return left_identity < right_identity;
+        }
+        return left.id < right.id;
+    };
 
     std::vector<models::ModelProfile> teachers = request.teachers;
     if (teachers.empty() && !request.teacher.model_name.empty()) {
@@ -797,6 +958,7 @@ PiggybackResult run_piggyback_foundry(
             unique_teachers.push_back(teacher);
         }
     }
+    std::ranges::sort(unique_teachers, model_less);
 
     std::vector<models::ModelProfile> verifiers = request.verifiers;
     if (request.verifier.has_value() &&
@@ -805,6 +967,16 @@ PiggybackResult run_piggyback_foundry(
         })) {
         verifiers.push_back(*request.verifier);
     }
+    std::vector<models::ModelProfile> unique_verifiers;
+    for (const auto& verifier : verifiers) {
+        if (std::ranges::none_of(unique_verifiers, [&](const auto& existing) {
+                return same_model_identity(existing, verifier);
+            })) {
+            unique_verifiers.push_back(verifier);
+        }
+    }
+    std::ranges::sort(unique_verifiers, model_less);
+    verifiers = std::move(unique_verifiers);
 
     std::vector<std::pair<models::ModelProfile, models::ModelProfile>> assignments;
     for (const auto& teacher : unique_teachers) {
@@ -823,7 +995,6 @@ PiggybackResult run_piggyback_foundry(
     const auto generate_verified_variations =
         request.generate_teacher_variations && !assignments.empty();
 
-
     const auto examples = load_seed_examples(
         request.seed_dataset,
         request.maximum_examples,
@@ -839,9 +1010,11 @@ PiggybackResult run_piggyback_foundry(
 
     std::vector<SeedExample> variation_examples;
     variation_examples.reserve(examples.size());
+    auto retry_source_batch = false;
     for (const auto& example : examples) {
         if (stop_token.stop_requested()) {
             result.cancelled = true;
+            result.progress.next_seed_offset = request.seed_offset;
             result.progress.message = "Teacher-data generation cancelled.";
             publish_progress(on_progress, result.progress);
             return result;
@@ -927,49 +1100,97 @@ PiggybackResult run_piggyback_foundry(
 
             std::optional<memory::Episode> admitted_episode;
             auto original_already_stored = false;
+            auto original_stored_now = false;
             if (verification.accepted) {
-                memory::Episode candidate_episode{
-                    .id = {},
-                    .skill = target_skill_for(request, example),
-                    .prompt = example.prompt,
-                    .response = reviewed_response,
-                    .model_id = example.source_model_id,
-                    .score = verification.score,
-                    .compiler_passed = example.compiler_passed,
-                    .tests_passed = example.tests_passed,
-                    .human_accepted = false,
-                    .human_rejected = false,
-                    .deterministic_verified = example.compiler_passed && example.tests_passed,
-                    .reference_verified = true,
-                    .self_generated = true,
-                    .eligible_for_training = false,
-                    .verifier_model_id = confirmer != nullptr ? confirmer->id : reviewer->id,
-                    .verification_notes = verification.reason,
-                    .provenance = verification.revised
-                        ? "live-auto-training-revised"
-                        : "live-auto-training",
-                    .knowledge_destination = "lora-incubation",
-                    .content_hash = {},
-                    .correction = {},
-                    .tool_trace_hash = example.tool_trace_hash,
-                    .created_unix_ms = 0,
-                };
-                const auto admission = learning_service.preview(candidate_episode);
-                if (admission.duplicate) {
-                    original_already_stored = true;
-                    candidate_episode.prompt = admission.stored_prompt;
-                    candidate_episode.response = admission.stored_response;
-                    reviewed_response = candidate_episode.response;
-                } else if (!admission.would_store) {
+                try {
+                    memory::Episode candidate_episode{
+                        .id = {},
+                        .skill = target_skill_for(request, example),
+                        .prompt = example.prompt,
+                        .response = reviewed_response,
+                        .model_id = example.source_model_id,
+                        .score = verification.score,
+                        .compiler_passed = example.compiler_passed,
+                        .tests_passed = example.tests_passed,
+                        .human_accepted = false,
+                        .human_rejected = false,
+                        .deterministic_verified = example.compiler_passed && example.tests_passed,
+                        .reference_verified = true,
+                        .self_generated = true,
+                        .eligible_for_training = false,
+                        .verifier_model_id = confirmer != nullptr ? confirmer->id : reviewer->id,
+                        .verification_notes = verification.reason,
+                        .provenance = verification.revised
+                            ? "live-auto-training-revised"
+                            : "live-auto-training",
+                        .knowledge_destination = "lora-incubation",
+                        .content_hash = {},
+                        .correction = {},
+                        .tool_trace_hash = example.tool_trace_hash,
+                        .created_unix_ms = 0,
+                    };
+                    const auto admission = learning_service.preview(candidate_episode);
+                    if (admission.duplicate) {
+                        original_already_stored = true;
+                        candidate_episode.prompt = admission.stored_prompt;
+                        candidate_episode.response = admission.stored_response;
+                        reviewed_response = candidate_episode.response;
+                    } else if (!admission.would_store) {
+                        verification.accepted = false;
+                        verification.excluded = true;
+                        verification.reason = "Admission gate excluded the reviewed interaction: " +
+                            admission.reason;
+                    } else {
+                        candidate_episode.prompt = admission.stored_prompt;
+                        candidate_episode.response = admission.stored_response;
+                        reviewed_response = candidate_episode.response;
+                        admitted_episode = std::move(candidate_episode);
+                    }
+                } catch (const std::exception& error) {
                     verification.accepted = false;
-                    verification.excluded = true;
-                    verification.reason = "Admission gate excluded the reviewed interaction: " +
-                        admission.reason;
-                } else {
-                    candidate_episode.prompt = admission.stored_prompt;
-                    candidate_episode.response = admission.stored_response;
-                    reviewed_response = candidate_episode.response;
-                    admitted_episode = std::move(candidate_episode);
+                    verification.retryable = true;
+                    verification.excluded = false;
+                    verification.reason =
+                        "Could not inspect durable live-learning storage: " +
+                        std::string(error.what());
+                } catch (...) {
+                    verification.accepted = false;
+                    verification.retryable = true;
+                    verification.excluded = false;
+                    verification.reason =
+                        "Could not inspect durable live-learning storage; retry is required.";
+                }
+            }
+
+            if (verification.accepted && admitted_episode.has_value()) {
+                try {
+                    original_stored_now = learning_service.submit(*admitted_episode);
+                    if (!original_stored_now) {
+                        const auto persisted = learning_service.preview(*admitted_episode);
+                        if (persisted.duplicate) {
+                            original_already_stored = true;
+                            reviewed_response = persisted.stored_response;
+                        } else {
+                            verification.accepted = false;
+                            verification.retryable = true;
+                            verification.excluded = false;
+                            verification.reason =
+                                "The accepted live interaction could not be durably stored; retry is required.";
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    verification.accepted = false;
+                    verification.retryable = true;
+                    verification.excluded = false;
+                    verification.reason =
+                        "Durable live-learning storage failed; retry is required: " +
+                        std::string(error.what());
+                } catch (...) {
+                    verification.accepted = false;
+                    verification.retryable = true;
+                    verification.excluded = false;
+                    verification.reason =
+                        "Durable live-learning storage failed; retry is required.";
                 }
             }
 
@@ -984,12 +1205,15 @@ PiggybackResult run_piggyback_foundry(
                     confirmer,
                     verification)) {
                 result.error = "Could not append the live-training audit log.";
+                result.progress.next_seed_offset = request.seed_offset;
                 result.progress.message = result.error;
                 publish_progress(on_progress, result.progress);
                 return result;
             }
             if (verification.retryable) {
                 ++result.progress.retry_pending;
+                retry_source_batch = true;
+                result.progress.next_seed_offset = request.seed_offset;
                 result.progress.message =
                     "Live interaction retained for retry; no learning decision was made: " +
                     verification.reason;
@@ -1008,6 +1232,7 @@ PiggybackResult run_piggyback_foundry(
                         example,
                         verification.reason)) {
                     result.error = "Could not append the measured conversation-gap ledger.";
+                    result.progress.next_seed_offset = request.seed_offset;
                     result.progress.message = result.error;
                     publish_progress(on_progress, result.progress);
                     return result;
@@ -1046,9 +1271,7 @@ PiggybackResult run_piggyback_foundry(
                     result.progress.rejected_source_models.push_back(accepted_example.source_model_id);
                 }
             }
-            const auto stored = admitted_episode.has_value() &&
-                learning_service.submit(std::move(*admitted_episode));
-            if (stored) {
+            if (original_stored_now) {
                 ++result.progress.stored;
             }
             result.progress.message = original_already_stored
@@ -1077,38 +1300,53 @@ PiggybackResult run_piggyback_foundry(
                                   std::to_string(examples.size());
         publish_progress(on_progress, result.progress);
 
-        const auto trusted_stored = learning_service.submit(memory::Episode{
-            .id = {},
-            .skill = target_skill_for(request, example),
-            .prompt = example.prompt,
-            .response = example.reference,
-            .model_id = request.generate_teacher_variations
-                ? "bundled-trusted-seed"
-                : "trusted-jsonl-import",
-            .score = 0.99,
-            .compiler_passed = false,
-            .tests_passed = false,
-            .human_accepted = false,
-            .human_rejected = false,
-            .deterministic_verified = false,
-            .reference_verified = true,
-            .self_generated = false,
-            .eligible_for_training = false,
-            .verifier_model_id = request.generate_teacher_variations
-                ? "bundled-reference"
-                : "user-trusted-reference",
-            .verification_notes = request.generate_teacher_variations
-                ? "Bundled hand-reviewed reference example."
-                : "User-selected trusted JSONL reference example.",
-            .provenance = request.generate_teacher_variations
-                ? "trusted-seed-bootstrap"
-                : "trusted-custom-import",
-            .knowledge_destination = "lora-incubation",
-            .content_hash = {},
-            .correction = {},
-            .tool_trace_hash = {},
-            .created_unix_ms = 0,
-        });
+        auto trusted_stored = false;
+        try {
+            trusted_stored = learning_service.submit(memory::Episode{
+                .id = {},
+                .skill = target_skill_for(request, example),
+                .prompt = example.prompt,
+                .response = example.reference,
+                .model_id = request.generate_teacher_variations
+                    ? "bundled-trusted-seed"
+                    : "trusted-jsonl-import",
+                .score = 0.99,
+                .compiler_passed = false,
+                .tests_passed = false,
+                .human_accepted = false,
+                .human_rejected = false,
+                .deterministic_verified = false,
+                .reference_verified = true,
+                .self_generated = false,
+                .eligible_for_training = false,
+                .verifier_model_id = request.generate_teacher_variations
+                    ? "bundled-reference"
+                    : "user-trusted-reference",
+                .verification_notes = request.generate_teacher_variations
+                    ? "Bundled hand-reviewed reference example."
+                    : "User-selected trusted JSONL reference example.",
+                .provenance = request.generate_teacher_variations
+                    ? "trusted-seed-bootstrap"
+                    : "trusted-custom-import",
+                .knowledge_destination = "lora-incubation",
+                .content_hash = {},
+                .correction = {},
+                .tool_trace_hash = {},
+                .created_unix_ms = 0,
+            });
+        } catch (const std::exception& error) {
+            result.error = "Trusted seed storage failed: " + std::string(error.what());
+            result.progress.next_seed_offset = request.seed_offset;
+            result.progress.message = result.error;
+            publish_progress(on_progress, result.progress);
+            return result;
+        } catch (...) {
+            result.error = "Trusted seed storage failed.";
+            result.progress.next_seed_offset = request.seed_offset;
+            result.progress.message = result.error;
+            publish_progress(on_progress, result.progress);
+            return result;
+        }
         if (trusted_stored) {
             ++result.progress.trusted_seeded;
             ++result.progress.stored;
@@ -1117,6 +1355,12 @@ PiggybackResult run_piggyback_foundry(
     }
 
     if (!generate_verified_variations) {
+        if (request.generate_teacher_variations) {
+            // A requested derived pass without a distinct teacher/verifier pair
+            // is waiting, not complete. Keep the entire bounded batch eligible
+            // for the next run regardless of its source type.
+            result.progress.next_seed_offset = request.seed_offset;
+        }
         result.succeeded = result.progress.examined > 0U;
         result.progress.message = request.generate_teacher_variations
             ? (request.untrusted_live_examples
@@ -1128,6 +1372,9 @@ PiggybackResult run_piggyback_foundry(
     }
 
     if (variation_examples.empty()) {
+        if (retry_source_batch) {
+            result.progress.next_seed_offset = request.seed_offset;
+        }
         result.succeeded = result.progress.examined > 0U;
         result.progress.message = "Live review batch complete: no interaction passed the evidence gate.";
         publish_progress(on_progress, result.progress);
@@ -1135,11 +1382,22 @@ PiggybackResult run_piggyback_foundry(
     }
 
     const auto wave_capacity = std::max<std::size_t>(1U, result.progress.maximum_parallel);
+    std::string audit_scan_error;
+    auto completed_slots = completed_variation_slots(request.audit_log, audit_scan_error);
+    if (!audit_scan_error.empty()) {
+        result.error = std::move(audit_scan_error);
+        result.progress.next_seed_offset = request.seed_offset;
+        result.progress.message = result.error;
+        publish_progress(on_progress, result.progress);
+        return result;
+    }
+    std::unordered_set<std::string> scheduled_slots;
     auto retry_variation_batch = false;
     for (std::size_t wave_begin = 0; wave_begin < variation_examples.size();
          wave_begin += wave_capacity) {
         if (stop_token.stop_requested()) {
             result.cancelled = true;
+            result.progress.next_seed_offset = request.seed_offset;
             result.progress.message = "Teacher-data generation cancelled.";
             publish_progress(on_progress, result.progress);
             return result;
@@ -1149,12 +1407,29 @@ PiggybackResult run_piggyback_foundry(
         std::vector<std::future<VariationAttempt>> futures;
         futures.reserve(wave_end - wave_begin);
         for (auto index = wave_begin; index < wave_end; ++index) {
-            const auto assignment = assignments[index % assignments.size()];
             const auto example = variation_examples[index];
+            const auto assignment = assignments[stable_assignment_index(
+                example.source_id,
+                assignments.size())];
             const auto example_target = target_skill_for(request, example);
+            const auto slot_id = variation_slot_id(
+                example,
+                assignment.first,
+                assignment.second,
+                example_target);
+            if (completed_slots.contains(slot_id) ||
+                !scheduled_slots.insert(slot_id).second) {
+                continue;
+            }
             futures.push_back(std::async(
                 std::launch::async,
-                [request, example, index, assignment, target = example_target, stop_token] {
+                [request,
+                 example,
+                 index,
+                 assignment,
+                 target = example_target,
+                 slot_id,
+                 stop_token] {
                     return generate_variation(
                         request,
                         example,
@@ -1162,6 +1437,7 @@ PiggybackResult run_piggyback_foundry(
                         assignment.first,
                         assignment.second,
                         target,
+                        slot_id,
                         stop_token);
                 }));
         }
@@ -1172,62 +1448,149 @@ PiggybackResult run_piggyback_foundry(
         publish_progress(on_progress, result.progress);
 
         for (auto& future : futures) {
-            auto attempt = future.get();
+            VariationAttempt attempt;
+            try {
+                attempt = future.get();
+            } catch (const std::exception& error) {
+                result.error = "Teacher attempt failed before it could be audited: " +
+                    std::string(error.what());
+                result.progress.next_seed_offset = request.seed_offset;
+                result.progress.message = result.error;
+                publish_progress(on_progress, result.progress);
+                return result;
+            } catch (...) {
+                result.error = "Teacher attempt failed before it could be audited.";
+                result.progress.next_seed_offset = request.seed_offset;
+                result.progress.message = result.error;
+                publish_progress(on_progress, result.progress);
+                return result;
+            }
             ++result.progress.attempted;
             result.progress.current_prompt = attempt.candidate_prompt.empty()
                 ? attempt.seed.prompt
                 : attempt.candidate_prompt;
 
             std::optional<memory::Episode> admitted_episode;
+            auto stored = false;
+            auto duplicate_confirmed = false;
             if (attempt.verification.accepted) {
-                memory::Episode candidate_episode{
-                    .id = {},
-                    .skill = target_skill_for(request, attempt.seed),
-                    .prompt = attempt.candidate_prompt,
-                    .response = attempt.candidate_response,
-                    .model_id = attempt.teacher.id,
-                    .score = attempt.verification.score,
-                    .compiler_passed = false,
-                    .tests_passed = false,
-                    .human_accepted = false,
-                    .human_rejected = false,
-                    .deterministic_verified = false,
-                    .reference_verified = true,
-                    .self_generated = true,
-                    .eligible_for_training = false,
-                    .verifier_model_id = attempt.verifier.has_value()
-                        ? attempt.verifier->id
-                        : std::string{},
-                    .verification_notes = attempt.verification.reason,
-                    .provenance = request.measured_gap_analysis
-                        ? "measured-gap-qwen-teacher"
-                        : "parallel-local-teacher",
-                    .knowledge_destination = "lora-incubation",
-                    .content_hash = {},
-                    .correction = {},
-                    .tool_trace_hash = {},
-                    .created_unix_ms = 0,
-                };
-                const auto admission = learning_service.preview(candidate_episode);
-                if (!admission.would_store) {
+                try {
+                    memory::Episode candidate_episode{
+                        .id = {},
+                        .skill = target_skill_for(request, attempt.seed),
+                        .prompt = attempt.candidate_prompt,
+                        .response = attempt.candidate_response,
+                        .model_id = attempt.teacher.id,
+                        .score = attempt.verification.score,
+                        .compiler_passed = false,
+                        .tests_passed = false,
+                        .human_accepted = false,
+                        .human_rejected = false,
+                        .deterministic_verified = false,
+                        .reference_verified = true,
+                        .self_generated = true,
+                        .eligible_for_training = false,
+                        .verifier_model_id = attempt.verifier.has_value()
+                            ? attempt.verifier->id
+                            : std::string{},
+                        .verification_notes = attempt.verification.reason,
+                        .provenance = request.measured_gap_analysis
+                            ? "measured-gap-qwen-teacher"
+                            : "parallel-local-teacher",
+                        .knowledge_destination = "lora-incubation",
+                        .content_hash = {},
+                        .correction = {},
+                        .tool_trace_hash = {},
+                        .created_unix_ms = 0,
+                    };
+                    const auto admission = learning_service.preview(candidate_episode);
+                    if (admission.duplicate) {
+                        duplicate_confirmed = true;
+                        candidate_episode.prompt = admission.stored_prompt;
+                        candidate_episode.response = admission.stored_response;
+                        attempt.candidate_prompt = candidate_episode.prompt;
+                        attempt.candidate_response = candidate_episode.response;
+                    } else if (!admission.would_store) {
+                        attempt.verification.accepted = false;
+                        attempt.verification.excluded = true;
+                        attempt.verification.reason =
+                            "Admission gate excluded the generated example: " + admission.reason;
+                    } else {
+                        candidate_episode.prompt = admission.stored_prompt;
+                        candidate_episode.response = admission.stored_response;
+                        attempt.candidate_prompt = candidate_episode.prompt;
+                        attempt.candidate_response = candidate_episode.response;
+                        admitted_episode = std::move(candidate_episode);
+                    }
+                } catch (const std::exception& error) {
                     attempt.verification.accepted = false;
-                    attempt.verification.excluded = true;
+                    attempt.verification.retryable = true;
+                    attempt.verification.excluded = false;
                     attempt.verification.reason =
-                        "Admission gate excluded the generated example: " + admission.reason;
-                } else {
-                    candidate_episode.prompt = admission.stored_prompt;
-                    candidate_episode.response = admission.stored_response;
-                    attempt.candidate_prompt = candidate_episode.prompt;
-                    attempt.candidate_response = candidate_episode.response;
-                    admitted_episode = std::move(candidate_episode);
+                        "Could not inspect durable learning storage: " + std::string(error.what());
+                } catch (...) {
+                    attempt.verification.accepted = false;
+                    attempt.verification.retryable = true;
+                    attempt.verification.excluded = false;
+                    attempt.verification.reason =
+                        "Could not inspect durable learning storage; retry is required.";
                 }
+            }
+
+            if (attempt.verification.accepted && admitted_episode.has_value()) {
+                // Publish the positive episode before writing a terminal slot
+                // marker. If the append races with an equivalent writer, a
+                // second preview confirms that durable duplicate explicitly.
+                try {
+                    stored = learning_service.submit(*admitted_episode);
+                    if (!stored) {
+                        const auto persisted = learning_service.preview(*admitted_episode);
+                        if (persisted.duplicate) {
+                            duplicate_confirmed = true;
+                            attempt.candidate_prompt = persisted.stored_prompt;
+                            attempt.candidate_response = persisted.stored_response;
+                        } else {
+                            attempt.verification.accepted = false;
+                            attempt.verification.retryable = true;
+                            attempt.verification.excluded = false;
+                            attempt.verification.reason =
+                                "The independently accepted example could not be durably stored; retry is required.";
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    attempt.verification.accepted = false;
+                    attempt.verification.retryable = true;
+                    attempt.verification.excluded = false;
+                    attempt.verification.reason =
+                        "Durable learning storage failed; retry is required: " +
+                        std::string(error.what());
+                } catch (...) {
+                    attempt.verification.accepted = false;
+                    attempt.verification.retryable = true;
+                    attempt.verification.excluded = false;
+                    attempt.verification.reason =
+                        "Durable learning storage failed; retry is required.";
+                }
+            }
+
+            if (attempt.verification.accepted && !stored && !duplicate_confirmed) {
+                attempt.verification.accepted = false;
+                attempt.verification.retryable = true;
+                attempt.verification.excluded = false;
+                attempt.verification.reason =
+                    "The independently accepted example has no confirmed durable record; retry is required.";
             }
 
             if (!append_teacher_audit(request, attempt, result.progress.target_skill)) {
                 result.error = "Could not append the teacher-attempt audit log.";
+                result.progress.next_seed_offset = request.seed_offset;
                 result.progress.message = result.error;
                 publish_progress(on_progress, result.progress);
                 return result;
+            }
+
+            if (!attempt.verification.retryable) {
+                completed_slots.insert(attempt.slot_id);
             }
 
             if (!attempt.candidate_prompt.empty() && !attempt.candidate_response.empty()) {
@@ -1259,8 +1622,6 @@ PiggybackResult run_piggyback_foundry(
             }
 
             ++result.progress.verified;
-            const auto stored = admitted_episode.has_value() &&
-                learning_service.submit(std::move(*admitted_episode));
             if (stored) {
                 ++result.progress.stored;
                 if (request.measured_gap_analysis) {
@@ -1268,16 +1629,18 @@ PiggybackResult run_piggyback_foundry(
                 }
             }
             result.progress.message =
-                attempt.teacher.display_name + " produced an independently verified diverse example.";
+                attempt.teacher.display_name +
+                (duplicate_confirmed
+                    ? " produced an independently verified example already present in durable learning."
+                    : " produced an independently verified diverse example.");
             publish_progress(on_progress, result.progress);
         }
     }
 
-    if ((request.untrusted_live_examples || request.measured_gap_analysis) &&
-        retry_variation_batch) {
+    if (retry_source_batch || retry_variation_batch) {
         // Re-run the bounded source batch after backoff so a transient teacher
-        // or verifier failure cannot silently lose its derived example. Exact
-        // accepted episodes deduplicate on the retry.
+        // verifier, audit, or storage failure cannot silently lose a derived
+        // example. Exact accepted episodes deduplicate on the retry.
         result.progress.next_seed_offset = request.seed_offset;
     }
 

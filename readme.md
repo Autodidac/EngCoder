@@ -1,6 +1,6 @@
 # EngCoder
 
-EngCoder is a native Windows workbench for local AI. Chat, writing, coding, project work, tools, images, audio, files, streaming, cancellation, and per-reply review share one interface. The application can use its built-in engine, compatible AI servers on the same computer, or both when automatic backup is selected.
+EngCoder is a native Windows workbench for local AI. Its Codex-like hierarchy keeps the active conversation and composer dominant, leaves routing and run details inspectable, and keeps current and completed work visible without making the user hunt through pages. Chat, writing, coding, project work, tools, images, audio, files, streaming, cancellation, and per-reply review share the same task surface. The application can use its built-in engine, compatible AI servers on the same computer, or both when automatic backup is selected.
 
 ## The important distinction
 
@@ -45,6 +45,8 @@ EngCoder keeps four learning processes separate:
 
 **Build English Foundation** is a fifth, explicit one-time curriculum action. Qwen 27B maps long-form English and creates difficult lessons, Nemotron 4B creates fast variants, and each verifies the other's output. It accepts only public-domain, permissively licensed, or user-owned material. The teachers provide evidence only: EngCoder trains its own token-level parameters with the separate Internal PyTorch Training pack.
 
+When an authorized teacher is installed in a loopback LM Studio server but not loaded, background curriculum work may ask that server to load the exact Qwen or Nemotron model on demand with a bounded role-specific context request. EngCoder never downloads a teacher, unloads or reconfigures an already-loaded model, or treats an unloaded model as available for foreground Chat. A failed load or unavailable server remains a visible retry instead of silently changing the machine.
+
 Initial neural setup uses adaptive safety ceilings of 24,000, 36,000, or 50,000 steps for the Small, Medium, or Large profile. The trainer checks the full held-out and identity/privacy gate set at optimizer-aligned corpus boundaries and stops at the first passing boundary; reaching a ceiling without passing preserves the working model. Teachers never verify themselves, duplicate jobs coalesce, and rejected candidates cannot replace the working model.
 
 The curriculum compiler selects at most one authoritative record per behavior cluster, caps repeated identical answer targets while preserving competency coverage, gives hard corrections precedence, and prefers independently verified, concise records. Human diversity gates count distinct behaviors, not four phrasings of one behavior. Historical `curriculum_weight` values are stripped: one selected record produces one gradient sequence rather than silently multiplying itself. Incremental jobs train the fresh delta with bounded replay instead of replaying the entire accumulated ledger.
@@ -55,21 +57,21 @@ The visible counts are intentionally different. **User-taught replies** counts d
 
 ## Native base and optional packs
 
-The base application is C++23 and does not require Python or PyTorch. Python, PyTorch, Transformers/PEFT, image engines, and audio engines belong only to explicit capability packs. Installing or inspecting a pack never changes the selected AI, starts a task, or interrupts Chat.
+The base application is C++23 and does not require Python or PyTorch. The compact native answer host is a verified part of the portable release and runs directly from that release payload; startup does not copy it into application data or silently install a capability pack. Python, PyTorch, Transformers/PEFT, image engines, and audio engines belong only to explicit capability packs. EngCoder never installs an optional package automatically. Installing or inspecting a user-selected pack never changes the selected AI, starts a task, or interrupts Chat.
+
+If work reaches a missing capability, EngCoder keeps the job and evidence intact and reports the exact pack, missing files, and explicit install action. Internal neural training, for example, names **Internal PyTorch Training** and checks for `runtime/Scripts/python.exe`, `backend/model_worker.py`, `backend/internal_model.py`, `backend/curriculum_guard.py`, and `backend/curriculum_compiler.py`. Native answers remain available while that work is blocked.
 
 The native installed base—including the bundled compact native inference helper and required license notices, but excluding user-installed model weights and heavyweight capability packs—must remain at or below 100 MiB. Activity reports the native executable, neural weights, curriculum/learning data, optional software packs, outputs/cache, total disk use, free disk, and EngCoder-owned RAM separately.
 
 ## Unified interface
 
-- **Chat** contains the conversation, composer, task override, AI access group, exact AI selector, file attachments, Stop, per-reply controls, and the separate **Live Auto Training** checkbox.
-- **AI & Tools** contains connected-server discovery and backup connection/repair controls.
-- **Memory & Learning** contains permanent memory, automatic example collection, explicit neural retraining, live job state, and the complete searchable Training Library.
-- **Capabilities** shows what is ready and audits every optional pack without following links outside its root.
-- **Activity** shows outputs, logs, eight storage/RAM cards, growth, largest files/directories, pack projections, quotas, and safe cleanup.
+- **Workspace** uses a slim session and routing header above a dominant conversation. Per-reply review sits with the selected reply, the composer stays below it, and a right-hand run-details rail explains the selected source without squeezing the task surface.
+- **Settings** groups AI connections, permanent memory and learning controls, and optional capabilities. Missing software is reported as a requirement, not installed as a side effect.
+- **Activity** retains current and completed operations, outputs, logs, storage/RAM cards, growth, largest files/directories, pack projections, quotas, and safe cleanup.
 
-An always-visible two-line activity strip sits below every page. It reports active replies, repository work, media generation, discovery, tool connections, built-in setup/training, verified-example creation, test-model retraining, add-on changes, cleanup, storage/RAM measurement, queued learning, retry waits, and ready state without requiring a tab change.
+An always-visible activity card sits below every page and wraps rather than truncates important state. It reports active replies, repository work, media generation, discovery, tool connections, built-in setup/training, verified-example creation, candidate retraining, add-on changes, cleanup, storage/RAM measurement, queued learning, retry waits, and the last completed result. Short operations remain readable after they finish; detailed history stays on Activity.
 
-Window layout is DPI-aware. EngCoder vendors the backend-neutral EpochGui layout library, uses its splitter and rectangle primitives, and keeps Win32 ownership of windows, events, painting, text, and commands. Live resize events are coalesced to 30 Hz, unchanged bounds are served from an EpochGui rectangle cache, hidden pages are skipped, and native child-window movement is committed in one batch per parent. Drag completion performs one exact layout and full dark-tree redraw. Rounded cards are painted by the clipped page background, so decorative surfaces cannot repaint over selectors, labels, or buttons after Send, Retry, source changes, or resize.
+The default window is large enough to show a normal answer, review controls, and composer together, then clamps to the available work area on smaller displays. Window layout is DPI-aware. EngCoder vendors the backend-neutral EpochGui layout library, uses its splitter and rectangle primitives, and keeps Win32 ownership of windows, events, painting, text, and commands. Live resize events are coalesced, unchanged bounds are served from an EpochGui rectangle cache, hidden pages are skipped, and native child-window movement is committed in one batch per parent. Drag completion performs one exact layout and full dark-tree redraw. Rounded cards are painted by the clipped page background, so decorative surfaces cannot repaint over selectors, labels, or buttons after Send, Retry, source changes, or resize.
 
 ## C++23 modules
 
@@ -128,10 +130,11 @@ Legacy `%LOCALAPPDATA%\ThreadSpire` data is never recreated automatically. The o
 
 ## Verification
 
-The test suite covers module builds, unified routing, multimodal providers, package rollback and selection isolation, persistent/resumable training, atomic promotion, failed-host recovery, source-separated learning records, storage accounting, footprint limits, repository isolation, and safe reset-path validation.
+The test suite covers module builds, unified routing, loaded, unloaded, missing, failed, and cancelled teacher endpoints, multimodal providers, package rollback and selection isolation, persistent/resumable training, atomic promotion and degraded-host reporting, source-separated learning records, storage accounting, footprint limits, repository isolation, responsive-layout contracts, and safe reset-path validation.
 
 Useful documents:
 
+- [Release history](changelog.md)
 - [Start here](start-here.md)
 - [Architecture](architecture.md)
 - [Building](building.md)
@@ -150,6 +153,7 @@ Useful documents:
 - [0.8.0 autonomous curriculum and training report](docs/session-report-2026-08-30-0.8.0.md)
 - [0.9.0 measured-gap autonomy and durable-training report](docs/session-report-2026-09-05-0.9.0.md)
 - [0.9.1 minimal-curriculum validation report](docs/session-report-2026-09-05-0.9.1.md)
+- [0.9.2 task-first workbench release report](docs/session-report-2026-10-02-0.9.2.md)
 
 ## License
 

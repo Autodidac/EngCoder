@@ -62,7 +62,7 @@ namespace {
     const models::ModelProfile* best = nullptr;
     auto best_score = -std::numeric_limits<double>::infinity();
     for (const auto& model : registry.models()) {
-        if (!model.enabled || !predicate(model)) {
+        if (!model.enabled || !model.runtime_ready || !predicate(model)) {
             continue;
         }
         const auto score = model.quality * 0.62 + model.reliability * 0.28 +
@@ -116,7 +116,8 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
     auto best_latency = std::numeric_limits<double>::max();
 
     for (const auto& model : registry.models()) {
-        if (!model.enabled || model.quality < minimum_quality || model.reliability < 0.55 ||
+        if (!model.enabled || !model.runtime_ready ||
+            model.quality < minimum_quality || model.reliability < 0.55 ||
             is_internal_conversation_specialist(model, analysis)) {
             continue;
         }
@@ -145,7 +146,8 @@ const models::ModelProfile* AdaptiveRouter::fastest_capable(
     }
 
     for (const auto& model : registry.models()) {
-        if (!model.enabled || !satisfies_required_capabilities(model, analysis) ||
+        if (!model.enabled || !model.runtime_ready ||
+            !satisfies_required_capabilities(model, analysis) ||
             is_internal_conversation_specialist(model, analysis)) {
             continue;
         }

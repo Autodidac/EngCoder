@@ -41,16 +41,16 @@ constexpr wchar_t window_class_name[] = L"EngCoder.MainWindow";
 constexpr UINT_PTR update_timer = 1;
 constexpr UINT_PTR stream_timer = 2;
 constexpr UINT_PTR resize_layout_timer = 3;
-constexpr COLORREF window_color = RGB(20, 22, 27);
-constexpr COLORREF card_color = RGB(27, 30, 37);
-constexpr COLORREF edit_color = RGB(31, 34, 41);
-constexpr COLORREF button_color = RGB(40, 44, 53);
-constexpr COLORREF button_pressed_color = RGB(52, 58, 70);
-constexpr COLORREF selection_color = RGB(48, 75, 116);
-constexpr COLORREF border_color = RGB(70, 76, 89);
-constexpr COLORREF accent_color = RGB(92, 155, 255);
+constexpr COLORREF window_color = RGB(18, 19, 21);
+constexpr COLORREF card_color = RGB(25, 26, 29);
+constexpr COLORREF edit_color = RGB(30, 31, 35);
+constexpr COLORREF button_color = RGB(37, 39, 43);
+constexpr COLORREF button_pressed_color = RGB(47, 50, 55);
+constexpr COLORREF selection_color = RGB(38, 72, 64);
+constexpr COLORREF border_color = RGB(57, 60, 66);
+constexpr COLORREF accent_color = RGB(69, 190, 148);
 constexpr COLORREF text_color = RGB(236, 239, 244);
-constexpr COLORREF muted_text_color = RGB(171, 177, 190);
+constexpr COLORREF muted_text_color = RGB(164, 169, 180);
 constexpr COLORREF disabled_text_color = RGB(112, 118, 130);
 constexpr COLORREF transcript_user_color = RGB(124, 181, 255);
 constexpr COLORREF transcript_internal_color = RGB(115, 214, 157);
@@ -345,6 +345,7 @@ constexpr int logs_storage = 804;
 constexpr int logs_storage_header = 805;
 constexpr int logs_preview_cleanup = 806;
 constexpr int logs_run_cleanup = 807;
+constexpr int logs_live_header = 808;
 } // namespace id
 
 
@@ -735,9 +736,12 @@ void apply_transcript_tail_inset(
     if (::GetClientRect(handle, &client) == FALSE) {
         return;
     }
-    const auto horizontal = scaled(12, dpi);
-    const auto top = scaled(10, dpi);
-    const auto bottom = scaled(52, dpi);
+    const auto horizontal = scaled(10, dpi);
+    const auto top = scaled(8, dpi);
+    // Keep a small visual landing area without sacrificing the final reply.
+    // The previous 52 px inset could hide an entire short response at the
+    // default window height.
+    const auto bottom = scaled(20, dpi);
     RECT desired{
         horizontal,
         top,
@@ -779,9 +783,11 @@ void apply_transcript_tail_inset(
         1,
         static_cast<int>(::SendMessageW(handle, EM_GETLINECOUNT, 0, 0)));
     const auto visible_lines = edit_visible_line_capacity(handle);
+    constexpr auto transcript_tail_slack_lines = 2;
     viewport.follow_tail =
         viewport.selection_start == viewport.selection_end &&
-        viewport.first_visible_line + visible_lines >= line_count;
+        viewport.first_visible_line + visible_lines >=
+            line_count - transcript_tail_slack_lines;
     return viewport;
 }
 
@@ -886,6 +892,13 @@ void draw_dark_text(
     return text;
 }
 
+void draw_rounded_surface(
+    HDC device_context,
+    const RECT& rectangle,
+    int radius,
+    COLORREF fill,
+    COLORREF outline) noexcept;
+
 void draw_workspace_card(
     HDC device_context,
     const RECT& rectangle,
@@ -942,11 +955,11 @@ void draw_page_background(HWND page, HDC device_context) noexcept;
             detail.erase(detail.begin());
         }
 
-        const auto middle = rectangle.top + (rectangle.bottom - rectangle.top) * 45 / 100;
+        const auto title_height = scaled(24, ::GetDpiForWindow(item.hwndItem));
         auto title_rectangle = rectangle;
-        title_rectangle.bottom = middle;
+        title_rectangle.bottom = std::min(rectangle.bottom, rectangle.top + title_height);
         auto detail_rectangle = rectangle;
-        detail_rectangle.top = middle;
+        detail_rectangle.top = std::min(rectangle.bottom, title_rectangle.bottom + 2);
         const auto title_color = title.starts_with(L"ATTENTION")
             ? transcript_error_color
             : (title.starts_with(L"WORKING")
@@ -957,13 +970,13 @@ void draw_page_background(HWND page, HDC device_context) noexcept;
             title_rectangle,
             title,
             title_color,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         draw_dark_text(
             item.hDC,
             detail_rectangle,
             detail,
             muted_text_color,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
         return true;
     }
     if (item.CtlType == ODT_STATIC &&
@@ -1012,17 +1025,22 @@ void draw_page_background(HWND page, HDC device_context) noexcept;
 
     if (item.CtlType == ODT_BUTTON) {
         auto rectangle = item.rcItem;
-        fill_solid_rect(
+        const auto primary_action =
+            item.CtlID == id::chat_send || item.CtlID == id::coding_ask;
+        draw_rounded_surface(
             item.hDC,
             rectangle,
-            selected ? button_pressed_color : button_color);
-        frame_solid_rect(item.hDC, rectangle, focused ? accent_color : border_color);
+            scaled(8, ::GetDpiForWindow(item.hwndItem)),
+            primary_action
+                ? (selected ? transcript_internal_color : accent_color)
+                : (selected ? button_pressed_color : button_color),
+            focused || primary_action ? accent_color : border_color);
         ::InflateRect(&rectangle, -8, -2);
         draw_dark_text(
             item.hDC,
             rectangle,
             window_text(item.hwndItem),
-            foreground,
+            primary_action && !disabled ? window_color : foreground,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         return true;
     }
@@ -1137,6 +1155,22 @@ void draw_page_background(HWND page, HDC device_context) noexcept;
 
 [[nodiscard]] bool internal_host_startable(const AppPaths& paths) {
     return internal_model_ready(paths) && runtime::native_inference_source_available(paths);
+}
+
+[[nodiscard]] std::wstring missing_training_requirements_text(
+    const AppPaths& paths) {
+    const auto missing = runtime::missing_backend_files(paths);
+    if (missing.empty()) {
+        return L"none";
+    }
+    std::wstring result;
+    for (const auto& requirement : missing) {
+        if (!result.empty()) {
+            result += L"; ";
+        }
+        result += widen(requirement);
+    }
+    return result;
 }
 
 [[nodiscard]] bool training_pack_payload_ready(
@@ -1700,16 +1734,17 @@ void move_control(
     }
 }
 
-void draw_workspace_card(
+void draw_rounded_surface(
     const HDC device_context,
     const RECT& rectangle,
     const int radius,
-    const COLORREF accent) noexcept {
+    const COLORREF fill,
+    const COLORREF outline) noexcept {
     if (::IsRectEmpty(&rectangle) != FALSE) {
         return;
     }
-    const auto brush = ::CreateSolidBrush(card_color);
-    const auto pen = ::CreatePen(PS_SOLID, 1, border_color);
+    const auto brush = ::CreateSolidBrush(fill);
+    const auto pen = ::CreatePen(PS_SOLID, 1, outline);
     if (brush == nullptr || pen == nullptr) {
         if (brush != nullptr) {
             static_cast<void>(::DeleteObject(brush));
@@ -1734,6 +1769,19 @@ void draw_workspace_card(
     static_cast<void>(::SelectObject(device_context, previous_pen));
     static_cast<void>(::DeleteObject(brush));
     static_cast<void>(::DeleteObject(pen));
+}
+
+void draw_workspace_card(
+    const HDC device_context,
+    const RECT& rectangle,
+    const int radius,
+    const COLORREF accent) noexcept {
+    draw_rounded_surface(
+        device_context,
+        rectangle,
+        radius,
+        card_color,
+        border_color);
 
     auto accent_rectangle = rectangle;
     accent_rectangle.left += 1;
@@ -1889,6 +1937,8 @@ LRESULT CALLBACK page_host_subclass(
             return model.enabled &&
                    !models::is_internal_model(model) &&
                    model.teacher &&
+                   (model.runtime_ready ||
+                    models::is_managed_lm_studio_teacher(model)) &&
                    models::has_capability(model, "chat");
         });
 }
@@ -1975,14 +2025,53 @@ LRESULT CALLBACK page_host_subclass(
     return live_training_model_family(model) != 0;
 }
 
+struct LiveTrainingModelAvailability final {
+    bool qwen_configured{false};
+    bool qwen_ready{false};
+    bool nemotron_configured{false};
+    bool nemotron_ready{false};
+
+    [[nodiscard]] bool pair_configured() const noexcept {
+        return qwen_configured && nemotron_configured;
+    }
+    [[nodiscard]] bool pair_ready() const noexcept {
+        return qwen_ready && nemotron_ready;
+    }
+};
+
+[[nodiscard]] LiveTrainingModelAvailability live_training_availability(
+    const models::ModelRegistry& registry) {
+    LiveTrainingModelAvailability result;
+    for (const auto& model : registry.models()) {
+        if (!model.enabled || !models::has_capability(model, "chat")) {
+            continue;
+        }
+        const auto family = live_training_model_family(model);
+        if (family == 1) {
+            result.qwen_configured = true;
+            result.qwen_ready = result.qwen_ready || model.runtime_ready;
+        } else if (family == 2) {
+            result.nemotron_configured = true;
+            result.nemotron_ready = result.nemotron_ready || model.runtime_ready;
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] const wchar_t* live_teacher_state(
+    const bool configured,
+    const bool ready) noexcept {
+    return ready ? L"loaded" : (configured ? L"available to load" : L"not found");
+}
+
 [[nodiscard]] std::string skill_for(const routing::TaskAnalysis& analysis) {
     switch (analysis.kind) {
     case routing::TaskKind::code_debugging:
         return "cpp23-debugging";
     case routing::TaskKind::code_generation:
-        return "cpp23-generation";
+        return "cpp23-core";
     case routing::TaskKind::repository_task:
-        return "cpp23-repository";
+        return "cpp23-core";
     case routing::TaskKind::image_generation:
         return "image-generation";
     case routing::TaskKind::audio_generation:
@@ -3080,10 +3169,10 @@ bool MainWindow::create(const int show_command) {
     const auto work_height = std::max(1L, work_area.bottom - work_area.top);
     const auto initial_width = std::max(
         std::min(scaled(980, initial_dpi), static_cast<int>(work_width)),
-        std::min(scaled(1180, initial_dpi), static_cast<int>(work_width * 92 / 100)));
+        std::min(scaled(1320, initial_dpi), static_cast<int>(work_width * 92 / 100)));
     const auto initial_height = std::max(
         std::min(scaled(680, initial_dpi), static_cast<int>(work_height)),
-        std::min(scaled(820, initial_dpi), static_cast<int>(work_height * 92 / 100)));
+        std::min(scaled(900, initial_dpi), static_cast<int>(work_height * 92 / 100)));
 
     window_ = ::CreateWindowExW(
         0,
@@ -3173,6 +3262,24 @@ LRESULT MainWindow::handle_message(
         } else {
             information->ptMinTrackSize.x = scaled(980, dpi_);
             information->ptMinTrackSize.y = scaled(680, dpi_);
+        }
+        MONITORINFO monitor_information{};
+        monitor_information.cbSize = sizeof(monitor_information);
+        if (::GetMonitorInfoW(
+                ::MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST),
+                &monitor_information) != FALSE) {
+            const auto work_width = std::max(
+                1L,
+                monitor_information.rcWork.right -
+                    monitor_information.rcWork.left);
+            const auto work_height = std::max(
+                1L,
+                monitor_information.rcWork.bottom -
+                    monitor_information.rcWork.top);
+            information->ptMinTrackSize.x = std::min<LONG>(
+                information->ptMinTrackSize.x, work_width);
+            information->ptMinTrackSize.y = std::min<LONG>(
+                information->ptMinTrackSize.y, work_height);
         }
         return 0;
     }
@@ -3566,8 +3673,8 @@ void MainWindow::create_controls() {
     load_models_editor();
     update_skill_report();
     update_learning_report();
-    // Automatic setup is coordinated independently of model selection. It yields to
-    // active work and never prevents Chat from using another connected AI.
+    // Already-installed components are coordinated independently of model selection.
+    // Optional packages always require an explicit user installation action.
     drive_automatic_lifecycle();
     discover_local_ai();
     if (!saved_mcp.empty()) {
@@ -3588,13 +3695,13 @@ void MainWindow::create_chat_page() {
             0, identifier, parent);
     }
 
-    create_control(L"STATIC", L"Chat", WS_CHILD | WS_VISIBLE, 0, id::chat_session_label, parent);
+    create_control(L"STATIC", L"Chats", WS_CHILD | WS_VISIBLE, 0, id::chat_session_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::chat_session, parent);
     create_control(
-        L"BUTTON", L"Delete chat", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Delete", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_delete_session, parent);
 
     create_control(L"STATIC", L"Action", WS_CHILD | WS_VISIBLE, 0, id::chat_mode_label, parent);
@@ -3617,7 +3724,7 @@ void MainWindow::create_chat_page() {
         mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tools")));
     static_cast<void>(::SendMessageW(mode, CB_SETCURSEL, 0, 0));
 
-    create_control(L"STATIC", L"AI access", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
+    create_control(L"STATIC", L"Source", WS_CHILD | WS_VISIBLE, 0, id::chat_source_label, parent);
     const auto source = create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         WS_EX_CLIENTEDGE, id::chat_source, parent);
@@ -3633,7 +3740,7 @@ void MainWindow::create_chat_page() {
         static_cast<WPARAM>(inference_source_),
         0));
 
-    create_control(L"STATIC", L"AI", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
+    create_control(L"STATIC", L"Model", WS_CHILD | WS_VISIBLE, 0, id::chat_model_label, parent);
     create_control(
         L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
         CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -3642,11 +3749,11 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_discover, parent);
     create_control(
-        L"BUTTON", L"AI & tools…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"AI settings", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_open_models, parent);
     create_control(
-        L"STATIC", L"Using: checking available AI • Built-in AI: checking automatic setup",
-        WS_CHILD | WS_VISIBLE, 0, id::chat_backend, parent);
+        L"STATIC", L"AI status\r\nChecking available answer engines…",
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_backend, parent);
 
     create_control(
         L"STATIC", L"Repository",
@@ -3663,11 +3770,7 @@ void MainWindow::create_chat_page() {
         0, id::chat_response_label, parent);
     create_control(
         transcript_control_class(),
-        L"Type a message below. EngCoder automatically uses the best AI that is ready.\r\n\r\n"
-        L"OTHER AI APPS\r\n"
-        L"EngCoder finds and uses compatible AI apps already running on this computer.\r\n\r\n"
-        L"BUILT-IN AI\r\n"
-        L"Setup, learning, recovery, and startup happen automatically in the background.",
+        L"Start a conversation below. EngCoder will use the selected local answer engine and keep run details visible at the right.",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::chat_response, parent);
@@ -3694,7 +3797,7 @@ void MainWindow::create_chat_page() {
         L"BUTTON", L"Retry", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_retry, parent);
     create_control(
-        L"BUTTON", L"Learn?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Learning preview", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_learning_preview, parent);
     create_control(
         L"BUTTON", L"Include earlier chat in next reply",
@@ -3743,10 +3846,10 @@ void MainWindow::create_chat_page() {
         0, id::chat_open_output, parent);
 
     create_control(
-        L"STATIC", L"How it will run", WS_CHILD | WS_VISIBLE,
+        L"STATIC", L"Run details", WS_CHILD | WS_VISIBLE,
         0, id::chat_plan_label, parent);
     create_control(
-        L"BUTTON", L"Why this AI?", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Explain route", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::chat_route, parent);
     create_control(
         L"EDIT", L"Waiting for a message.", WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -3763,8 +3866,8 @@ void MainWindow::create_chat_page() {
         L"Live Auto Training is on. Every decision appears in Activity and the Training Library.",
         WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_learning_status, parent);
     create_control(
-        L"STATIC", L"Optional tools: not connected",
-        WS_CHILD | SS_EDITCONTROL, 0, id::chat_mcp_status, parent);
+        L"STATIC", L"Tools\r\nNo optional tools connected",
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::chat_mcp_status, parent);
     update_response_turn_controls();
 }
 
@@ -3865,13 +3968,13 @@ void MainWindow::create_models_page() {
         L"STATIC", L"Built-in AI",
         WS_CHILD | WS_VISIBLE, 0, id::models_backend_header, parent);
     create_control(
-        L"BUTTON", L"Keep built-in AI ready automatically",
+        L"BUTTON", L"Keep installed built-in AI ready automatically",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, id::models_automation_toggle, parent);
     set_checked(id::models_automation_toggle, automatic_lifecycle_enabled_);
     create_control(
         L"STATIC", L"Built-in AI is not installed.",
-        WS_CHILD | WS_VISIBLE, 0, id::models_internal_status, parent);
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::models_internal_status, parent);
     const auto progress = create_control(
         PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
         0, id::models_progress, parent);
@@ -3889,7 +3992,7 @@ void MainWindow::create_models_page() {
         static_cast<LPARAM>(accent_color)));
     create_control(
         L"STATIC", L"EngCoder is checking what is ready.",
-        WS_CHILD | WS_VISIBLE, 0, id::models_progress_detail, parent);
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::models_progress_detail, parent);
 
     create_control(
         L"STATIC", L"Other AI apps on this computer",
@@ -3975,16 +4078,16 @@ void MainWindow::create_models_page() {
         L"BUTTON", L"Continue setup", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_internal_bootstrap, parent);
     create_control(
-        L"STATIC", L"Setup files",
+        L"STATIC", L"Internal PyTorch Training — optional package required for neural learning",
         WS_CHILD | WS_VISIBLE, 0, id::models_python_label, parent);
     create_control(
         L"EDIT", selected_pack_source_.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE, id::models_python, parent);
     create_control(
-        L"BUTTON", L"Choose folder…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Choose package…", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_browse, parent);
     create_control(
-        L"BUTTON", L"Replace setup files", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"BUTTON", L"Install selected package", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_install, parent);
     create_control(
         L"BUTTON", L"Check setup", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -3996,8 +4099,8 @@ void MainWindow::create_models_page() {
         L"BUTTON", L"Stop built-in AI", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, id::models_stop, parent);
     create_control(
-        L"STATIC", L"No backup action has run. Built-in AI uses only local model files.",
-        WS_CHILD | WS_VISIBLE, 0, id::models_status, parent);
+        L"STATIC", L"Nothing installs automatically. Choose a verified package folder, then select Install selected package.",
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL, 0, id::models_status, parent);
 
     create_control(
         L"STATIC", L"Saved AI list",
@@ -4448,6 +4551,9 @@ void MainWindow::create_logs_page() {
         ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         WS_EX_CLIENTEDGE, id::logs_storage, parent);
     create_control(
+        L"STATIC", L"Live operation log",
+        WS_CHILD | WS_VISIBLE, 0, id::logs_live_header, parent);
+    create_control(
         L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
         ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
         WS_EX_CLIENTEDGE, id::logs_view, parent);
@@ -4466,10 +4572,10 @@ void MainWindow::layout_controls() {
     if (client_width <= 0 || client_height <= 0) {
         return;
     }
-    const auto margin = scaled(14, dpi_);
-    const auto status_height = scaled(26, dpi_);
-    const auto global_activity_height = scaled(56, dpi_);
-    const auto activity_gap = scaled(8, dpi_);
+    const auto margin = scaled(16, dpi_);
+    const auto status_height = scaled(24, dpi_);
+    const auto global_activity_height = scaled(82, dpi_);
+    const auto activity_gap = scaled(10, dpi_);
     const auto global_activity_y = std::max(
         margin,
         client_height - status_height - global_activity_height);
@@ -4628,7 +4734,7 @@ void MainWindow::layout_controls() {
     const auto gap = scaled(10, dpi_);
     const auto row = scaled(40, dpi_);
     const auto button = scaled(144, dpi_);
-    const auto surface_padding = scaled(12, dpi_);
+    const auto surface_padding = scaled(16, dpi_);
     const auto compact_vertical = height < scaled(760, dpi_);
 
     // The root shell and every page host now have their final bounds. Queue
@@ -4637,22 +4743,21 @@ void MainWindow::layout_controls() {
     {
     LayoutBatch layout_batch{192};
 
-    // Primary workspace: connection, model, conversation, coding mode, and learning state
-    // are intentionally visible without requiring another tab.
+    // Primary workspace: keep chat selection and routing in a compact two-row
+    // toolbar so the conversation and composer remain the visual center.
     move_control(
         control(id::chat_session_label),
         surface_padding,
         surface_padding,
-        scaled(40, dpi_),
+        scaled(48, dpi_),
         row);
-    const auto chat_delete_width = scaled(108, dpi_);
+    const auto chat_delete_width = scaled(88, dpi_);
     move_control(
         control(id::chat_session),
-        surface_padding + scaled(44, dpi_),
+        surface_padding + scaled(52, dpi_),
         surface_padding,
-        std::max(
-            scaled(220, dpi_),
-            width - surface_padding * 2 - scaled(44, dpi_) - chat_delete_width - gap),
+        std::max(1,
+            width - surface_padding * 2 - scaled(52, dpi_) - chat_delete_width - gap),
         row + scaled(220, dpi_));
     move_control(
         control(id::chat_delete_session),
@@ -4663,55 +4768,50 @@ void MainWindow::layout_controls() {
 
     const auto workspace_top = surface_padding + row + gap;
     set_window_visibility(control(id::chat_mode_label), false);
+    const auto compact_toolbar = width < scaled(1050, dpi_);
     auto workspace_x = surface_padding;
-    move_control(control(id::chat_source_label), workspace_x, workspace_top, scaled(75, dpi_), row);
-    workspace_x += scaled(79, dpi_);
-    move_control(control(id::chat_source), workspace_x, workspace_top, scaled(220, dpi_), row + scaled(120, dpi_));
-    workspace_x += scaled(220, dpi_) + gap;
-    move_control(control(id::chat_model_label), workspace_x, workspace_top, scaled(28, dpi_), row);
-    workspace_x += scaled(32, dpi_);
+    set_window_visibility(control(id::chat_source_label), !compact_toolbar);
+    set_window_visibility(control(id::chat_model_label), !compact_toolbar);
+    if (!compact_toolbar) {
+        move_control(control(id::chat_source_label), workspace_x, workspace_top,
+            scaled(52, dpi_), row);
+        workspace_x += scaled(56, dpi_);
+    }
+    const auto workspace_source_width = scaled(compact_toolbar ? 205 : 230, dpi_);
+    move_control(control(id::chat_source), workspace_x, workspace_top,
+        workspace_source_width, row + scaled(120, dpi_));
+    workspace_x += workspace_source_width + gap;
+    if (!compact_toolbar) {
+        move_control(control(id::chat_model_label), workspace_x, workspace_top,
+            scaled(48, dpi_), row);
+        workspace_x += scaled(52, dpi_);
+    }
 
-    const auto workspace_button_width = scaled(108, dpi_);
-    const auto workspace_settings_width = scaled(142, dpi_);
-    const auto model_width = std::max(
-        scaled(180, dpi_),
-        width - workspace_x - surface_padding);
-    move_control(control(id::chat_model), workspace_x, workspace_top, model_width, row + scaled(220, dpi_));
-
-    const auto workspace_status_y = workspace_top + row + gap;
+    const auto workspace_button_width = scaled(88, dpi_);
+    const auto workspace_settings_width = scaled(122, dpi_);
     const auto workspace_buttons_width =
         workspace_button_width + workspace_settings_width + gap;
-    for (const auto identifier : {
-             id::chat_backend,
-             id::chat_discover,
-             id::chat_open_models}) {
-        set_window_visibility(control(identifier), !compact_vertical);
-    }
-    move_control(
-        control(id::chat_backend),
-        surface_padding,
-        workspace_status_y,
-        std::max(1, width - surface_padding * 2 - workspace_buttons_width - gap),
-        row);
+    const auto model_width = std::max(
+        scaled(150, dpi_),
+        width - surface_padding - workspace_x - workspace_buttons_width - gap);
+    move_control(control(id::chat_model), workspace_x, workspace_top,
+        model_width, row + scaled(220, dpi_));
     move_control(
         control(id::chat_discover),
         width - surface_padding - workspace_buttons_width,
-        workspace_status_y,
+        workspace_top,
         workspace_button_width,
         row);
     move_control(
         control(id::chat_open_models),
         width - surface_padding - workspace_settings_width,
-        workspace_status_y,
+        workspace_top,
         workspace_settings_width,
         row);
 
-    // At compact heights, Settings and the persistent activity strip already
-    // expose connection state. Removing the duplicate status row gives the
-    // conversation and composer non-overlapping vertical space.
-    const auto workspace_repository_y = compact_vertical
-        ? workspace_top + row + gap
-        : workspace_status_y + row + gap;
+    // Connection and package state live in the persistent right rail and global
+    // activity card, leaving only repository context in the workspace header.
+    const auto workspace_repository_y = workspace_top + row + gap;
     const auto show_workspace_repository = workspace_coding_mode();
     for (const auto identifier : {
              id::chat_repository_label,
@@ -4746,10 +4846,10 @@ void MainWindow::layout_controls() {
             {0.0f, 0.0f},
             {static_cast<float>(width), static_cast<float>(height)}},
         .axis = epochengine::gui_lib::SplitterAxis::vertical,
-        .split_fraction = 0.70f,
+        .split_fraction = 0.74f,
         .thickness = static_cast<float>(gap),
-        .min_before = static_cast<float>(scaled(500, dpi_)),
-        .min_after = static_cast<float>(scaled(330, dpi_)),
+        .min_before = static_cast<float>(scaled(560, dpi_)),
+        .min_after = static_cast<float>(scaled(280, dpi_)),
     });
     const auto conversation_width = std::max(
         1,
@@ -4770,7 +4870,7 @@ void MainWindow::layout_controls() {
         1,
         sidebar_width - surface_padding * 2);
     const auto expanded_review_min_width =
-        scaled(80 + 55 + 55 + 62 + 120 + 62 + 68 + 170, dpi_) + gap * 7;
+        scaled(80 + 55 + 55 + 62 + 120 + 62 + 112 + 170, dpi_) + gap * 7;
     const auto expanded_bottom_min_width =
         scaled(240 + 100 + 75 + 100 + 115 + 125 + 80, dpi_) + gap * 6;
     const auto compact_actions =
@@ -4780,9 +4880,9 @@ void MainWindow::layout_controls() {
     const auto action_block_height = compact_bottom_actions ? row * 2 + gap : row;
     const auto action_y = height - surface_padding - action_block_height;
     const auto prompt_height = std::clamp(
-        height * 18 / 100,
-        scaled(compact_vertical ? 75 : 95, dpi_),
-        scaled(compact_vertical ? 120 : 165, dpi_));
+        height * 15 / 100,
+        scaled(compact_vertical ? 70 : 88, dpi_),
+        scaled(compact_vertical ? 105 : 140, dpi_));
     const auto prompt_y = action_y - gap - prompt_height;
     const auto prompt_label_y = prompt_y - (compact_vertical ? 0 : row);
     const auto composer_top = prompt_label_y - surface_padding;
@@ -4849,11 +4949,11 @@ void MainWindow::layout_controls() {
         };
         move_second_row(id::chat_accept, scaled(120, dpi_));
         move_second_row(id::chat_reject, scaled(72, dpi_));
-        move_second_row(id::chat_learning_preview, scaled(76, dpi_));
+        move_second_row(id::chat_learning_preview, scaled(112, dpi_));
         move_second_row(id::chat_auto_learning, scaled(170, dpi_));
     } else {
         const auto review_fixed_width =
-            scaled(55 + 55 + 62 + 120 + 62 + 68 + 170, dpi_) + gap * 7;
+            scaled(55 + 55 + 62 + 120 + 62 + 112 + 170, dpi_) + gap * 7;
         const auto reply_selector_width = std::clamp(
             conversation_inner_width - review_fixed_width,
             scaled(80, dpi_),
@@ -4872,7 +4972,7 @@ void MainWindow::layout_controls() {
         move_review_action(id::chat_retry, scaled(62, dpi_));
         move_review_action(id::chat_accept, scaled(120, dpi_));
         move_review_action(id::chat_reject, scaled(62, dpi_));
-        move_review_action(id::chat_learning_preview, scaled(68, dpi_));
+        move_review_action(id::chat_learning_preview, scaled(112, dpi_));
         move_review_action(id::chat_auto_learning, scaled(170, dpi_));
     }
 
@@ -4965,42 +5065,59 @@ void MainWindow::layout_controls() {
     }
     set_window_visibility(control(id::chat_hint), !compact_vertical);
 
+    const auto rail_top = workspace_content_top + surface_padding;
+    const auto rail_action_width = scaled(124, dpi_);
     move_control(
         control(id::chat_plan_label),
         sidebar_inner_x,
-        workspace_content_top + surface_padding,
-        sidebar_inner_width - scaled(140, dpi_) - gap,
+        rail_top,
+        std::max(1, sidebar_inner_width - rail_action_width - gap),
         row);
     move_control(
         control(id::chat_route),
-        width - surface_padding - scaled(140, dpi_),
-        workspace_content_top + surface_padding,
-        scaled(140, dpi_),
+        width - surface_padding - rail_action_width,
+        rail_top,
+        rail_action_width,
         row);
-    const auto sidebar_available =
-        height - workspace_content_top - surface_padding * 2 - row - gap;
-    const auto sidebar_status_reserve = scaled(70, dpi_);
-    const auto maximum_plan_height = std::max(
-        scaled(120, dpi_),
-        sidebar_available - sidebar_status_reserve);
-    const auto plan_height = std::clamp(
-        sidebar_available * 62 / 100,
-        scaled(120, dpi_),
-        maximum_plan_height);
+    const auto rail_backend_y = rail_top + row + gap;
+    const auto rail_backend_height = scaled(58, dpi_);
+    move_control(
+        control(id::chat_backend),
+        sidebar_inner_x,
+        rail_backend_y,
+        sidebar_inner_width,
+        rail_backend_height);
+    const auto rail_plan_y = rail_backend_y + rail_backend_height + gap;
+    const auto rail_learning_height = scaled(compact_vertical ? 78 : 96, dpi_);
+    const auto rail_tools_height = scaled(54, dpi_);
+    const auto rail_bottom = height - surface_padding;
+    const auto rail_tools_y = std::max(
+        rail_plan_y,
+        rail_bottom - rail_tools_height);
+    const auto workspace_learning_y = std::max(
+        rail_plan_y,
+        rail_tools_y - gap - rail_learning_height);
+    const auto plan_height = std::max(
+        1,
+        workspace_learning_y - gap - rail_plan_y);
     move_control(
         control(id::chat_plan),
         sidebar_inner_x,
-        workspace_content_top + surface_padding + row,
+        rail_plan_y,
         sidebar_inner_width,
         plan_height);
-    const auto workspace_learning_y =
-        workspace_content_top + surface_padding + row + plan_height + gap;
     move_control(
         control(id::chat_learning_status),
         sidebar_inner_x,
         workspace_learning_y,
         sidebar_inner_width,
-        scaled(70, dpi_));
+        rail_learning_height);
+    move_control(
+        control(id::chat_mcp_status),
+        sidebar_inner_x,
+        rail_tools_y,
+        sidebar_inner_width,
+        rail_tools_height);
     // Dedicated coding workspace remains available as the second primary tab.
     auto coding_x = 0;
     move_control(control(id::coding_source_label), coding_x, 0, scaled(82, dpi_), row);
@@ -5128,30 +5245,68 @@ void MainWindow::layout_controls() {
         height - coding_upper_height - gap - row);
 
     auto y = 0;
-    move_control(control(id::models_backend_header), 0, y, width, row);
-    y += row;
-    move_control(control(id::models_automation_toggle), 0, y, width, row);
-    y += row + gap;
-    move_control(control(id::models_internal_status), 0, y, width, row);
-    y += row + gap;
-    move_control(control(id::models_progress), 0, y, width, row);
-    y += row + gap;
-    move_control(control(id::models_progress_detail), 0, y, width, row);
-    y += row + gap * 2;
+    const auto show_backup_controls = checked(id::models_advanced_header);
+    constexpr std::array model_overview_controls{
+        id::models_backend_header,
+        id::models_automation_toggle,
+        id::models_internal_status,
+        id::models_progress,
+        id::models_progress_detail,
+        id::models_local_header,
+        id::models_discover,
+        id::models_discovery_status,
+    };
+    for (const auto identifier : model_overview_controls) {
+        set_window_visibility(control(identifier), !show_backup_controls);
+    }
 
-    move_control(control(id::models_local_header), 0, y, width, row);
-    y += row;
-    move_control(control(id::models_discover), 0, y, scaled(168, dpi_), row);
-    move_control(
-        control(id::models_discovery_status),
-        scaled(176, dpi_),
-        y,
-        width - scaled(176, dpi_),
-        row);
-    y += row + gap * 2;
+    if (!show_backup_controls) {
+        const auto automation_width = std::max(1, width - scaled(190, dpi_));
+        move_control(control(id::models_backend_header), 0, y, scaled(180, dpi_), row);
+        move_control(control(id::models_automation_toggle), scaled(190, dpi_), y,
+            automation_width, row);
+        y += row + gap;
+        move_control(control(id::models_internal_status), 0, y, width, scaled(46, dpi_));
+        y += scaled(46, dpi_) + gap;
+        move_control(control(id::models_progress), 0, y, width, scaled(14, dpi_));
+        y += scaled(14, dpi_) + gap;
+        move_control(control(id::models_progress_detail), 0, y, width, scaled(46, dpi_));
+        y += scaled(46, dpi_) + gap * 2;
+    } else {
+        move_control(control(id::models_advanced_header), 0, y, width, row);
+        y += row + gap;
+    }
 
-    move_control(control(id::models_advanced_header), 0, y, width, row);
-    y += row + gap;
+    const auto layout_explicit_trainer_package = [&] {
+        move_control(control(id::models_python_label), 0, y, width, row);
+        y += row;
+        const auto choose_width = scaled(160, dpi_);
+        move_control(control(id::models_python), 0, y,
+            std::max(1, width - choose_width - gap), row);
+        move_control(control(id::models_browse), width - choose_width, y,
+            choose_width, row);
+        y += row + gap;
+        move_control(control(id::models_install), 0, y, scaled(210, dpi_), row);
+        y += row + gap;
+        move_control(control(id::models_status), 0, y, width, scaled(46, dpi_));
+        y += scaled(46, dpi_) + gap * 2;
+    };
+    layout_explicit_trainer_package();
+
+    if (!show_backup_controls) {
+        move_control(control(id::models_local_header), 0, y, width, row);
+        y += row;
+        move_control(control(id::models_discover), 0, y, scaled(168, dpi_), row);
+        move_control(
+            control(id::models_discovery_status),
+            scaled(176, dpi_),
+            y,
+            width - scaled(176, dpi_),
+            row);
+        y += row + gap * 2;
+        move_control(control(id::models_advanced_header), 0, y, width, row);
+        y += row + gap;
+    }
 
     constexpr std::array backup_model_controls{
         id::models_manual_endpoint_label,
@@ -5173,20 +5328,14 @@ void MainWindow::layout_controls() {
         id::models_internal_profile,
         id::models_internal_create,
         id::models_internal_bootstrap,
-        id::models_python_label,
-        id::models_python,
-        id::models_browse,
-        id::models_install,
         id::models_verify,
         id::models_start,
         id::models_stop,
-        id::models_status,
         id::models_registry_header,
         id::models_editor,
         id::models_reload,
         id::models_save,
     };
-    const auto show_backup_controls = checked(id::models_advanced_header);
     for (const auto identifier : backup_model_controls) {
         set_window_visibility(control(identifier), show_backup_controls);
     }
@@ -5289,34 +5438,14 @@ void MainWindow::layout_controls() {
             row);
         y += row + gap;
 
-        const auto setup_label_width = scaled(120, dpi_);
-        const auto choose_width = scaled(130, dpi_);
-        move_control(control(id::models_python_label), 0, y, setup_label_width, row);
-        move_control(
-            control(id::models_python),
-            setup_label_width + gap,
-            y,
-            width - setup_label_width - choose_width - gap * 2,
-            row);
-        move_control(
-            control(id::models_browse),
-            width - choose_width,
-            y,
-            choose_width,
-            row);
-        y += row + gap;
-
         auto model_action_x = 0;
         for (const auto [identifier, action_width] : std::array{
-                 std::pair{id::models_install, scaled(170, dpi_)},
                  std::pair{id::models_verify, scaled(120, dpi_)},
                  std::pair{id::models_start, scaled(150, dpi_)},
                  std::pair{id::models_stop, scaled(150, dpi_)}}) {
             move_control(control(identifier), model_action_x, y, action_width, row);
             model_action_x += action_width + gap;
         }
-        y += row + gap;
-        move_control(control(id::models_status), 0, y, width, row);
         y += row + gap * 2;
 
         move_control(control(id::models_registry_header), 0, y, width, row);
@@ -5832,7 +5961,7 @@ void MainWindow::layout_controls() {
     place_log_action(id::logs_run_cleanup, scaled(130, dpi_));
     move_control(control(id::logs_storage_header), 0, row + gap, width, row);
 
-    const auto storage_card_height = scaled(56, dpi_);
+    const auto storage_card_height = scaled(62, dpi_);
     const auto storage_card_width = (width - gap * 2) / 3;
     const auto storage_cards_first_y = row * 2 + gap * 2;
     const auto storage_cards_second_y = storage_cards_first_y + storage_card_height + gap;
@@ -5865,16 +5994,20 @@ void MainWindow::layout_controls() {
     const auto storage_y = storage_cards_third_y + storage_card_height + gap;
     const auto storage_available = std::max(1, height - storage_y);
     const auto storage_minimum_height =
-        std::min(scaled(150, dpi_), storage_available);
+        std::min(scaled(120, dpi_), storage_available);
+    const auto minimum_live_log_height =
+        std::min(scaled(170, dpi_), std::max(1, storage_available / 2));
     const auto storage_maximum_height = std::max(
         storage_minimum_height,
-        storage_available - gap - scaled(90, dpi_));
+        storage_available - gap * 2 - row - minimum_live_log_height);
     const auto storage_height = std::clamp(
-        storage_available * 68 / 100,
+        storage_available * 42 / 100,
         storage_minimum_height,
         storage_maximum_height);
     move_control(control(id::logs_storage), 0, storage_y, width, storage_height);
-    const auto log_y = storage_y + storage_height + gap;
+    const auto log_header_y = storage_y + storage_height + gap;
+    move_control(control(id::logs_live_header), 0, log_header_y, width, row);
+    const auto log_y = log_header_y + row;
     move_control(control(id::logs_view), 0, log_y, width, height - log_y);
     }
     if (page_ == Page::chat) {
@@ -6073,8 +6206,8 @@ void MainWindow::handle_command(const int identifier) {
         } catch (...) {
         }
         set_status(automatic_lifecycle_enabled_
-            ? L"EngCoder will set up and keep the built-in AI ready automatically"
-            : L"Automatic built-in AI setup is paused; the current task is unchanged");
+            ? L"EngCoder will keep installed built-in AI components ready when the computer is idle"
+            : L"Automatic startup and learning are paused; installed files and the current task are unchanged");
         break;
     case id::models_advanced_header:
         set_control_text(
@@ -6137,8 +6270,14 @@ void MainWindow::handle_command(const int identifier) {
         } catch (...) {
         }
         if (!automatic_training_enabled_) {
-            piggyback_operation_.cancel();
-            set_status(L"Automatic verified-example generation disabled and saved");
+            const auto independent_review_running = piggyback_operation_.running() &&
+                (active_piggyback_live_ || active_piggyback_deep_gap_);
+            if (piggyback_operation_.running() && !independent_review_running) {
+                piggyback_operation_.cancel();
+            }
+            set_status(independent_review_running
+                ? L"Idle practice generation disabled; the independent Live Auto or measured-gap review continues"
+                : L"Automatic verified-example generation disabled and saved");
         } else {
             set_status(L"Automatic verified-example generation enabled for the selected target");
             next_piggyback_at_ =
@@ -6334,7 +6473,7 @@ void MainWindow::refresh_model_selectors() {
         automatic_lifecycle_enabled_;
     std::vector<models::ModelProfile> available;
     for (const auto& model : snapshot.models()) {
-        if (!model.enabled || !source_accepts(model) ||
+        if (!model.enabled || !model.runtime_ready || !source_accepts(model) ||
             !model_supports_workspace_task(model)) {
             continue;
         }
@@ -7169,9 +7308,13 @@ std::wstring MainWindow::runtime_summary(
     const models::ModelRegistry& registry,
     const bool custom_host_running) const {
     std::size_t connected_ready = 0;
+    std::size_t authorized_teachers_loadable = 0;
     for (const auto& model : registry.models()) {
-        if (model.enabled && !models::is_internal_model(model)) {
+        if (model.enabled && model.runtime_ready && !models::is_internal_model(model)) {
             ++connected_ready;
+        } else if (model.enabled && !model.runtime_ready &&
+                   models::is_managed_lm_studio_teacher(model)) {
+            ++authorized_teachers_loadable;
         }
     }
 
@@ -7183,8 +7326,12 @@ std::wstring MainWindow::runtime_summary(
         backend_operation_.running();
     const auto internal_state = runtime::inspect_internal_model_state(paths_);
     const auto progress = runtime::read_internal_model_progress(paths_);
+    const auto host_degradation = backend_server_.degradation_message();
     std::wstring built_in_status;
-    if (custom_host_running) {
+    if (custom_host_running && internal_state.bootstrap_complete && !host_degradation.empty()) {
+        built_in_status = L"NATIVE RETRIEVAL READY — requested neural generation rejected: " +
+            widen(host_degradation);
+    } else if (custom_host_running) {
         built_in_status = internal_state.bootstrap_complete
             ? L"TRAINED MODEL READY — promoted neural weights"
             : L"NATIVE RETRIEVAL READY — 0 B neural weights; no trained LLM";
@@ -7253,7 +7400,14 @@ std::wstring MainWindow::runtime_summary(
     }
     stream << L" • Other AI apps: ";
     if (connected_ready == 0U) {
-        stream << L"not found";
+        if (authorized_teachers_loadable > 0U) {
+            stream << L"not loaded • " << authorized_teachers_loadable
+                   << L" authorized teacher"
+                   << (authorized_teachers_loadable == 1U ? L"" : L"s")
+                   << L" available on demand for background learning";
+        } else {
+            stream << L"not found";
+        }
     } else {
         stream << L"ready (" << connected_ready << L")";
     }
@@ -7295,7 +7449,7 @@ std::string MainWindow::actual_runtime_heading(const std::string_view model_id) 
     }
     if (models::is_internal_model(*model)) {
         const auto state = runtime::inspect_internal_model_state(paths_);
-        return state.bootstrap_complete
+        return state.bootstrap_complete && backend_server_.degradation_message().empty()
             ? "ENGCODER — TRAINED MODEL — " + model->display_name
             : "ENGCODER — NATIVE FOUNDATION — " + model->display_name;
     }
@@ -7312,9 +7466,16 @@ bool MainWindow::is_coding_surface(const RequestSurface surface) const noexcept 
            surface == RequestSurface::coding;
 }
 
-models::ModelRegistry MainWindow::runtime_model_snapshot() const {
+models::ModelRegistry MainWindow::configured_model_snapshot() const {
     std::lock_guard lock(model_mutex_);
-    auto snapshot = model_registry_;
+    return model_registry_;
+}
+
+models::ModelRegistry MainWindow::runtime_model_snapshot() const {
+    auto snapshot = configured_model_snapshot();
+    for (auto& model : snapshot.models()) {
+        model.enabled = model.enabled && model.runtime_ready;
+    }
     if (!backend_server_.running()) {
         for (auto& model : snapshot.models()) {
             if (models::is_internal_model(model)) {
@@ -8039,6 +8200,72 @@ void MainWindow::send_request(const RequestSurface surface) {
         workspace_task() != WorkspaceTask::tool &&
         preflight_analyzer.analyze(raw_prompt).kind == routing::TaskKind::calculation;
 
+    const auto record_preflight_failure = [&, this](
+        const std::wstring_view visible_error,
+        const std::wstring_view execution_detail) {
+        const auto failure_text = narrow(visible_error);
+        last_prompt_ = raw_prompt;
+        last_response_ = failure_text;
+        last_analysis_ = preflight_analyzer.analyze(raw_prompt);
+        last_model_id_ = "request-error";
+        last_models_used_.clear();
+        last_tool_events_.clear();
+        last_input_files_ = request_input_files;
+        last_response_surface_ = surface;
+        pending_transcript_heading_offset_ = std::string::npos;
+        pending_transcript_heading_length_ = 0U;
+
+        if (workspace) {
+            if (!workspace_transcript_.empty() &&
+                !workspace_transcript_.ends_with("\r\n\r\n")) {
+                workspace_transcript_ += "\r\n\r\n";
+            }
+            if (!workspace_transcript_.empty()) {
+                workspace_transcript_ += "\r\n";
+            }
+            workspace_transcript_ += coding
+                ? "YOU — CODING REQUEST\r\n\r\n"
+                : "YOU\r\n\r\n";
+            workspace_transcript_ += raw_prompt;
+            workspace_transcript_ += "\r\n\r\nERROR — AI NOT READY\r\n\r\n";
+            workspace_transcript_ += failure_text;
+            workspace_transcript_ += "\r\n\r\n";
+            set_control_text(response_id, widen(workspace_transcript_));
+            set_control_text(prompt_id, L"");
+            attached_files_.clear();
+            update_attachment_controls();
+            set_control_text(id::chat_plan_label, L"How it ran");
+        } else {
+            set_control_text(response_id, std::wstring(visible_error));
+        }
+
+        response_turns_.push_back(ResponseTurn{
+            .prompt = last_prompt_,
+            .response = last_response_,
+            .earlier_context = recent_conversation_context(conversation_history_),
+            .analysis = last_analysis_,
+            .model_id = last_model_id_,
+            .models_used = {},
+            .tool_events = {},
+            .input_files = last_input_files_,
+            .surface = last_response_surface_,
+            .learning_weight_eligible = false,
+            .learning_destination = "request-error",
+            .review = ResponseReview::blocked,
+        });
+        selected_response_turn_index_ = response_turns_.size() - 1U;
+        pending_completed_activity_summaries_.emplace_back(
+            "chat", L"Reply blocked before contacting an AI");
+        set_control_text(plan_id, std::wstring(execution_detail));
+        set_control_text(
+            id::chat_learning_status,
+            L"No training data was created from this failed request.");
+        update_response_turn_controls();
+        set_status(
+            std::wstring(visible_error) + L" • Retry will resend this exact message");
+        persist_current_chat();
+    };
+
     if (!deterministic_calculation) {
         yield_automatic_bootstrap_to_foreground();
     }
@@ -8070,8 +8297,9 @@ void MainWindow::send_request(const RequestSurface surface) {
         if (selected_profile == nullptr || !selected_profile->enabled) {
             const auto error =
                 L"The selected AI is not responding. No other AI was used.";
-            set_control_text(response_id, error);
-            set_status(error);
+            record_preflight_failure(
+                error,
+                L"The locked AI was unavailable before dispatch. No endpoint was contacted and automatic fallback remained disabled.");
             return;
         }
     }
@@ -8087,9 +8315,9 @@ void MainWindow::send_request(const RequestSurface surface) {
             : inference_source_ == InferenceSource::local_bridge
                 ? L"No connected AI is ready."
                 : L"No AI is ready.";
-        set_control_text(response_id, error);
-        set_control_text(plan_id, L"The selected AI is not ready.");
-        set_status(error);
+        record_preflight_failure(
+            error,
+            L"No compatible loaded AI was available, so no endpoint was contacted.");
         return;
     }
 
@@ -8562,10 +8790,13 @@ std::size_t MainWindow::pending_measured_gap_count() {
 }
 
 void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
+    const auto verified_repository =
+        turn.learning_destination == "repository-candidate" &&
+        turn.repository_compiler_passed && turn.repository_tests_passed;
     if (!live_auto_training_enabled_ || turn.model_id == "request-error" ||
         turn.model_id == "deterministic-calculator" || turn.model_id == "verified-memory" ||
         turn.learning_destination.starts_with("local-") ||
-        turn.learning_destination.starts_with("repository-") ||
+        (turn.learning_destination.starts_with("repository-") && !verified_repository) ||
         turn.prompt.empty() || turn.response.empty()) {
         return;
     }
@@ -8584,7 +8815,8 @@ void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
         (conversation_ready && kind == routing::TaskKind::planning) ||
         (conversation_ready && planning_ready &&
          (kind == routing::TaskKind::code_generation ||
-          kind == routing::TaskKind::code_debugging));
+          kind == routing::TaskKind::code_debugging ||
+          verified_repository));
     if (!stage_allows) {
         return;
     }
@@ -8689,7 +8921,12 @@ void MainWindow::queue_live_training_candidate(ResponseTurn& turn) {
         if (!stream) {
             throw std::runtime_error("could not append live interaction ledger");
         }
-        turn.learning_destination = "live-auto-pending";
+        // Keep the repository promotion action available to the user while
+        // the same compiler/test-backed trajectory moves through Live Auto's
+        // independent evidence review.
+        if (!verified_repository) {
+            turn.learning_destination = "live-auto-pending";
+        }
         live_training_pending_ = true;
         next_piggyback_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         set_control_text(
@@ -9518,7 +9755,7 @@ void MainWindow::start_foundation_build(const bool rebuild) {
         set_status(L"Select one or more UTF-8 text or Markdown foundation sources first");
         return;
     }
-    auto snapshot = runtime_model_snapshot();
+    auto snapshot = configured_model_snapshot();
     std::optional<models::ModelProfile> qwen;
     std::optional<models::ModelProfile> nemotron;
     for (const auto& model : snapshot.models()) {
@@ -9697,10 +9934,12 @@ void MainWindow::generate_piggyback(
     std::vector<models::ModelProfile> teachers;
     std::vector<models::ModelProfile> verifiers;
     if (!trusted_only) {
-        auto snapshot = runtime_model_snapshot();
+        auto snapshot = configured_model_snapshot();
         for (const auto& model : snapshot.models()) {
             if (model.enabled &&
                 !models::is_internal_model(model) &&
+                (model.runtime_ready ||
+                 models::is_managed_lm_studio_teacher(model)) &&
                 ((automatic && !trusted_only) || live_candidates
                     ? authorized_live_training_model(model)
                     : model.teacher) &&
@@ -9789,6 +10028,8 @@ void MainWindow::generate_piggyback(
             for (const auto& candidate : snapshot.models()) {
                 if (candidate.enabled &&
                     !models::is_internal_model(candidate) &&
+                    (candidate.runtime_ready ||
+                     models::is_managed_lm_studio_teacher(candidate)) &&
                     models::has_capability(candidate, "chat") &&
                     (candidate.teacher || candidate.verifier || candidate.quality >= 0.68)) {
                     verifiers.push_back(candidate);
@@ -9977,7 +10218,12 @@ void MainWindow::create_internal_model(
     selected_paths.python = selected_python_;
     if (!runtime::backend_files_present(selected_paths)) {
         if (!automatic) {
-            set_status(L"Built-in AI setup files are not available yet");
+            backend_repair_required_ = true;
+            const auto missing = missing_training_requirements_text(selected_paths);
+            lifecycle_last_error_ = "Internal PyTorch Training is incomplete.";
+            set_status(
+                L"Internal PyTorch Training is blocked. Missing: " + missing +
+                L". Open Settings > AI & Tools, choose the package, then select Install selected package.");
         }
         return;
     }
@@ -10033,7 +10279,13 @@ void MainWindow::create_internal_model(
         ? bootstrap_target
         : (bootstrap_target > state.steps ? bootstrap_target - state.steps : 1U);
 
-    backend_server_.stop();
+    // Bootstrap trains and validates an isolated candidate. Keep the last working
+    // generation (including the native foundation) answering until that candidate
+    // is promoted. An explicit rebuild may still take the host offline up front.
+    const bool preserve_serving_generation = bootstrap && backend_server_.running();
+    if (!bootstrap) {
+        backend_server_.stop();
+    }
     piggyback_operation_.cancel();
     learning_service_->set_interactive_busy(true);
     std::error_code cleanup_error;
@@ -10062,7 +10314,8 @@ void MainWindow::create_internal_model(
          bootstrap_target,
          remaining_steps,
          needs_initialization,
-         force_reinitialize](const std::stop_token token) {
+         force_reinitialize,
+         preserve_serving_generation](const std::stop_token token) {
             struct BusyReset final {
                 learning::ContinualLearningService* service;
                 ~BusyReset() { service->set_interactive_busy(false); }
@@ -10108,6 +10361,11 @@ void MainWindow::create_internal_model(
                 };
             }
 
+            // The candidate is now fully promoted. Only now interrupt the old
+            // serving generation so the host can load the new active weights.
+            if (preserve_serving_generation) {
+                backend_server_.stop();
+            }
             std::string message;
             const auto host_started = backend_server_.start(
                 token,
@@ -10142,27 +10400,26 @@ void MainWindow::install_backend(const bool automatic) {
         }
         return;
     }
-    if (backend_server_.running()) {
-        if (!automatic) {
-            set_status(L"Stop the built-in AI before replacing its setup files");
-        }
+    if (automatic) {
+        backend_repair_required_ = true;
+        lifecycle_last_error_ =
+            "Internal PyTorch Training is required for neural learning and must be "
+            "installed explicitly from Settings > AI & Tools.";
+        set_status(widen(lifecycle_last_error_));
         return;
     }
 
+    // Native answers and the optional trainer live in distinct capability packs.
+    // An explicit trainer installation never stops or replaces the serving pack.
+
     std::optional<std::filesystem::path> source;
-    if (automatic) {
-        source = automatic_training_pack_source(paths_, selected_pack_source_);
-    } else {
-        const auto selected = std::filesystem::path(
-            control_text(id::models_python)).lexically_normal();
-        if (training_pack_payload_ready(selected)) {
-            source = selected;
-        }
+    const auto selected = std::filesystem::path(
+        control_text(id::models_python)).lexically_normal();
+    if (training_pack_payload_ready(selected)) {
+        source = selected;
     }
     if (!source.has_value()) {
-        if (!automatic) {
-            set_status(L"Choose a complete built-in AI setup folder first");
-        }
+        set_status(L"Choose a complete Internal PyTorch Training package folder, then select Install selected package");
         return;
     }
 
@@ -10200,18 +10457,14 @@ void MainWindow::install_backend(const bool automatic) {
                         : util::OperationState::failed),
                 .exit_code = result.succeeded ? 0 : 1,
                 .message = result.succeeded
-                    ? "Built-in AI setup files are ready; the working model and current task were not changed"
+                    ? "Internal PyTorch Training installed explicitly; native answers stayed available"
                     : result.error,
             };
         },
-        automatic
-            ? "automatically preparing the built-in AI files"
-            : "replacing the built-in AI files from backup");
+        "installing the explicitly selected Internal PyTorch Training package");
     if (started) {
         lifecycle_action_ = LifecycleAction::install_backend;
-        set_status(automatic
-            ? L"Preparing the built-in AI in the background"
-            : L"Replacing the built-in AI setup files; the current task is unchanged");
+        set_status(L"Installing Internal PyTorch Training; native answers remain available");
     }
 }
 
@@ -10280,7 +10533,7 @@ void MainWindow::stop_backend() {
     set_control_text(id::models_status, L"Built-in AI stopped from backup controls");
 }
 void MainWindow::browse_python() {
-    const auto selected = choose_directory(L"Choose the built-in AI setup folder");
+    const auto selected = choose_directory(L"Choose an Internal PyTorch Training package folder");
     if (!selected.has_value()) {
         return;
     }
@@ -10292,7 +10545,7 @@ void MainWindow::browse_python() {
             selected_pack_source_.string() + "\n");
     } catch (...) {
     }
-    set_status(L"Backup setup folder selected; automatic setup will use it when ready");
+    set_status(L"Package folder selected; review it, then select Install selected package — nothing installs automatically");
 }
 void MainWindow::load_models_editor() {
     set_control_text(id::models_editor, widen(read_text(paths_.model_registry)));
@@ -10656,6 +10909,9 @@ void MainWindow::update_long_horizon_result() {
             .review = ResponseReview::unreviewed,
         });
         selected_response_turn_index_ = response_turns_.size() - 1U;
+        if (verified) {
+            queue_live_training_candidate(response_turns_.back());
+        }
         update_response_turn_controls();
         persist_current_chat();
     }
@@ -10822,10 +11078,18 @@ void MainWindow::drive_automatic_lifecycle() {
 
     auto selected_paths = paths_;
     selected_paths.python = selected_python_;
-    if (backend_repair_required_ || !runtime::backend_files_present(selected_paths)) {
-        if (automatic_training_pack_source(paths_, selected_pack_source_).has_value()) {
-            install_backend(true);
+    if (!runtime::backend_files_present(selected_paths)) {
+        // An absent optional trainer is not an error while native answers are
+        // sufficient. Surface the exact missing files and manual action only
+        // after real neural work is queued and therefore blocked.
+        if (learning_pipeline.queued_updates > 0U) {
+            backend_repair_required_ = true;
+            lifecycle_last_error_ = "Internal PyTorch Training is incomplete. Missing: " +
+                narrow(missing_training_requirements_text(selected_paths));
         }
+        return;
+    }
+    if (backend_repair_required_) {
         return;
     }
     if (!backend_verified_) {
@@ -10844,9 +11108,13 @@ void MainWindow::drive_automatic_lifecycle() {
 void MainWindow::update_internal_model_lifecycle_ui() {
     const auto state = runtime::inspect_internal_model_state(paths_);
     const auto progress = runtime::read_internal_model_progress(paths_);
+    const auto host_degradation = backend_server_.degradation_message();
     set_control_text(
         id::models_internal_status,
-        backend_server_.running() && !state.bootstrap_complete
+        backend_server_.running() && state.bootstrap_complete && !host_degradation.empty()
+            ? L"Built-in EngCoder rejected the requested neural generation and is serving its verified native foundation instead. " +
+                widen(host_degradation)
+            : backend_server_.running() && !state.bootstrap_complete
             ? L"Built-in EngCoder is serving its bundled native foundation with 0 B of neural weights. This is deterministic local retrieval, not model training and not an AI-server call. A trained model replaces it only after every quality check passes."
             : internal_model_status_text(paths_));
 
@@ -10934,10 +11202,14 @@ void MainWindow::update_internal_model_lifecycle_ui() {
         detail << L"Built-in EngCoder is using native retrieval from a 4,247-record evidence pool with 0 B of neural weights. Weight training compiles only the smallest useful behavior set; it never treats the whole audit pool as a required dataset.";
     } else if (automatic_learning_limit_reached(paths_, state)) {
         detail << L"Built-in AI reached its quality limit. No unapproved result was activated; Chat can keep using connected AI.";
-    } else if (!setup_files_ready && setup_source_ready) {
-        detail << L"Built-in AI files were found. EngCoder will finish setup automatically.";
+    } else if (!setup_files_ready &&
+               (backend_repair_required_ ||
+                learning_service_->pipeline_snapshot().queued_updates > 0U)) {
+        detail << L"Neural learning is blocked. Missing: "
+               << missing_training_requirements_text(selected_paths)
+               << L". Choose Install selected package; nothing installs automatically.";
     } else if (!setup_files_ready) {
-        detail << L"No setup is running because the built-in AI package is not installed. Choose Automatic yourself to use another ready AI.";
+        detail << L"Native answers remain available. No neural learning work is waiting.";
     } else if (!backend_verified_) {
         detail << L"EngCoder is checking the built-in AI before using it.";
     } else if (!state.bootstrap_complete) {
@@ -11035,6 +11307,11 @@ void MainWindow::update_global_activity() {
     const auto user_taught_replies =
         learning_service_->memory_store().total_human_acceptance_count();
     const auto measured_gaps_waiting = pending_measured_gap_count();
+    auto training_paths = paths_;
+    training_paths.python = selected_python_;
+    const auto internal_training_pack_ready =
+        runtime::backend_files_present(training_paths);
+    const auto host_degradation = backend_server_.degradation_message();
     if (pipeline.active_job.has_value()) {
         auto label = std::wstring{L"Retraining a separate test model"};
         if (!pipeline.active_job->skill.empty()) {
@@ -11122,20 +11399,15 @@ void MainWindow::update_global_activity() {
                  << L" saved in verified memory";
         }
     } else if (live_training_pending_ && checked(id::chat_auto_learning)) {
-        const auto registry = runtime_model_snapshot();
-        auto qwen_ready = false;
-        auto nemotron_ready = false;
-        for (const auto& model : registry.models()) {
-            if (!model.enabled || !models::has_capability(model, "chat")) {
-                continue;
-            }
-            const auto family = live_training_model_family(model);
-            qwen_ready = qwen_ready || family == 1;
-            nemotron_ready = nemotron_ready || family == 2;
-        }
+        const auto registry = configured_model_snapshot();
+        const auto live_models = live_training_availability(registry);
         text << L"WAITING — Live Auto Training has cleaned interactions queued\r\n"
-             << L"Qwen 3.8 27B: " << (qwen_ready ? L"ready" : L"waiting")
-             << L" • Nemotron 3 Nano 4B: " << (nemotron_ready ? L"ready" : L"waiting")
+             << L"Qwen 3.8 27B: "
+             << live_teacher_state(live_models.qwen_configured, live_models.qwen_ready)
+             << L" • Nemotron 3 Nano 4B: "
+             << live_teacher_state(
+                    live_models.nemotron_configured,
+                    live_models.nemotron_ready)
              << L" • User-taught replies: " << user_taught_replies
              << L" • Neural-weight jobs: " << pipeline.queued_updates;
         if (!last_completed_activity_summary_.empty()) {
@@ -11148,18 +11420,32 @@ void MainWindow::update_global_activity() {
              << L" independently reviewed conversation gaps are ready for a deep repair pass\r\n"
              << L"Qwen will generate one repair at a time; Nemotron will independently verify it. Chat has priority.";
     } else if (pipeline.queued_updates > 0U) {
-        text << L"WAITING — " << pipeline.queued_updates << L" neural-weight job"
-             << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
-        if (!last_completed_activity_summary_.empty()) {
-            text << L"Last completed: " << last_completed_activity_summary_ << L" • ";
+        if (!internal_training_pack_ready) {
+            text << L"ATTENTION — Internal PyTorch Training required\r\n"
+                 << pipeline.queued_updates << L" neural-weight job"
+                 << (pipeline.queued_updates == 1U ? L" is" : L"s are")
+                 << L" safely queued. Missing: "
+                 << missing_training_requirements_text(training_paths)
+                 << L". " << user_taught_replies
+                 << L" taught replies are already usable. Install explicitly at Settings > AI & Tools > Choose package > Install selected package.";
+        } else {
+            text << L"WAITING — " << pipeline.queued_updates << L" neural-weight job"
+                 << (pipeline.queued_updates == 1U ? L"" : L"s") << L" queued\r\n";
+            if (!last_completed_activity_summary_.empty()) {
+                text << L"Last completed: " << last_completed_activity_summary_ << L" • ";
+            }
+            text << user_taught_replies << L" user-taught repl"
+                 << (user_taught_replies == 1U ? L"y is" : L"ies are")
+                 << L" already saved in verified memory. Weight training starts when its foreground and resource checks pass.";
         }
-        text << user_taught_replies << L" user-taught repl"
-             << (user_taught_replies == 1U ? L"y is" : L"ies are")
-             << L" already saved in verified memory. Weight training starts only when its requirements are ready.";
     } else {
         const auto state = runtime::inspect_internal_model_state(paths_);
         const auto now = std::chrono::steady_clock::now();
-        if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
+        if (state.bootstrap_complete && !host_degradation.empty()) {
+            text << L"ATTENTION — Requested neural generation was rejected\r\n"
+                 << widen(host_degradation)
+                 << L". The verified native foundation remains available; repair the exact generation failure before calling neural weights active.";
+        } else if (now < lifecycle_retry_at_ && !lifecycle_last_error_.empty()) {
             const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
                 lifecycle_retry_at_ - now).count();
             text << L"ATTENTION — Built-in AI will retry automatically\r\n"
@@ -11168,6 +11454,10 @@ void MainWindow::update_global_activity() {
         } else if (automatic_learning_limit_reached(paths_, state)) {
             text << L"ATTENTION — Built-in AI stopped at its verified quality limit\r\n"
                  << L"No failed candidate replaced the working AI; details remain on the Activity page.";
+        } else if (backend_repair_required_ && !internal_training_pack_ready) {
+            text << L"ATTENTION — Internal PyTorch Training required\r\n"
+                 << L"Missing: " << missing_training_requirements_text(training_paths)
+                 << L". Native answers remain available. To enable neural learning: Settings > AI & Tools > Choose package > Install selected package. Nothing installs automatically.";
         } else if (!last_completed_activity_summary_.empty()) {
             text << L"COMPLETED — " << last_completed_activity_summary_ << L"\r\n";
             if (completed_activity_summaries_.size() > 1U) {
@@ -11199,7 +11489,7 @@ void MainWindow::update_global_activity() {
                  << L" • User-taught replies: " << user_taught_replies
                  << L" • Idle practice generation: "
                  << (checked(id::learning_auto) ? L"on" : L"off")
-                 << L" • Measured gaps waiting: " << measured_gaps_waiting;
+                  << L" • Measured gaps waiting: " << measured_gaps_waiting;
         }
     }
 
@@ -11226,6 +11516,39 @@ void MainWindow::update_periodic_state() {
     drive_automatic_lifecycle();
     update_internal_model_lifecycle_ui();
 
+    // A model earns automatic routing confidence only once an actual expert
+    // generation has passed promotion gates. The recorded generation makes
+    // this one-shot: later reply rejections can lower the score without the
+    // polling loop silently restoring it.
+    bool routing_confidence_changed = false;
+    const auto promoted_experts = learning_service_->expert_snapshot();
+    {
+        std::lock_guard lock(model_mutex_);
+        for (const auto& expert : promoted_experts) {
+            if (expert.state != learning::ExpertState::lora_active &&
+                expert.state != learning::ExpertState::full_rank_active) {
+                continue;
+            }
+            routing_confidence_changed =
+                model_registry_.record_validated_promotion(
+                    expert.skill,
+                    expert.generation,
+                    expert.accepted_episodes,
+                    expert.validation_score,
+                    expert.regression_score) ||
+                routing_confidence_changed;
+        }
+        if (routing_confidence_changed) {
+            try {
+                model_registry_.save(paths_.model_registry);
+            } catch (...) {
+            }
+        }
+    }
+    if (routing_confidence_changed) {
+        refresh_model_selectors();
+    }
+
     const auto backend_result = backend_operation_.snapshot();
     set_control_text(
         id::models_status,
@@ -11242,24 +11565,12 @@ void MainWindow::update_periodic_state() {
         refresh_model_selectors();
     }
 
-    models::ModelRegistry snapshot;
-    {
-        std::lock_guard lock(model_mutex_);
-        snapshot = model_registry_;
-    }
+    const auto snapshot = configured_model_snapshot();
     const auto summary = runtime_summary(snapshot, backend_running);
     const auto teacher_available = has_available_teacher(snapshot);
-    auto qwen_ready = false;
-    auto nemotron_ready = false;
-    for (const auto& model : snapshot.models()) {
-        if (!model.enabled || !models::has_capability(model, "chat")) {
-            continue;
-        }
-        const auto family = live_training_model_family(model);
-        qwen_ready = qwen_ready || family == 1;
-        nemotron_ready = nemotron_ready || family == 2;
-    }
-    const auto live_models_ready = qwen_ready && nemotron_ready;
+    const auto live_models = live_training_availability(snapshot);
+    const auto live_models_available = live_models.pair_configured();
+    const auto live_models_ready = live_models.pair_ready();
     const auto measured_gaps_waiting = pending_measured_gap_count();
     const auto learning_pipeline = learning_service_->pipeline_snapshot();
     const auto user_taught_replies =
@@ -11267,18 +11578,18 @@ void MainWindow::update_periodic_state() {
     auto training_paths = paths_;
     training_paths.python = selected_python_;
     const auto neural_training_ready = runtime::backend_files_present(training_paths);
-    set_control_text(id::chat_backend, summary);
+    set_control_text(id::chat_backend, L"ANSWER ENGINE\r\n" + summary);
     set_control_text(id::coding_backend, summary);
 
     if (mcp_client_->connected()) {
         std::wostringstream mcp_status;
-        mcp_status << L"Optional tools: connected — " << mcp_client_->tools().size()
+        mcp_status << L"TOOLS\r\nConnected — " << mcp_client_->tools().size()
                    << L" available";
         set_control_text(id::chat_mcp_status, mcp_status.str());
     } else {
         set_control_text(
             id::chat_mcp_status,
-            L"Optional tools are not connected. Set them up under Settings > AI & Tools only if needed.");
+            L"TOOLS\r\nNot connected — add an exact tool under Settings > AI & Tools when needed");
     }
 
     if (chat_operation_.running()) {
@@ -11316,13 +11627,16 @@ void MainWindow::update_periodic_state() {
         set_control_text(
             id::chat_learning_status,
             L"Live Auto Training is off. Manual review and idle practice generation are separate controls.");
-    } else if (live_training_pending_ && !live_models_ready) {
+    } else if (live_training_pending_ && !live_models_available) {
         set_control_text(
             id::chat_learning_status,
-            L"Live Auto Training is waiting: start and discover both loopback models, Qwen 3.8 27B and Nemotron 3 Nano 4B.");
+            L"Live Auto Training is waiting: install and discover both loopback models, Qwen 3.8 27B and Nemotron 3 Nano 4B.");
     } else if (live_training_pending_) {
         std::wostringstream pending;
         pending << L"Live Auto Training has cleaned interactions waiting for Qwen and Nemotron; Chat keeps priority.";
+        if (!live_models_ready) {
+            pending << L" EngCoder will load the installed authorized teachers with bounded settings when the review starts.";
+        }
         if (learning_pipeline.queued_updates > 0U) {
             pending << L" " << learning_pipeline.queued_updates << L" neural-weight job"
                     << (learning_pipeline.queued_updates == 1U ? L" is" : L"s are")
@@ -11365,7 +11679,7 @@ void MainWindow::update_periodic_state() {
     const auto run_practice_pass =
         !run_live_pass && !run_gap_pass && checked(id::learning_auto);
     const auto helper_ready = (run_live_pass || run_gap_pass || run_practice_pass)
-        ? live_models_ready
+        ? live_models_available
         : teacher_available;
     // Evidence curation and teacher generation are independent of tensor
     // optimization. A queued job (most commonly waiting for the optional
@@ -11698,12 +12012,26 @@ void MainWindow::update_discovery_result() {
     if (!report.has_value()) {
         return;
     }
+    const auto ready_count = static_cast<std::size_t>(std::ranges::count_if(
+        report->models,
+        [](const models::ModelProfile& model) { return model.runtime_ready; }));
+    const auto loadable_teacher_count = static_cast<std::size_t>(std::ranges::count_if(
+        report->models,
+        [](const models::ModelProfile& model) {
+            return !model.runtime_ready &&
+                   models::is_managed_lm_studio_teacher(model);
+        }));
     pending_completed_activity_summaries_.emplace_back(
         "discovery",
         report->models.empty()
             ? L"AI discovery completed; no local provider answered"
-            : L"AI discovery completed; " + std::to_wstring(report->models.size()) +
-                L" model" + (report->models.size() == 1U ? L" connected" : L"s connected"));
+            : L"AI discovery completed; " + std::to_wstring(ready_count) +
+                L" model" + (ready_count == 1U ? L" loaded" : L"s loaded") +
+                (loadable_teacher_count == 0U
+                    ? std::wstring{}
+                    : L", " + std::to_wstring(loadable_teacher_count) +
+                        L" authorized teacher" +
+                        (loadable_teacher_count == 1U ? L" available to load" : L"s available to load")));
 
     {
         std::lock_guard lock(model_mutex_);
@@ -11717,7 +12045,7 @@ void MainWindow::update_discovery_result() {
     refresh_model_selectors();
 
     if (checked(id::learning_auto) &&
-        has_available_teacher(runtime_model_snapshot())) {
+        has_available_teacher(configured_model_snapshot())) {
         next_piggyback_at_ =
             std::chrono::steady_clock::now() + std::chrono::seconds(30);
     }
@@ -11726,17 +12054,27 @@ void MainWindow::update_discovery_result() {
     if (report->models.empty()) {
         text << L"No local provider answered. You can add an endpoint manually below.";
     } else {
-        text << report->models.size() << L" model"
-             << (report->models.size() == 1U ? L"" : L"s")
-             << L" connected";
+        text << ready_count << L" model" << (ready_count == 1U ? L"" : L"s")
+             << L" loaded";
+        if (loadable_teacher_count > 0U) {
+            text << L" • " << loadable_teacher_count << L" authorized teacher"
+                 << (loadable_teacher_count == 1U ? L"" : L"s")
+                 << L" installed and available to load for background learning";
+        }
     }
     for (const auto& diagnostic : report->diagnostics) {
         text << L" • " << widen(diagnostic);
     }
     set_control_text(id::models_discovery_status, text.str());
-    set_status(report->models.empty()
-        ? L"No local model server found"
-        : L"Connected local AI is ready for compatible Task capabilities");
+    if (report->models.empty()) {
+        set_status(L"No local model server found");
+    } else if (ready_count > 0U) {
+        set_status(L"Loaded local AI is ready for compatible Task capabilities");
+    } else if (loadable_teacher_count > 0U) {
+        set_status(L"Authorized teacher models are installed but not loaded; background learning will load them on demand");
+    } else {
+        set_status(L"A local model server answered, but no text model is loaded");
+    }
 }
 
 void MainWindow::update_mcp_result() {
@@ -12690,19 +13028,11 @@ void MainWindow::update_learning_report() {
     }
     const auto automatic_teacher = checked(id::learning_auto);
     const auto live_auto = checked(id::chat_auto_learning);
-    const auto model_snapshot = runtime_model_snapshot();
+    const auto model_snapshot = configured_model_snapshot();
     const auto teacher_available = has_available_teacher(model_snapshot);
-    auto qwen_ready = false;
-    auto nemotron_ready = false;
-    for (const auto& model : model_snapshot.models()) {
-        if (!model.enabled || !models::has_capability(model, "chat")) {
-            continue;
-        }
-        const auto family = live_training_model_family(model);
-        qwen_ready = qwen_ready || family == 1;
-        nemotron_ready = nemotron_ready || family == 2;
-    }
-    const auto live_models_ready = qwen_ready && nemotron_ready;
+    const auto live_models = live_training_availability(model_snapshot);
+    const auto live_models_available = live_models.pair_configured();
+    const auto live_models_ready = live_models.pair_ready();
     const auto measured_gaps_waiting = pending_measured_gap_count();
     const auto now = std::chrono::steady_clock::now();
     const auto selected_skill = selected_training_skill();
@@ -12760,9 +13090,11 @@ void MainWindow::update_learning_report() {
            << L"; measured conversation gaps waiting: " << measured_gaps_waiting
            << L"\r\n"
            << L"  Authorized live reviewers: Qwen 3.8 27B "
-           << (qwen_ready ? L"ready" : L"waiting")
+           << live_teacher_state(live_models.qwen_configured, live_models.qwen_ready)
            << L"; Nemotron 3 Nano 4B "
-           << (nemotron_ready ? L"ready" : L"waiting")
+           << live_teacher_state(
+                  live_models.nemotron_configured,
+                  live_models.nemotron_ready)
            << L"; loopback OpenAI-compatible endpoints only\r\n"
            << L"  Automatic idle learning: " << (automatic_teacher ? L"enabled" : L"disabled") << L"\r\n"
            << L"  Teacher roles: Nemotron produces routine high-throughput variants; after 3 independently reviewed conversation failures, Qwen repairs measured gaps one at a time and Nemotron verifies them\r\n"
@@ -12839,9 +13171,15 @@ void MainWindow::update_learning_report() {
                ? L"active — trainer yields at safe boundaries"
                : L"idle")
            << L"\r\nTeacher model: "
-           << (teacher_available ? L"external local teacher ready" : L"waiting for an external local teacher")
+           << (teacher_available
+               ? L"external local teacher available; authorized unloaded teachers start on demand"
+               : L"waiting for an external local teacher")
            << L"\r\nLive reviewer pair: "
-           << (live_models_ready ? L"both authorized models ready" : L"waiting for the complete pair")
+           << (live_models_ready
+               ? L"both authorized models loaded"
+               : (live_models_available
+                   ? L"both installed; unloaded teachers start with bounded settings on demand"
+                   : L"waiting for the complete installed pair"))
            << L"\r\nActive example pass target: "
            << (active_piggyback_skill_.empty() ? L"none" : widen(active_piggyback_skill_))
            << L"\r\nTeacher foundry: "
@@ -12856,7 +13194,7 @@ void MainWindow::update_learning_report() {
            << (settings.policy.lora_microbatch == 1U ? L"" : L"s")
            << L"\r\nPressing the retrain button can compile any smaller pending verified batch.\r\n\r\n";
 
-    if (((live_auto && live_training_pending_ && live_models_ready) ||
+    if (((live_auto && live_training_pending_ && live_models_available) ||
          (automatic_teacher && teacher_available)) &&
         !piggyback_operation_.running() &&
         !foundation_operation_.running()) {

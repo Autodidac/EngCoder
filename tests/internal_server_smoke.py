@@ -13,11 +13,103 @@ import time
 import urllib.request
 
 
+def native_completion(native_host: Path, state_root: Path) -> dict[str, object]:
+    completed = subprocess.run(
+        [
+            str(native_host),
+            "--state-root",
+            str(state_root),
+            "--self-test",
+            "--prompt",
+            "Hello",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "native host self-test failed: "
+            f"stdout={completed.stdout!r}, stderr={completed.stderr!r}"
+        )
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("native host self-test returned no completion")
+    return json.loads(lines[-1])
+
+
+def native_health(native_host: Path, state_root: Path) -> dict[str, object]:
+    ready_root = Path(tempfile.mkdtemp(prefix="threadspire-native-health-"))
+    ready_file = ready_root / "server.ready"
+    process = subprocess.Popen(
+        [
+            str(native_host),
+            "--state-root",
+            str(state_root),
+            "--port",
+            "0",
+            "--ready-file",
+            str(ready_file),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    port = 0
+    try:
+        for _ in range(400):
+            if ready_file.is_file():
+                port = next(
+                    (
+                        int(line[5:])
+                        for line in ready_file.read_text(encoding="utf-8").splitlines()
+                        if line.startswith("port=")
+                    ),
+                    0,
+                )
+                if port > 0:
+                    break
+            if process.poll() is not None:
+                output = process.stdout.read() if process.stdout is not None else ""
+                raise RuntimeError(f"native host exited before health check: {output}")
+            time.sleep(0.025)
+        if port <= 0:
+            raise TimeoutError("native host did not publish a usable health-check port")
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=10.0
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
+    finally:
+        if process.poll() is None and port > 0:
+            try:
+                shutdown = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/shutdown",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(shutdown, timeout=5.0) as response:
+                    response.read()
+                process.wait(timeout=10.0)
+            except (OSError, subprocess.TimeoutExpired):
+                process.kill()
+                process.wait(timeout=5.0)
+        elif process.poll() is None:
+            process.kill()
+            process.wait(timeout=5.0)
+        shutil.rmtree(ready_root, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--native-host", type=Path)
     arguments = parser.parse_args()
     source_root = arguments.source_root.resolve()
+    native_host = arguments.native_host.resolve() if arguments.native_host else None
+    if native_host is not None and not native_host.is_file():
+        raise FileNotFoundError(f"native host executable is missing: {native_host}")
     sys.path.insert(0, str(source_root / "resources"))
 
     import internal_model as model  # pylint: disable=import-outside-toplevel
@@ -73,6 +165,47 @@ def main() -> int:
         assert trained["promoted_bool"] is True
         assert trained["training_scope"] == "all"
         assert model.status_payload(temporary)["ready"] is True
+
+        if native_host is not None:
+            ready_completion = native_completion(native_host, temporary)
+            assert ready_completion["generation"] == trained["generation"]
+            assert ready_completion["origin"] == "random-initialized-local-model"
+            ready_health = native_health(native_host, temporary)
+            assert ready_health["status"] == "ok"
+            assert ready_health["generation"] == trained["generation"]
+            assert ready_health["requested_generation"] == trained["generation"]
+            assert ready_health["degraded"] is False
+            assert ready_health["fallback_reason"] == ""
+
+            active_manifest_path = (
+                model.resolve_active_generation(temporary) / "manifest.json"
+            )
+            active_manifest_bytes = active_manifest_path.read_bytes()
+            try:
+                for readiness_field in ("bootstrap_complete", "generation_ready"):
+                    incomplete_manifest = json.loads(
+                        active_manifest_bytes.decode("utf-8")
+                    )
+                    assert incomplete_manifest[readiness_field] is True
+                    incomplete_manifest[readiness_field] = False
+                    active_manifest_path.write_text(
+                        json.dumps(incomplete_manifest, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    fallback_completion = native_completion(native_host, temporary)
+                    assert fallback_completion["generation"] == "foundation"
+                    assert fallback_completion["origin"] == "verified-native-foundation"
+                    degraded_health = native_health(native_host, temporary)
+                    assert degraded_health["generation"] == "foundation"
+                    assert degraded_health["requested_generation"] == trained["generation"]
+                    assert degraded_health["degraded"] is True
+                    assert "not ready for inference" in degraded_health["fallback_reason"]
+            finally:
+                active_manifest_path.write_bytes(active_manifest_bytes)
+
+            restored_completion = native_completion(native_host, temporary)
+            assert restored_completion["generation"] == trained["generation"]
+            assert restored_completion["origin"] == "random-initialized-local-model"
 
         ready = temporary / "state" / "server.ready"
         ready.parent.mkdir(parents=True, exist_ok=True)

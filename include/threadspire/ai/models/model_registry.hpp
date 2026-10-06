@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +30,14 @@ struct ModelProfile final {
     bool custom_model{false};
     bool coding_agent{false};
     bool auto_discovered{false};
+    // Ephemeral availability from the latest discovery pass. This is not
+    // persisted: a previously discovered local model must prove that it is
+    // loaded again before normal foreground routing can select it.
+    bool runtime_ready{true};
+    // Last independently evaluated expert generation reflected in the routing
+    // score. Feedback may lower the score afterward; the same promotion must
+    // not repeatedly reset that evidence.
+    std::uint64_t validated_generation{0};
     int priority{0};
 };
 
@@ -52,6 +61,12 @@ public:
         double measured_tokens_per_second,
         bool success) noexcept;
     void record_feedback(std::string_view id, bool accepted) noexcept;
+    [[nodiscard]] bool record_validated_promotion(
+        std::string_view skill,
+        std::uint64_t generation,
+        std::size_t accepted_examples,
+        double validation_score,
+        double regression_score) noexcept;
 
 private:
     std::vector<ModelProfile> models_;

@@ -221,6 +221,7 @@ private:
     void update_long_horizon_result();
     void select_page_tab(Page page);
 
+    [[nodiscard]] models::ModelRegistry configured_model_snapshot() const;
     [[nodiscard]] models::ModelRegistry runtime_model_snapshot() const;
     [[nodiscard]] std::optional<models::ModelProfile> best_coding_model() const;
     [[nodiscard]] WorkspaceTask workspace_task() const noexcept;

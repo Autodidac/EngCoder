@@ -154,14 +154,60 @@ void rotate_log_if_needed(const std::filesystem::path& log_path, const bool appe
 
 } // namespace
 
+std::vector<std::string> missing_backend_files(const app::AppPaths& paths) {
+    const auto pack_id = std::string{"internal-pytorch-training"};
+    const auto pack_root = paths.packs / pack_id;
+    std::vector<std::string> required{"pack.json"};
+    const auto catalog = CapabilityPackManager::catalog();
+    const auto descriptor = std::ranges::find(
+        catalog,
+        std::string_view{pack_id},
+        &CapabilityPackDescriptor::id);
+    if (descriptor != catalog.end()) {
+        required.insert(
+            required.end(),
+            descriptor->required_files.begin(),
+            descriptor->required_files.end());
+    }
+
+    std::vector<std::string> missing;
+    for (const auto& relative : required) {
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(pack_root / relative, error);
+        if (error || !std::filesystem::is_regular_file(status) ||
+            std::filesystem::is_symlink(status)) {
+            missing.push_back(pack_id + "/" + relative);
+        }
+    }
+    return missing;
+}
+
+namespace {
+
+[[nodiscard]] std::string missing_backend_message(const app::AppPaths& paths) {
+    const auto missing = missing_backend_files(paths);
+    std::string message = "Internal PyTorch Training is incomplete";
+    if (!missing.empty()) {
+        message += ". Missing: ";
+        for (std::size_t index = 0U; index < missing.size(); ++index) {
+            if (index > 0U) {
+                message += "; ";
+            }
+            message += missing[index];
+        }
+    }
+    message += ". Install the prepared capability pack explicitly; nothing installs automatically.";
+    return message;
+}
+
+} // namespace
+
 bool backend_files_present(const app::AppPaths& paths) noexcept {
-    std::error_code error;
-    return std::filesystem::is_regular_file(
-               paths.packs / "internal-pytorch-training" / "pack.json", error) &&
-           std::filesystem::is_regular_file(paths.python, error) &&
-           std::filesystem::is_regular_file(paths.worker, error) &&
-           std::filesystem::is_regular_file(paths.internal_model_module, error) &&
-           std::filesystem::is_regular_file(paths.curriculum_guard_module, error);
+    try {
+        return missing_backend_files(paths).empty();
+    } catch (...) {
+        return false;
+    }
 }
 
 util::OperationResult install_backend(
@@ -183,7 +229,7 @@ util::OperationResult verify_backend(
         return {
             .state = util::OperationState::failed,
             .exit_code = -1,
-            .message = "The private PyTorch backend is not installed",
+            .message = missing_backend_message(paths),
         };
     }
 
@@ -212,7 +258,7 @@ util::OperationResult initialize_internal_model(
         return {
             .state = util::OperationState::failed,
             .exit_code = -1,
-            .message = "The private PyTorch runtime is not installed",
+            .message = missing_backend_message(paths),
         };
     }
     if (profile != "micro" && profile != "standard" && profile != "large-local") {
@@ -254,7 +300,7 @@ util::OperationResult train_internal_model(
         return {
             .state = util::OperationState::failed,
             .exit_code = -1,
-            .message = "The private PyTorch runtime is not installed",
+            .message = missing_backend_message(paths),
         };
     }
     if (scope.empty()) {
@@ -304,7 +350,7 @@ util::OperationResult inspect_internal_model(
         return {
             .state = util::OperationState::failed,
             .exit_code = -1,
-            .message = "The private PyTorch runtime is not installed",
+            .message = missing_backend_message(paths),
         };
     }
     auto result = run_step(

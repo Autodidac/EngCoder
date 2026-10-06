@@ -11,6 +11,7 @@ EngCoder can serve from either its zero-weight native foundation or a promoted n
 ```text
 EngCoder.exe — native C++23 workbench (<= 100 MiB installed base)
 │
+├── bundled compact native inference host — run in place; 0 B neural weights
 ├── threadspire.ui
 ├── threadspire.tasks ── execution profile + modality + cancellation + artifacts
 ├── threadspire.providers ── one streaming provider contract and capability router
@@ -21,7 +22,6 @@ EngCoder.exe — native C++23 workbench (<= 100 MiB installed base)
 └── threadspire.core / platform
 
 Optional packs (installed only on explicit user action)
-├── compact native inference
 ├── internal PyTorch training
 ├── Transformers/PEFT fine-tuning
 ├── image engine
@@ -32,13 +32,15 @@ CMake publishes eleven named C++23 modules through `FILE_SET CXX_MODULES`. Nativ
 
 `TaskProvider` is the single provider boundary. A request carries modality (interactive text, code, repository, image, audio, or tool), execution profile (`interactive`, `coding_agent`, or `long_horizon`), streaming callbacks, cancellation, model/endpoint data, and file-artifact policy. Coding Agent and Long Horizon are profiles of the same request rather than alternate product interfaces.
 
-The base process owns application policy, persistence, routing, task lifetime, storage safety, and promotion decisions. It does not require Python. A pack may provide a supervised Python/PyTorch or media worker, but installation is transactional and side-effect isolated: it cannot start training, change source/model selection, start a host, or cancel foreground work.
+The base process owns application policy, persistence, routing, task lifetime, storage safety, and promotion decisions. It does not require Python. The compact answer host ships inside the release's compatibility pack-shaped directory, but fresh startup executes that verified file in place instead of copying it into `%LOCALAPPDATA%` or silently recording an installation. An optional pack may provide a supervised Python/PyTorch or media worker, but installation occurs only after an explicit user action and is transactional and side-effect isolated: it cannot start training, change source/model selection, start a host, or cancel foreground work.
+
+Blocked work reports capability requirements rather than mutating the machine. The diagnostic identifies the pack, every missing required file, and the explicit installation control. For Internal PyTorch Training those files are the isolated Python executable plus `model_worker.py`, `internal_model.py`, `curriculum_guard.py`, and `curriculum_compiler.py`. Evidence and durable jobs remain intact while the capability is absent.
 
 ## 2.1 Durable learning boundary
 
 Training jobs persist as `queued`, `preparing`, `training`, `evaluating`, `promoting`, `rejected`, `completed`, or `recoverable-failed`. Duplicate work coalesces, checkpoint publication is atomic, and recovered in-flight work re-enters safely. Inference leases preempt background optimization at checkpoint boundaries.
 
-The active generation is never trained or stopped in place. Promotion starts a separate host for the exact unpromoted generation, verifies the manifest/checksums, health, a deterministic inference canary, held-out metrics, and regression limits, then rechecks the active parent and commits with compare-and-swap. Until that succeeds, the current host and active pointer remain unchanged.
+The active generation is never trained or stopped in place. Promotion starts a separate host for the exact unpromoted generation, verifies the manifest/checksums, health, a deterministic inference canary, held-out metrics, and regression limits, then rechecks the active parent under the promotion lock and commits with compare-and-swap. Until that succeeds, the current host and active pointer remain unchanged. Host health names the requested and actually served generation; falling back to the zero-weight foundation is a visible degraded state and cannot be reported as successful neural service.
 
 ## 2.2 Data and English Gate v2
 
@@ -52,13 +54,19 @@ Foreground inference and background learning are intentionally different routes.
 
 The first reviewer returns `accept`, `revise`, `reject`, or `needs-evidence`; the other model confirms every acceptance. Current facts require a tool trace or user confirmation, coding requires compiler and tests, and private/nonpublic material is redacted before the model-review boundary. The one-pass ledger and complete decision audit are described in [Live Auto Training](docs/live-auto-training.md).
 
-Conversation, planning, and coding open in measured stages. Accepted or rejected original replies also update the existing routing-quality metric, so the internal model earns automatic conversational traffic through demonstrated results rather than a forced switch.
+Conversation, planning, and coding open in measured stages. Accepted or rejected original replies also update the existing routing-quality metric, so the internal model earns automatic conversational traffic through demonstrated results rather than a forced switch. Code and repository outputs remain weight-ineligible unless their execution receipt records a successful compiler and test run; prose review alone cannot promote coding behavior.
 
 ## 2.4 Autonomous English foundation boundary
 
 The explicit one-time foundation builder is independent of Live Auto. It admits only public-domain, permissively licensed, or user-owned UTF-8 text/Markdown sources, records provenance and a stable content hash, and assigns whole chapters or sections to training or held-out partitions before any lesson is generated.
 
 Qwen 27B acts as the deep curriculum architect while Nemotron 4B produces high-volume conversational variants. Every generated record is verified by the other model; neither may approve itself. Accepted material trains EngCoder's own compact transformer through the Internal PyTorch Training pack. Raw source documents stay outside weights and release packages. The full contract is in [Autonomous Curriculum and Training](docs/autonomous-curriculum-and-training.md).
+
+## 2.5 Workbench and activity boundary
+
+The native interface follows a task-first, Codex-like hierarchy: a slim session/routing header, the dominant conversation, reply-local review controls, the composer, and a narrower run-details rail. Settings groups connection, memory, learning, and capability controls. Activity retains the complete operation history and resource details.
+
+One persistent activity card is present on every page. Foreground work replaces queued background wording while it runs; completion becomes a retained result instead of disappearing on the next telemetry tick. The card wraps important detail, while Activity keeps the longer audit. The responsive layout clamps its larger default size to the monitor work area, reserves readable vertical space for a normal reply and composer, tail-follows only when the user is already near the transcript bottom, and coalesces native move/repaint work during resize.
 
 ## 3. Internal neural architecture
 
@@ -220,7 +228,7 @@ A connected model can provide:
 - routing comparisons;
 - optional LoRA targets in Model Lab.
 
-The exact authorized Qwen and Nemotron models may also cooperate in Live Auto Training. They review data; their weights are never copied. Normal foreground Chat still contacts only one model, and a manual exact-model selection never enables silent fall-through.
+The exact authorized Qwen and Nemotron models may also cooperate in Live Auto Training. They review data; their weights are never copied. When one of those exact identifiers is already installed but unloaded on an authorized loopback LM Studio server, background curriculum work may request an on-demand load. EngCoder never downloads it, unloads another model, changes an already loaded model's configuration, or persists an unloaded teacher as foreground-ready. Load failure, server failure, cancellation, and malformed review stay visible as retry-pending evidence. Normal foreground Chat still contacts only one loaded model, and a manual exact-model selection never enables silent fall-through.
 
 It cannot silently become the internal source. Its generated output is data with provenance, not imported inference weights.
 

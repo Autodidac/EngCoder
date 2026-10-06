@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.4)
 
 project(
     EngCoder
-    VERSION 0.9.1
+    VERSION 0.9.2
     DESCRIPTION "Local C++23 adaptive AI runtime with candidate-based continual learning"
     LANGUAGES CXX)
 
@@ -309,12 +309,22 @@ if(THREADSPIRE_AI_BUILD_TESTS)
                     "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_model_smoke.py"
                     --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
-            add_test(
-                NAME engcoder_internal_server_smoke
-                COMMAND
-                    "${Python3_EXECUTABLE}"
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_server_smoke.py"
-                    --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+            if(WIN32)
+                add_test(
+                    NAME engcoder_internal_server_smoke
+                    COMMAND
+                        "${Python3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_server_smoke.py"
+                        --source-root "${CMAKE_CURRENT_SOURCE_DIR}"
+                        --native-host "$<TARGET_FILE:EngCoderNativeHost>")
+            else()
+                add_test(
+                    NAME engcoder_internal_server_smoke
+                    COMMAND
+                        "${Python3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/internal_server_smoke.py"
+                        --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+            endif()
         else()
             message(STATUS "PyTorch/Safetensors not present; tensor smoke tests are available after installing the optional Internal PyTorch Training pack")
         endif()

@@ -6,10 +6,13 @@
 #include <filesystem>
 #include <stop_token>
 #include <string>
+#include <vector>
 
 namespace threadspire::ai::runtime {
 
 [[nodiscard]] bool backend_files_present(const app::AppPaths& paths) noexcept;
+[[nodiscard]] std::vector<std::string> missing_backend_files(
+    const app::AppPaths& paths);
 [[nodiscard]] bool native_inference_files_present(const app::AppPaths& paths) noexcept;
 [[nodiscard]] bool native_inference_source_available(const app::AppPaths& paths) noexcept;
 

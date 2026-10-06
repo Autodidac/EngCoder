@@ -3,9 +3,11 @@ module;
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <map>
 #include <ranges>
 #include <sstream>
 #include <string_view>
@@ -56,7 +58,41 @@ struct EvaluationCompilation final {
 struct CandidateStorage final {
     bool stored{false};
     bool duplicate{false};
+    bool retryable{false};
     std::string reason;
+};
+enum class FoundationSlotStage {
+    generation_pending,
+    verification_pending,
+    confirmation_pending,
+    storage_pending,
+    accepted,
+    rejected,
+    excluded,
+};
+struct FoundationSlotState final {
+    std::string id;
+    std::string chunk_id;
+    std::string role;
+    std::size_t variant{0U};
+    std::string generator_model_id;
+    std::string generator;
+    std::string verifier_model_id;
+    std::string verifier;
+    FoundationSlotStage stage{FoundationSlotStage::generation_pending};
+    Lesson lesson;
+    Review review;
+    std::string last_error;
+};
+using FoundationSlotLedger = std::map<std::string, FoundationSlotState>;
+struct SlotVerification final {
+    Review review;
+    bool confirmation_pending{false};
+};
+struct SlotReviewAttempt final {
+    std::size_t variant{0U};
+    CandidateAttempt attempt;
+    SlotVerification verification;
 };
 
 [[nodiscard]] std::string lower_ascii(const std::string_view value) {
@@ -418,6 +454,17 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
     const std::size_t maximum_output_tokens,
     const double temperature,
     const std::stop_token stop_token) {
+    if (models::is_managed_lm_studio_teacher(model)) {
+        const auto activation = models::ensure_managed_lm_studio_teacher_ready(
+            model,
+            std::chrono::minutes(2),
+            stop_token);
+        if (!activation.ready) {
+            return CurriculumTeacherResponse{
+                .error = activation.message,
+            };
+        }
+    }
     backend::CompletionClient client;
     const auto result = client.complete(
         request.internal_base_url,
@@ -465,21 +512,249 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
     if (!document.has_value()) {
         return std::nullopt;
     }
+    const auto* skill_value = document->find("skill");
+    const auto* lesson_value = document->find("lesson");
+    const auto* difficulty_value = document->find("difficulty");
+    const auto* prompt_value = document->find("prompt");
+    const auto* answer_value = document->find("answer");
+    if (skill_value == nullptr || !skill_value->is_string() ||
+        lesson_value == nullptr || !lesson_value->is_string() ||
+        difficulty_value == nullptr || !difficulty_value->is_string() ||
+        prompt_value == nullptr || !prompt_value->is_string() ||
+        answer_value == nullptr || !answer_value->is_string()) {
+        return std::nullopt;
+    }
     Lesson lesson{
-        .skill = core::json::string_or(document->find("skill"), "english-foundation"),
-        .lesson = core::json::string_or(document->find("lesson")),
-        .difficulty = core::json::string_or(document->find("difficulty")),
-        .prompt = sanitize_training_text(core::json::string_or(document->find("prompt"))),
+        .skill = core::json::string_or(skill_value),
+        .lesson = sanitize_training_text(core::json::string_or(lesson_value)),
+        .difficulty = sanitize_training_text(core::json::string_or(difficulty_value)),
+        .prompt = sanitize_training_text(core::json::string_or(prompt_value)),
         .answer = sanitize_training_response(
-            core::json::string_or(document->find("answer")), "curriculum-teacher"),
+            core::json::string_or(answer_value), "curriculum-teacher"),
     };
-    if (lesson.prompt.empty() || lesson.answer.empty()) {
+    if (lesson.skill.empty() || lesson.lesson.empty() || lesson.difficulty.empty() ||
+        lesson.prompt.empty() || lesson.answer.empty()) {
         return std::nullopt;
     }
     if (!lower_ascii(lesson.skill).starts_with("english")) {
         lesson.skill = "english-foundation";
     }
     return lesson;
+}
+
+[[nodiscard]] std::string_view to_string(const FoundationSlotStage stage) noexcept {
+    switch (stage) {
+    case FoundationSlotStage::generation_pending: return "generation-pending";
+    case FoundationSlotStage::verification_pending: return "verification-pending";
+    case FoundationSlotStage::confirmation_pending: return "confirmation-pending";
+    case FoundationSlotStage::storage_pending: return "storage-pending";
+    case FoundationSlotStage::accepted: return "accepted";
+    case FoundationSlotStage::rejected: return "rejected";
+    case FoundationSlotStage::excluded: return "excluded";
+    }
+    return "generation-pending";
+}
+
+[[nodiscard]] std::optional<FoundationSlotStage> foundation_slot_stage(
+    const std::string_view value) noexcept {
+    if (value == "generation-pending") return FoundationSlotStage::generation_pending;
+    if (value == "verification-pending") return FoundationSlotStage::verification_pending;
+    if (value == "confirmation-pending") return FoundationSlotStage::confirmation_pending;
+    if (value == "storage-pending") return FoundationSlotStage::storage_pending;
+    if (value == "accepted") return FoundationSlotStage::accepted;
+    if (value == "rejected") return FoundationSlotStage::rejected;
+    if (value == "excluded") return FoundationSlotStage::excluded;
+    return std::nullopt;
+}
+
+[[nodiscard]] bool terminal_slot(const FoundationSlotState& slot) noexcept {
+    return slot.stage == FoundationSlotStage::accepted ||
+           slot.stage == FoundationSlotStage::rejected ||
+           slot.stage == FoundationSlotStage::excluded;
+}
+
+[[nodiscard]] std::string foundation_slot_id(
+    const CurriculumChunk& chunk,
+    const std::string_view role,
+    const std::size_t variant) {
+    return "foundation-slot-" + stable_hash(
+        chunk.id,
+        std::string(role) + ':' + std::to_string(variant));
+}
+
+[[nodiscard]] FoundationSlotState& ensure_foundation_slot(
+    FoundationSlotLedger& slots,
+    const CurriculumChunk& chunk,
+    const std::string_view role,
+    const std::size_t variant,
+    const models::ModelProfile& generator,
+    const models::ModelProfile& verifier) {
+    const auto id = foundation_slot_id(chunk, role, variant);
+    const auto [position, inserted] = slots.try_emplace(id, FoundationSlotState{
+        .id = id,
+        .chunk_id = chunk.id,
+        .role = std::string(role),
+        .variant = variant,
+        .generator_model_id = generator.id,
+        .generator = generator.display_name,
+        .verifier_model_id = verifier.id,
+        .verifier = verifier.display_name,
+    });
+    auto& slot = position->second;
+    if (!inserted &&
+        (slot.chunk_id != chunk.id || slot.role != role || slot.variant != variant ||
+         slot.generator_model_id != generator.id || slot.verifier_model_id != verifier.id)) {
+        throw std::runtime_error(
+            "foundation slot identity changed; use Rebuild from source to start a new curriculum");
+    }
+    return slot;
+}
+
+[[nodiscard]] core::json::Value::Object foundation_slot_object(
+    const FoundationSlotState& slot) {
+    return {
+        {"id", slot.id}, {"chunk_id", slot.chunk_id}, {"role", slot.role},
+        {"variant", static_cast<double>(slot.variant)},
+        {"generator_model_id", slot.generator_model_id}, {"generator", slot.generator},
+        {"verifier_model_id", slot.verifier_model_id}, {"verifier", slot.verifier},
+        {"stage", std::string(to_string(slot.stage))},
+        {"skill", slot.lesson.skill}, {"lesson", slot.lesson.lesson},
+        {"difficulty", slot.lesson.difficulty}, {"prompt", slot.lesson.prompt},
+        {"answer", slot.lesson.answer}, {"review_accepted", slot.review.accepted},
+        {"review_revised", slot.review.revised}, {"review_score", slot.review.score},
+        {"review_reason", slot.review.reason},
+        {"last_error", slot.last_error},
+        {"updated_unix_ms", static_cast<double>(memory::now_unix_ms())},
+    };
+}
+
+void persist_foundation_slot(
+    const std::filesystem::path& root,
+    const FoundationSlotState& slot) {
+    publish_file(
+        root / "foundation-slots" / (slot.id + ".json"),
+        core::json::stringify(core::json::Value(foundation_slot_object(slot))));
+}
+
+[[nodiscard]] FoundationSlotLedger load_foundation_slots(
+    const std::filesystem::path& root) {
+    FoundationSlotLedger slots;
+    const auto directory = root / "foundation-slots";
+    std::error_code directory_error;
+    if (!std::filesystem::exists(directory, directory_error)) {
+        if (directory_error) {
+            throw std::runtime_error(
+                "unable to inspect durable foundation slots: " + directory_error.message());
+        }
+        return slots;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        const auto text = read_text_file(entry.path());
+        std::string error;
+        const auto document = core::json::try_parse(text, error);
+        if (!document.has_value() || !document->is_object()) {
+            throw std::runtime_error(
+                "durable foundation slot is malformed: " + entry.path().filename().string());
+        }
+        const auto id = core::json::string_or(document->find("id"));
+        const auto chunk_id = core::json::string_or(document->find("chunk_id"));
+        const auto role = core::json::string_or(document->find("role"));
+        const auto generator_model_id = core::json::string_or(
+            document->find("generator_model_id"));
+        const auto verifier_model_id = core::json::string_or(
+            document->find("verifier_model_id"));
+        const auto parsed_stage = foundation_slot_stage(
+            core::json::string_or(document->find("stage")));
+        const auto variant_number = core::json::number_or(document->find("variant"), -1.0);
+        if (id.empty() || chunk_id.empty() || role.empty() ||
+            generator_model_id.empty() || verifier_model_id.empty() ||
+            !parsed_stage.has_value() || !std::isfinite(variant_number) ||
+            variant_number < 0.0 || std::floor(variant_number) != variant_number) {
+            throw std::runtime_error(
+                "durable foundation slot has an invalid schema: " +
+                entry.path().filename().string());
+        }
+        FoundationSlotState slot{
+            .id = id,
+            .chunk_id = chunk_id,
+            .role = role,
+            .variant = static_cast<std::size_t>(variant_number),
+            .generator_model_id = generator_model_id,
+            .generator = core::json::string_or(document->find("generator")),
+            .verifier_model_id = verifier_model_id,
+            .verifier = core::json::string_or(document->find("verifier")),
+            .stage = *parsed_stage,
+            .review = Review{
+                .accepted = core::json::bool_or(document->find("review_accepted")),
+                .revised = core::json::bool_or(document->find("review_revised")),
+                .score = core::json::number_or(document->find("review_score")),
+                .reason = core::json::string_or(document->find("review_reason")),
+            },
+            .last_error = core::json::string_or(document->find("last_error")),
+        };
+        if (slot.id != foundation_slot_id(
+                CurriculumChunk{.id = slot.chunk_id}, slot.role, slot.variant)) {
+            throw std::runtime_error(
+                "durable foundation slot identity does not match its contents: " +
+                entry.path().filename().string());
+        }
+        if (slot.stage != FoundationSlotStage::generation_pending) {
+            const auto parsed_lesson = parse_lesson(text);
+            if (!parsed_lesson.has_value()) {
+                throw std::runtime_error(
+                    "durable foundation slot lost its generated lesson: " +
+                    entry.path().filename().string());
+            }
+            slot.lesson = *parsed_lesson;
+        }
+        if ((slot.stage == FoundationSlotStage::storage_pending ||
+             slot.stage == FoundationSlotStage::accepted) &&
+            !slot.review.accepted) {
+            throw std::runtime_error(
+                "durable foundation slot lost its accepted review: " +
+                entry.path().filename().string());
+        }
+        slots.emplace(slot.id, std::move(slot));
+    }
+    return slots;
+}
+
+void recount_foundation_slots(
+    const FoundationSlotLedger& slots,
+    FoundationBuildProgress& progress) {
+    progress.generated = 0U;
+    progress.accepted = 0U;
+    progress.revised = 0U;
+    progress.rejected = 0U;
+    progress.retry_pending = 0U;
+    for (const auto& slot : slots | std::views::values) {
+        progress.generated += slot.stage == FoundationSlotStage::generation_pending ? 0U : 1U;
+        progress.accepted += slot.stage == FoundationSlotStage::accepted ? 1U : 0U;
+        progress.revised += slot.stage == FoundationSlotStage::accepted && slot.review.revised ? 1U : 0U;
+        progress.rejected += slot.stage == FoundationSlotStage::rejected ||
+            slot.stage == FoundationSlotStage::excluded ? 1U : 0U;
+        progress.retry_pending += terminal_slot(slot) ? 0U : 1U;
+    }
+}
+
+void persist_competency_map_entry(
+    const std::filesystem::path& root,
+    const CurriculumChunk& chunk,
+    const FoundationSlotState& slot) {
+    const auto id = "foundation-map-" + stable_hash(slot.id, slot.lesson.lesson);
+    const auto path = root / "competency-map.jsonl";
+    if (jsonl_contains_id(path, id)) {
+        return;
+    }
+    append_json(path, {
+        {"id", id}, {"slot_id", slot.id}, {"source_span", chunk.source_span},
+        {"skill", slot.lesson.skill}, {"lesson", slot.lesson.lesson},
+        {"difficulty", slot.lesson.difficulty}, {"architect", slot.generator_model_id},
+        {"held_out", chunk.held_out},
+    });
 }
 
 [[nodiscard]] Review review_lesson(
@@ -522,45 +797,86 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
         review.reason = "verifier returned malformed JSON";
         return review;
     }
-    const auto action = lower_ascii(core::json::string_or(document->find("action")));
-    review.score = std::clamp(core::json::number_or(document->find("score")), 0.0, 1.0);
-    review.reason = core::json::string_or(document->find("reason"));
+    const auto* action_value = document->find("action");
+    const auto* score_value = document->find("score");
+    const auto* answer_value = document->find("answer");
+    const auto* reason_value = document->find("reason");
+    if (action_value == nullptr || !action_value->is_string() ||
+        score_value == nullptr || !score_value->is_number() ||
+        answer_value == nullptr || !answer_value->is_string() ||
+        reason_value == nullptr || !reason_value->is_string()) {
+        review.retryable = true;
+        review.reason =
+            "verifier returned incomplete review JSON; action, numeric score, answer, and reason are required";
+        return review;
+    }
+    const auto action = lower_ascii(core::json::string_or(action_value));
+    const auto score = core::json::number_or(score_value);
+    if ((action != "accept" && action != "revise" && action != "reject") ||
+        !std::isfinite(score) || score < 0.0 || score > 1.0 ||
+        core::json::string_or(reason_value).empty() ||
+        (!allow_revision && action == "revise")) {
+        review.retryable = true;
+        review.reason = "verifier returned an invalid review decision";
+        return review;
+    }
+    review.score = score;
+    review.reason = core::json::string_or(reason_value);
     review.answer = sanitize_training_response(
-        core::json::string_or(document->find("answer")), verifier.id);
+        core::json::string_or(answer_value), verifier.id);
+    if (action == "revise" && review.answer.empty()) {
+        review.retryable = true;
+        review.reason = "verifier selected revise without a usable corrected answer";
+        return review;
+    }
     review.accepted = action == "accept" && review.score >= request.minimum_verifier_score;
     review.revised = allow_revision && action == "revise" && !review.answer.empty();
-    if (review.reason.empty()) {
-        review.reason = review.accepted ? "independent verifier accepted the record" :
-            (review.revised ? "independent verifier proposed one revision" :
-             "independent verifier rejected the record");
-    }
     return review;
 }
 
-[[nodiscard]] Review verify_with_one_revision(
+[[nodiscard]] SlotVerification verify_with_one_revision(
     const FoundationBuildRequest& request,
     const CurriculumChunk& chunk,
     Lesson& lesson,
     const models::ModelProfile& generator,
     const models::ModelProfile& verifier,
-    const std::stop_token stop_token) {
+    const std::stop_token stop_token,
+    const bool confirmation_only = false) {
     if (same_teacher_identity(generator, verifier)) {
-        return Review{.reason = "a teacher may not approve its own output"};
+        return SlotVerification{
+            .review = Review{.reason = "a teacher may not approve its own output"},
+        };
     }
     if (unsafe_curriculum_text(lesson.prompt, lesson.answer) ||
         copied_passage(chunk.text, lesson.prompt, lesson.answer)) {
-        return Review{.reason = "local privacy, identity, volatility, or copied-passage gate rejected the record"};
+        return SlotVerification{
+            .review = Review{
+                .reason = "local privacy, identity, volatility, or copied-passage gate rejected the record",
+            },
+        };
+    }
+    if (confirmation_only) {
+        auto confirmation = review_lesson(
+            request, chunk, lesson, generator, stop_token, false);
+        confirmation.revised = true;
+        if (confirmation.accepted) {
+            confirmation.reason = "one revision was independently confirmed by the other teacher";
+        }
+        return SlotVerification{
+            .review = std::move(confirmation),
+            .confirmation_pending = true,
+        };
     }
     auto review = review_lesson(request, chunk, lesson, verifier, stop_token, true);
     if (!review.revised || review.retryable) {
-        return review;
+        return SlotVerification{.review = std::move(review)};
     }
     lesson.answer = review.answer;
     if (unsafe_curriculum_text(lesson.prompt, lesson.answer) ||
         copied_passage(chunk.text, lesson.prompt, lesson.answer)) {
         review.accepted = false;
         review.reason = "the proposed revision failed the local admission gates";
-        return review;
+        return SlotVerification{.review = std::move(review)};
     }
     auto confirmation = review_lesson(request, chunk, lesson, generator, stop_token, false);
     confirmation.prompt_tokens += review.prompt_tokens;
@@ -569,7 +885,10 @@ void append_json(const std::filesystem::path& path, core::json::Value::Object ob
     if (confirmation.accepted) {
         confirmation.reason = "one revision was independently confirmed by the other teacher";
     }
-    return confirmation;
+    return SlotVerification{
+        .review = std::move(confirmation),
+        .confirmation_pending = true,
+    };
 }
 
 [[nodiscard]] Lesson architect_lesson(
@@ -724,11 +1043,15 @@ void persist_progress(const std::filesystem::path& root, const FoundationBuildPr
 void audit_attempt(
     const std::filesystem::path& root,
     const CurriculumChunk& chunk,
+    const FoundationSlotState& slot,
     const CandidateAttempt& attempt,
     const bool stored,
     const std::string_view decision) {
     append_json(root / "foundation-attempts.jsonl", {
-        {"id", "foundation-" + chunk.id + "-" + stable_hash(attempt.generator.id, attempt.lesson.prompt)},
+        {"id", "foundation-" + slot.id + "-" +
+            stable_hash(attempt.generator.id, attempt.lesson.prompt + std::string(decision))},
+        {"slot_id", slot.id}, {"slot_role", slot.role},
+        {"slot_variant", static_cast<double>(slot.variant)},
         {"skill", attempt.lesson.skill}, {"cleaned_prompt", attempt.lesson.prompt},
         {"cleaned_answer", attempt.lesson.answer}, {"source_id", chunk.source_id},
         {"source_span", chunk.source_span}, {"source_split", chunk.held_out ? "held-out" : "training"},
@@ -746,10 +1069,12 @@ void audit_attempt(
 [[nodiscard]] CandidateStorage store_candidate(
     const std::filesystem::path& root,
     const CurriculumChunk& chunk,
+    const FoundationSlotState& slot,
     CandidateAttempt& attempt,
     ContinualLearningService& learning_service) {
     auto episode = memory::Episode{
-        .id = memory::make_episode_id(),
+        .id = "foundation-episode-" + stable_hash(
+            slot.id, attempt.lesson.prompt + "\n" + attempt.lesson.answer),
         .skill = "english-foundation",
         .prompt = attempt.lesson.prompt,
         .response = attempt.lesson.answer,
@@ -764,19 +1089,18 @@ void audit_attempt(
         .knowledge_destination = "lora-incubation",
         .created_unix_ms = memory::now_unix_ms(),
     };
-    const auto inspection = learning_service.preview(episode);
-    if (inspection.duplicate) {
-        return CandidateStorage{
-            .duplicate = true,
-            .reason = inspection.reason,
-        };
-    }
+    auto inspection = learning_service.preview(episode);
     if (!inspection.would_store || !inspection.eligible_for_weight_training) {
-        attempt.review.accepted = false;
-        attempt.review.reason = inspection.reason.empty()
-            ? "local curriculum admission gate rejected the record"
-            : inspection.reason;
-        return CandidateStorage{.reason = attempt.review.reason};
+        if (inspection.duplicate) {
+            // A prior crash may have committed the EpisodeStore row before the
+            // compact train/evaluation row. Continue and repair the latter.
+        } else {
+            attempt.review.accepted = false;
+            attempt.review.reason = inspection.reason.empty()
+                ? "local curriculum admission gate rejected the record"
+                : inspection.reason;
+            return CandidateStorage{.reason = attempt.review.reason};
+        }
     }
 
     const auto record_id = "foundation-record-" + stable_hash(
@@ -784,27 +1108,118 @@ void audit_attempt(
         attempt.lesson.prompt + "\n" + attempt.lesson.answer);
     const auto dataset_path = root /
         (chunk.held_out ? "foundation-heldout.jsonl" : "foundation-training.jsonl");
-    if (jsonl_contains_id(dataset_path, record_id)) {
+    const auto dataset_present = jsonl_contains_id(dataset_path, record_id);
+
+    auto episode_confirmed = chunk.held_out || inspection.duplicate;
+    if (!episode_confirmed) {
+        if (learning_service.submit_without_automatic_update(episode)) {
+            episode_confirmed = true;
+        } else {
+            inspection = learning_service.preview(episode);
+            episode_confirmed = inspection.duplicate;
+        }
+    }
+    if (!episode_confirmed) {
         return CandidateStorage{
-            .duplicate = true,
-            .reason = "this generated curriculum record is already stored",
+            .retryable = true,
+            .reason = "the verified EpisodeStore row could not be durably confirmed",
         };
     }
-    if (!chunk.held_out && !learning_service.submit(std::move(episode))) {
-        return CandidateStorage{
-            .duplicate = true,
-            .reason = "the verified episode store already contains this behavior",
-        };
+
+    if (!dataset_present) {
+        try {
+            append_json(dataset_path, {
+                {"id", record_id}, {"skill", attempt.lesson.skill},
+                {"prompt", attempt.lesson.prompt}, {"answer", attempt.lesson.answer},
+                {"source_id", chunk.source_id}, {"source_span", chunk.source_span},
+                {"generator_model_id", attempt.generator.id},
+                {"verifier_model_id", attempt.verifier.id}, {"score", attempt.review.score},
+                {"split", chunk.held_out ? "held-out" : "training"},
+            });
+        } catch (const std::exception& error) {
+            return CandidateStorage{
+                .retryable = true,
+                .reason = std::string("the compact foundation dataset row could not be committed: ") +
+                    error.what(),
+            };
+        }
+        return CandidateStorage{.stored = true};
     }
-    append_json(dataset_path, {
-        {"id", record_id}, {"skill", attempt.lesson.skill},
-        {"prompt", attempt.lesson.prompt}, {"answer", attempt.lesson.answer},
-        {"source_id", chunk.source_id}, {"source_span", chunk.source_span},
-        {"generator_model_id", attempt.generator.id},
-        {"verifier_model_id", attempt.verifier.id}, {"score", attempt.review.score},
-        {"split", chunk.held_out ? "held-out" : "training"},
-    });
-    return CandidateStorage{.stored = true};
+    return CandidateStorage{
+        .duplicate = true,
+        .reason = "the durable EpisodeStore and compact dataset already contain this slot",
+    };
+}
+
+[[nodiscard]] CandidateAttempt candidate_attempt_from_slot(
+    const FoundationSlotState& slot,
+    const models::ModelProfile& generator,
+    const models::ModelProfile& verifier) {
+    return CandidateAttempt{
+        .lesson = slot.lesson,
+        .generator = generator,
+        .verifier = verifier,
+        .review = slot.review,
+    };
+}
+
+[[nodiscard]] bool excluded_review(const Review& review) {
+    const auto reason = lower_ascii(review.reason);
+    return reason.find("local privacy") != std::string::npos ||
+           reason.find("admission gate") != std::string::npos ||
+           reason.find("copied-passage") != std::string::npos;
+}
+
+[[nodiscard]] bool finalize_foundation_slot(
+    const std::filesystem::path& root,
+    const CurriculumChunk& chunk,
+    FoundationSlotState& slot,
+    const models::ModelProfile& generator,
+    const models::ModelProfile& verifier,
+    ContinualLearningService& learning_service) {
+    auto attempt = candidate_attempt_from_slot(slot, generator, verifier);
+    if (!slot.review.accepted) {
+        slot.stage = excluded_review(slot.review)
+            ? FoundationSlotStage::excluded
+            : FoundationSlotStage::rejected;
+        slot.last_error.clear();
+        persist_foundation_slot(root, slot);
+        audit_attempt(
+            root, chunk, slot, attempt, false,
+            slot.stage == FoundationSlotStage::excluded ? "excluded" : "rejected");
+        return true;
+    }
+
+    if (slot.stage != FoundationSlotStage::storage_pending) {
+        slot.stage = FoundationSlotStage::storage_pending;
+        slot.last_error.clear();
+        persist_foundation_slot(root, slot);
+    }
+    const auto storage = store_candidate(root, chunk, slot, attempt, learning_service);
+    if (storage.retryable) {
+        slot.last_error = storage.reason;
+        persist_foundation_slot(root, slot);
+        audit_attempt(root, chunk, slot, attempt, false, "retry-pending");
+        return false;
+    }
+    if (storage.stored || storage.duplicate) {
+        slot.stage = FoundationSlotStage::accepted;
+        slot.last_error.clear();
+        persist_foundation_slot(root, slot);
+        audit_attempt(root, chunk, slot, attempt, storage.stored, "accepted");
+        return true;
+    }
+
+    slot.review.accepted = false;
+    slot.review.reason = storage.reason.empty()
+        ? "local curriculum admission gate rejected the record"
+        : storage.reason;
+    slot.stage = FoundationSlotStage::excluded;
+    slot.last_error.clear();
+    persist_foundation_slot(root, slot);
+    attempt.review = slot.review;
+    audit_attempt(root, chunk, slot, attempt, false, "excluded");
+    return true;
 }
 [[nodiscard]] EvaluationCompilation compile_foundation_evaluation(
     const FoundationBuildRequest& request) {
@@ -1005,8 +1420,21 @@ CurriculumPreparationResult prepare_english_foundation_sources(
                      "competency-map.jsonl", "foundation-training.jsonl",
                      "foundation-heldout.jsonl", "foundation-state.json",
                      "foundation-evaluation.jsonl"}) {
-                std::error_code ignored;
-                std::filesystem::remove(curriculum_root / name, ignored);
+                std::error_code removal_error;
+                std::filesystem::remove(curriculum_root / name, removal_error);
+                if (removal_error) {
+                    result.error = "unable to reset current foundation data " +
+                        std::string(name) + ": " + removal_error.message();
+                    return result;
+                }
+            }
+            std::error_code removal_error;
+            std::filesystem::remove_all(
+                curriculum_root / "foundation-slots", removal_error);
+            if (removal_error) {
+                result.error = "unable to reset durable foundation slot state: " +
+                    removal_error.message();
+                return result;
             }
         }
         result.succeeded = true;
@@ -1123,20 +1551,23 @@ FoundationBuildResult run_english_foundation_build(
     progress.chunk_count = preparation.chunks.size();
     progress.held_out = static_cast<std::size_t>(std::ranges::count_if(
         preparation.chunks, [](const auto& chunk) { return chunk.held_out; }));
+    FoundationSlotLedger slots;
+    try {
+        slots = load_foundation_slots(request.curriculum_root);
+    } catch (const std::exception& error) {
+        result.error = error.what();
+        progress.stage = FoundationStage::failed;
+        progress.message = result.error + "; use Rebuild from source to reset only current slot state.";
+        persist_progress(request.curriculum_root, progress);
+        publish_progress(on_progress, progress);
+        return result;
+    }
     if (!request.rebuild) {
         const auto durable = read_english_foundation_progress(request.curriculum_root);
-        progress.generated = durable.generated;
-        progress.accepted = durable.accepted;
-        progress.revised = durable.revised;
-        progress.rejected = durable.rejected;
-        // A failed stage points at the exact unresolved chunk. Resuming consumes
-        // that pending slot; the append-only attempt ledger retains its history.
-        progress.retry_pending = durable.stage == FoundationStage::failed
-            ? 0U
-            : durable.retry_pending;
         progress.prompt_tokens = durable.prompt_tokens;
         progress.completion_tokens = durable.completion_tokens;
     }
+    recount_foundation_slots(slots, progress);
     const auto begin = request.rebuild ? 0U : resume_chunk_index(request.curriculum_root);
     const auto limit = request.maximum_source_chunks == 0U
         ? preparation.chunks.size()
@@ -1171,61 +1602,101 @@ FoundationBuildResult run_english_foundation_build(
         persist_progress(request.curriculum_root, progress);
         publish_progress(on_progress, progress);
 
-        std::string architect_error;
-        auto qwen_lesson = architect_lesson(request, chunk, progress, stop_token, architect_error);
-        if (qwen_lesson.prompt.empty()) {
-            ++progress.retry_pending;
-            progress.stage = FoundationStage::failed;
-            progress.message = "Qwen lesson remains retry-pending: " + architect_error;
-            persist_progress(request.curriculum_root, progress);
-            result.error = progress.message;
-            publish_progress(on_progress, progress);
-            return result;
-        }
-        append_json(request.curriculum_root / "competency-map.jsonl", {
-            {"source_span", chunk.source_span}, {"skill", qwen_lesson.skill},
-            {"lesson", qwen_lesson.lesson}, {"difficulty", qwen_lesson.difficulty},
-            {"architect", request.qwen.id}, {"held_out", chunk.held_out},
-        });
-
-        CandidateAttempt qwen_attempt{
-            .lesson = qwen_lesson,
-            .generator = request.qwen,
-            .verifier = request.nemotron,
-        };
-        ++progress.generated;
-        progress.stage = FoundationStage::verifying;
-        progress.operation = "Nemotron is independently checking Qwen's difficult lesson";
-        qwen_attempt.review = verify_with_one_revision(
-            request, chunk, qwen_attempt.lesson, request.qwen, request.nemotron, stop_token);
-        progress.prompt_tokens += qwen_attempt.review.prompt_tokens;
-        progress.completion_tokens += qwen_attempt.review.completion_tokens;
-        if (qwen_attempt.review.retryable) {
-            ++progress.retry_pending;
-            audit_attempt(request.curriculum_root, chunk, qwen_attempt, false, "retry-pending");
-            progress.stage = FoundationStage::failed;
-            progress.message = "Independent Nemotron review remains retry-pending; Resume retries this chunk.";
-            persist_progress(request.curriculum_root, progress);
-            result.error = progress.message;
-            publish_progress(on_progress, progress);
-            return result;
-        } else if (qwen_attempt.review.accepted) {
-            const auto storage = store_candidate(
-                request.curriculum_root, chunk, qwen_attempt, learning_service);
-            if (storage.stored) {
-                ++progress.accepted;
-                progress.revised += qwen_attempt.review.revised ? 1U : 0U;
-                audit_attempt(request.curriculum_root, chunk, qwen_attempt, true, "accepted");
-            } else if (storage.duplicate) {
-                audit_attempt(request.curriculum_root, chunk, qwen_attempt, false, "accepted");
-            } else {
-                ++progress.rejected;
-                audit_attempt(request.curriculum_root, chunk, qwen_attempt, false, "rejected");
+        auto& qwen_slot = ensure_foundation_slot(
+            slots, chunk, "qwen-architect", 0U, request.qwen, request.nemotron);
+        if (qwen_slot.stage == FoundationSlotStage::generation_pending) {
+            std::string architect_error;
+            auto lesson = architect_lesson(
+                request, chunk, progress, stop_token, architect_error);
+            if (lesson.prompt.empty()) {
+                qwen_slot.last_error = architect_error;
+                persist_foundation_slot(request.curriculum_root, qwen_slot);
+                auto attempt = candidate_attempt_from_slot(
+                    qwen_slot, request.qwen, request.nemotron);
+                attempt.review.retryable = true;
+                attempt.review.reason = architect_error;
+                audit_attempt(
+                    request.curriculum_root, chunk, qwen_slot, attempt, false, "retry-pending");
+                recount_foundation_slots(slots, progress);
+                progress.stage = FoundationStage::failed;
+                progress.message = "Qwen lesson remains retry-pending: " + architect_error;
+                persist_progress(request.curriculum_root, progress);
+                result.error = progress.message;
+                publish_progress(on_progress, progress);
+                return result;
             }
-        } else {
-            ++progress.rejected;
-            audit_attempt(request.curriculum_root, chunk, qwen_attempt, false, "rejected");
+            qwen_slot.lesson = std::move(lesson);
+            qwen_slot.review = {};
+            qwen_slot.last_error.clear();
+            qwen_slot.stage = FoundationSlotStage::verification_pending;
+            persist_foundation_slot(request.curriculum_root, qwen_slot);
         }
+        if (qwen_slot.stage == FoundationSlotStage::verification_pending ||
+            qwen_slot.stage == FoundationSlotStage::confirmation_pending) {
+            progress.stage = FoundationStage::verifying;
+            progress.operation = "Nemotron is independently checking Qwen's difficult lesson";
+            auto attempt = candidate_attempt_from_slot(
+                qwen_slot, request.qwen, request.nemotron);
+            auto verification = verify_with_one_revision(
+                request, chunk, attempt.lesson, request.qwen, request.nemotron, stop_token,
+                qwen_slot.stage == FoundationSlotStage::confirmation_pending);
+            progress.prompt_tokens += verification.review.prompt_tokens;
+            progress.completion_tokens += verification.review.completion_tokens;
+            qwen_slot.lesson = std::move(attempt.lesson);
+            qwen_slot.review = std::move(verification.review);
+            if (qwen_slot.review.retryable) {
+                qwen_slot.stage = verification.confirmation_pending
+                    ? FoundationSlotStage::confirmation_pending
+                    : FoundationSlotStage::verification_pending;
+                qwen_slot.last_error = qwen_slot.review.reason;
+                persist_foundation_slot(request.curriculum_root, qwen_slot);
+                attempt = candidate_attempt_from_slot(
+                    qwen_slot, request.qwen, request.nemotron);
+                audit_attempt(
+                    request.curriculum_root, chunk, qwen_slot, attempt, false, "retry-pending");
+                recount_foundation_slots(slots, progress);
+                progress.stage = FoundationStage::failed;
+                progress.message =
+                    "Independent Nemotron review remains retry-pending; Resume retries only this slot.";
+                persist_progress(request.curriculum_root, progress);
+                result.error = progress.message;
+                publish_progress(on_progress, progress);
+                return result;
+            }
+            qwen_slot.last_error.clear();
+        }
+        if (!terminal_slot(qwen_slot) &&
+            !finalize_foundation_slot(
+                request.curriculum_root, chunk, qwen_slot,
+                request.qwen, request.nemotron, learning_service)) {
+            recount_foundation_slots(slots, progress);
+            progress.stage = FoundationStage::failed;
+            progress.message =
+                "Qwen lesson storage remains retry-pending; Resume retries only durable storage.";
+            persist_progress(request.curriculum_root, progress);
+            result.error = progress.message;
+            publish_progress(on_progress, progress);
+            return result;
+        }
+        recount_foundation_slots(slots, progress);
+
+        // Nemotron variants are derived from this architect lesson. A terminal
+        // rejection/exclusion is useful audit evidence, but it is not a trusted
+        // curriculum specification and must never become a parent of positive
+        // training rows. Resume advances past the rejected chunk because its
+        // durable slot already records the completed decision.
+        if (qwen_slot.stage != FoundationSlotStage::accepted) {
+            progress.chunk_index = chunk_index + 1U;
+            progress.checkpoint = "foundation-state.json at chunk " +
+                std::to_string(progress.chunk_index) + " of " +
+                std::to_string(progress.chunk_count);
+            progress.message =
+                "The independently rejected architect lesson remains in the audit and was not used to generate training variants.";
+            persist_progress(request.curriculum_root, progress);
+            publish_progress(on_progress, progress);
+            continue;
+        }
+        persist_competency_map_entry(request.curriculum_root, chunk, qwen_slot);
 
         if (!chunk.held_out) {
             progress.stage = FoundationStage::generating;
@@ -1255,70 +1726,129 @@ FoundationBuildResult run_english_foundation_build(
                 std::to_string(qwen_parallelism) + " of 4 (1 by default).";
             publish_progress(on_progress, progress);
             auto chunk_retry_pending = false;
-            std::vector<CandidateAttempt> generated_attempts;
-            generated_attempts.reserve(variants);
-            for (std::size_t group = 0U; group < variants; group += parallelism) {
-                std::vector<std::future<CandidateAttempt>> futures;
-                for (std::size_t index = group; index < std::min(variants, group + parallelism); ++index) {
+            std::vector<std::size_t> generation_slots;
+            for (std::size_t index = 0U; index < variants; ++index) {
+                auto& slot = ensure_foundation_slot(
+                    slots, chunk, "nemotron-variant", index,
+                    request.nemotron, request.qwen);
+                if (slot.stage == FoundationSlotStage::generation_pending) {
+                    generation_slots.push_back(index);
+                }
+            }
+            for (std::size_t group = 0U; group < generation_slots.size(); group += parallelism) {
+                std::vector<std::future<std::pair<std::size_t, CandidateAttempt>>> futures;
+                const auto end = std::min(generation_slots.size(), group + parallelism);
+                for (std::size_t offset = group; offset < end; ++offset) {
+                    const auto index = generation_slots[offset];
                     futures.push_back(std::async(std::launch::async, [&, index] {
-                        return generate_nemotron_variant(
-                            request, chunk, qwen_lesson, index, stop_token);
+                        return std::pair{
+                            index,
+                            generate_nemotron_variant(
+                                request, chunk, qwen_slot.lesson, index, stop_token),
+                        };
                     }));
                 }
                 for (auto& future : futures) {
-                    generated_attempts.push_back(future.get());
-                }
-            }
-            for (std::size_t group = 0U; group < generated_attempts.size(); group += qwen_parallelism) {
-                std::vector<std::future<CandidateAttempt>> review_futures;
-                const auto end = std::min(generated_attempts.size(), group + qwen_parallelism);
-                for (std::size_t index = group; index < end; ++index) {
-                    review_futures.push_back(std::async(
-                        std::launch::async,
-                        [&, attempt = std::move(generated_attempts[index])]() mutable {
-                            if (!attempt.review.retryable) {
-                                attempt.review = verify_with_one_revision(
-                                    request,
-                                    chunk,
-                                    attempt.lesson,
-                                    request.nemotron,
-                                    request.qwen,
-                                    stop_token);
-                            }
-                            return attempt;
-                        }));
-                }
-                for (auto& future : review_futures) {
-                    auto attempt = future.get();
-                    ++progress.generated;
-                    progress.prompt_tokens += attempt.prompt_tokens + attempt.review.prompt_tokens;
-                    progress.completion_tokens += attempt.completion_tokens + attempt.review.completion_tokens;
-                    if (attempt.review.retryable) {
-                        ++progress.retry_pending;
+                    auto [index, attempt] = future.get();
+                    auto& slot = slots.at(foundation_slot_id(
+                        chunk, "nemotron-variant", index));
+                    progress.prompt_tokens += attempt.prompt_tokens;
+                    progress.completion_tokens += attempt.completion_tokens;
+                    if (attempt.review.retryable || attempt.lesson.prompt.empty()) {
+                        slot.review = attempt.review;
+                        slot.last_error = attempt.review.reason;
+                        persist_foundation_slot(request.curriculum_root, slot);
+                        audit_attempt(
+                            request.curriculum_root, chunk, slot, attempt, false, "retry-pending");
                         chunk_retry_pending = true;
-                        audit_attempt(request.curriculum_root, chunk, attempt, false, "retry-pending");
-                    } else if (attempt.review.accepted) {
-                        const auto storage = store_candidate(
-                            request.curriculum_root, chunk, attempt, learning_service);
-                        if (storage.stored) {
-                            ++progress.accepted;
-                            progress.revised += attempt.review.revised ? 1U : 0U;
-                            audit_attempt(request.curriculum_root, chunk, attempt, true, "accepted");
-                        } else if (storage.duplicate) {
-                            audit_attempt(request.curriculum_root, chunk, attempt, false, "accepted");
-                        } else {
-                            ++progress.rejected;
-                            audit_attempt(request.curriculum_root, chunk, attempt, false, "rejected");
-                        }
                     } else {
-                        ++progress.rejected;
-                        audit_attempt(request.curriculum_root, chunk, attempt, false, "rejected");
+                        slot.lesson = std::move(attempt.lesson);
+                        slot.review = {};
+                        slot.last_error.clear();
+                        slot.stage = FoundationSlotStage::verification_pending;
+                        persist_foundation_slot(request.curriculum_root, slot);
                     }
                 }
             }
+
+            std::vector<std::size_t> review_slots;
+            for (std::size_t index = 0U; index < variants; ++index) {
+                const auto& slot = slots.at(foundation_slot_id(
+                    chunk, "nemotron-variant", index));
+                if (slot.stage == FoundationSlotStage::verification_pending ||
+                    slot.stage == FoundationSlotStage::confirmation_pending) {
+                    review_slots.push_back(index);
+                }
+            }
+            for (std::size_t group = 0U; group < review_slots.size(); group += qwen_parallelism) {
+                std::vector<std::future<SlotReviewAttempt>> review_futures;
+                const auto end = std::min(review_slots.size(), group + qwen_parallelism);
+                for (std::size_t offset = group; offset < end; ++offset) {
+                    const auto index = review_slots[offset];
+                    const auto confirmation_only = slots.at(foundation_slot_id(
+                        chunk, "nemotron-variant", index)).stage ==
+                        FoundationSlotStage::confirmation_pending;
+                    auto attempt = candidate_attempt_from_slot(
+                        slots.at(foundation_slot_id(chunk, "nemotron-variant", index)),
+                        request.nemotron, request.qwen);
+                    review_futures.push_back(std::async(
+                        std::launch::async,
+                        [&, index, confirmation_only, attempt = std::move(attempt)]() mutable {
+                            auto verification = verify_with_one_revision(
+                                request, chunk, attempt.lesson,
+                                request.nemotron, request.qwen, stop_token,
+                                confirmation_only);
+                            return SlotReviewAttempt{
+                                .variant = index,
+                                .attempt = std::move(attempt),
+                                .verification = std::move(verification),
+                            };
+                        }));
+                }
+                for (auto& future : review_futures) {
+                    auto reviewed = future.get();
+                    auto& slot = slots.at(foundation_slot_id(
+                        chunk, "nemotron-variant", reviewed.variant));
+                    progress.prompt_tokens += reviewed.verification.review.prompt_tokens;
+                    progress.completion_tokens += reviewed.verification.review.completion_tokens;
+                    slot.lesson = std::move(reviewed.attempt.lesson);
+                    slot.review = std::move(reviewed.verification.review);
+                    if (slot.review.retryable) {
+                        slot.stage = reviewed.verification.confirmation_pending
+                            ? FoundationSlotStage::confirmation_pending
+                            : FoundationSlotStage::verification_pending;
+                        slot.last_error = slot.review.reason;
+                        persist_foundation_slot(request.curriculum_root, slot);
+                        auto attempt = candidate_attempt_from_slot(
+                            slot, request.nemotron, request.qwen);
+                        audit_attempt(
+                            request.curriculum_root, chunk, slot, attempt, false, "retry-pending");
+                        chunk_retry_pending = true;
+                    } else {
+                        slot.last_error.clear();
+                        if (!finalize_foundation_slot(
+                                request.curriculum_root, chunk, slot,
+                                request.nemotron, request.qwen, learning_service)) {
+                            chunk_retry_pending = true;
+                        }
+                    }
+                }
+            }
+            for (std::size_t index = 0U; index < variants; ++index) {
+                auto& slot = slots.at(foundation_slot_id(
+                    chunk, "nemotron-variant", index));
+                if (slot.stage == FoundationSlotStage::storage_pending &&
+                    !finalize_foundation_slot(
+                        request.curriculum_root, chunk, slot,
+                        request.nemotron, request.qwen, learning_service)) {
+                    chunk_retry_pending = true;
+                }
+            }
+            recount_foundation_slots(slots, progress);
             if (chunk_retry_pending) {
                 progress.stage = FoundationStage::failed;
-                progress.message = "One or more Qwen reviews remain retry-pending; Resume retries this chunk.";
+                progress.message =
+                    "One or more curriculum slots remain retry-pending; Resume retries only unresolved slots.";
                 persist_progress(request.curriculum_root, progress);
                 result.error = progress.message;
                 publish_progress(on_progress, progress);

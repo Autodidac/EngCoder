@@ -248,7 +248,7 @@ ConnectionResult Client::connect_http(std::string endpoint) {
             {"capabilities", core::json::Value::Object{}},
             {"clientInfo", core::json::Value::Object{
                 {"name", "EngCoder"},
-                {"version", "0.9.1"},
+                {"version", "0.9.2"},
             }},
         }));
     auto initialized = rpc(endpoint, {}, 1U, "initialize", initialize_params);

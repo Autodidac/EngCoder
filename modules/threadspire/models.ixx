@@ -1,5 +1,6 @@
 module;
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <stop_token>
@@ -34,6 +35,10 @@ struct ModelProfile final {
     bool custom_model{false};
     bool coding_agent{false};
     bool auto_discovered{false};
+    // Transient readiness observed at runtime; intentionally not persisted.
+    bool runtime_ready{true};
+    // Last independently evaluated expert generation reflected in routing.
+    std::uint64_t validated_generation{0};
     int priority{0};
 };
 
@@ -57,6 +62,12 @@ public:
         double measured_tokens_per_second,
         bool success) noexcept;
     void record_feedback(std::string_view id, bool accepted) noexcept;
+    [[nodiscard]] bool record_validated_promotion(
+        std::string_view skill,
+        std::uint64_t generation,
+        std::size_t accepted_examples,
+        double validation_score,
+        double regression_score) noexcept;
 
 private:
     std::vector<ModelProfile> models_;
@@ -79,6 +90,28 @@ struct ProviderDiscoveryReport final {
     }
 };
 
+struct LocalModelEndpointResponse final {
+    int status_code{0};
+    std::string body;
+    std::string error;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return error.empty() && status_code >= 200 && status_code < 300;
+    }
+};
+
+using LocalModelEndpointRequest = std::function<LocalModelEndpointResponse(
+    std::string_view method,
+    std::string_view url,
+    std::string_view body,
+    std::chrono::milliseconds timeout)>;
+
+struct LocalModelActivationResult final {
+    bool ready{false};
+    bool loaded_by_engcoder{false};
+    std::string message;
+};
+
 [[nodiscard]] ProviderDiscoveryReport discover_local_models(
     std::chrono::milliseconds timeout_per_endpoint = std::chrono::milliseconds(700),
     std::stop_token stop_token = {});
@@ -86,6 +119,15 @@ struct ProviderDiscoveryReport final {
 [[nodiscard]] bool merge_discovered_models(
     ModelRegistry& registry,
     const std::vector<ModelProfile>& discovered);
+
+[[nodiscard]] bool is_managed_lm_studio_teacher(
+    const ModelProfile& model);
+
+[[nodiscard]] LocalModelActivationResult ensure_managed_lm_studio_teacher_ready(
+    const ModelProfile& model,
+    std::chrono::milliseconds timeout = std::chrono::minutes(2),
+    std::stop_token stop_token = {},
+    LocalModelEndpointRequest request = {});
 
 [[nodiscard]] ModelProfile make_manual_local_model(
     std::string endpoint,

@@ -250,7 +250,7 @@ std::vector<CapabilityPackDescriptor> CapabilityPackManager::catalog() {
             .origin = "Verified EngCoder release payload.",
             .license = "MIT for EngCoder; bundled Microsoft runtime files keep their redistributable terms.",
             .loading_condition = "Loaded only when built-in EngCoder is selected or automatic routing chooses it.",
-            .safe_removal_rule = "Remove only as one complete pack while its answer host is stopped; the verified release can restore it automatically.",
+            .safe_removal_rule = "Remove only as one complete pack while its answer host is stopped; without an explicitly installed copy, EngCoder runs the verified release host in place.",
         },
         {
             .id = "internal-pytorch-training",

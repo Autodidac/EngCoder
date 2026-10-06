@@ -80,6 +80,13 @@ namespace {
     profile.custom_model = ini.get_bool(section, "custom_model", false);
     profile.coding_agent = ini.get_bool(section, "coding_agent", false);
     profile.auto_discovered = ini.get_bool(section, "auto_discovered", false);
+    // Auto-discovered entries are remembered as identities, not assumed to be
+    // live across launches. Discovery (or the managed teacher loader) must
+    // establish readiness again in this process.
+    profile.runtime_ready = !profile.auto_discovered;
+    profile.validated_generation = static_cast<std::uint64_t>(std::max<std::int64_t>(
+        0,
+        ini.get_integer(section, "validated_generation", 0)));
     profile.priority = static_cast<int>(ini.get_integer(section, "priority", 0));
     return profile;
 }
@@ -249,6 +256,7 @@ void ModelRegistry::save(const std::filesystem::path& path) const {
                << "custom_model=" << (model.custom_model ? "true" : "false") << '\n'
                << "coding_agent=" << (model.coding_agent ? "true" : "false") << '\n'
                << "auto_discovered=" << (model.auto_discovered ? "true" : "false") << '\n'
+               << "validated_generation=" << model.validated_generation << '\n'
                << "priority=" << model.priority << "\n\n";
     }
     stream.close();
@@ -322,6 +330,55 @@ void ModelRegistry::record_feedback(const std::string_view id, const bool accept
         (1.0 - alpha) * model->quality + alpha * sample,
         0.05,
         0.99);
+}
+
+bool ModelRegistry::record_validated_promotion(
+    const std::string_view skill,
+    const std::uint64_t generation,
+    const std::size_t accepted_examples,
+    const double validation_score,
+    const double regression_score) noexcept {
+    std::string_view model_id;
+    std::size_t minimum_examples = 0U;
+    if (skill == "english-foundation" || skill == "english-core" ||
+        skill == "english-conversation") {
+        model_id = "fast";
+        minimum_examples = 24U;
+    } else if (skill == "planning") {
+        model_id = "thinker";
+        minimum_examples = 16U;
+    } else if (skill == "cpp23-core" || skill == "cpp23-debugging" ||
+               skill.starts_with("cpp23-")) {
+        model_id = "coder";
+        minimum_examples = 4U;
+    } else {
+        return false;
+    }
+
+    auto* model = find(model_id);
+    if (model == nullptr || generation == 0U ||
+        generation <= model->validated_generation ||
+        accepted_examples < minimum_examples || validation_score < 0.86 ||
+        regression_score < 0.0 || regression_score > 0.03) {
+        return false;
+    }
+
+    // A passing candidate earns bounded routing confidence. It does not leap
+    // to frontier-model scores: accepted/rejected reply feedback continues to
+    // move these values, and the generation marker prevents periodic polling
+    // from erasing a later demotion.
+    const auto promoted_quality = std::clamp(
+        validation_score - 0.18 - regression_score * 2.0,
+        0.50,
+        0.78);
+    const auto promoted_reliability = std::clamp(
+        validation_score - regression_score,
+        0.58,
+        0.98);
+    model->quality = std::max(model->quality, promoted_quality);
+    model->reliability = std::max(model->reliability, promoted_reliability);
+    model->validated_generation = generation;
+    return true;
 }
 
 bool has_capability(const ModelProfile& model, const std::string_view capability) noexcept {

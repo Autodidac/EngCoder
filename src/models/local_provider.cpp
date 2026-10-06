@@ -3,10 +3,13 @@ module;
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <mutex>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 module threadspire.models;
 import threadspire.core;
@@ -22,6 +25,16 @@ struct Probe final {
     std::string protocol;
     std::string models_path;
     std::string model_key;
+};
+
+struct LmStudioCatalogModel final {
+    std::string model_name;
+    bool runtime_ready{false};
+};
+
+struct LmStudioCatalog final {
+    bool valid{false};
+    std::vector<LmStudioCatalogModel> models;
 };
 
 [[nodiscard]] std::string lower_ascii(const std::string_view value) {
@@ -66,6 +79,89 @@ struct Probe final {
     }
     result.append(path);
     return result;
+}
+
+[[nodiscard]] int managed_teacher_family_name(
+    const std::string_view model_name) {
+    const auto lowered = lower_ascii(model_name);
+    if (lowered == "qwen/qwen3.8-27b" || lowered == "qwen3.8-27b") {
+        return 1;
+    }
+    if (lowered == "nvidia/nemotron-3-nano-4b" ||
+        lowered == "nemotron-3-nano-4b") {
+        return 2;
+    }
+    return 0;
+}
+
+[[nodiscard]] std::optional<std::string> loopback_management_base(
+    const ModelProfile& model) {
+    if (lower_ascii(model.protocol) != "openai") {
+        return std::nullopt;
+    }
+    const auto endpoint = lower_ascii(model.endpoint);
+    const auto scheme_end = endpoint.find("://");
+    if (scheme_end == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto scheme = endpoint.substr(0U, scheme_end);
+    if (scheme != "http" && scheme != "https") {
+        return std::nullopt;
+    }
+    const auto authority_start = scheme_end + 3U;
+    const auto authority_end = endpoint.find_first_of("/?#", authority_start);
+    const auto authority = endpoint.substr(
+        authority_start,
+        authority_end == std::string::npos
+            ? std::string::npos
+            : authority_end - authority_start);
+    if (authority.empty() || authority.find('@') != std::string::npos) {
+        return std::nullopt;
+    }
+
+    std::string host;
+    std::string port;
+    if (authority.starts_with('[')) {
+        const auto close = authority.find(']');
+        if (close == std::string::npos) {
+            return std::nullopt;
+        }
+        host = authority.substr(0U, close + 1U);
+        const auto remainder = authority.substr(close + 1U);
+        if (!remainder.empty()) {
+            if (!remainder.starts_with(':')) {
+                return std::nullopt;
+            }
+            port = remainder.substr(1U);
+        }
+    } else {
+        const auto colon = authority.find(':');
+        host = authority.substr(0U, colon);
+        if (colon != std::string::npos) {
+            port = authority.substr(colon + 1U);
+        }
+    }
+    if (host != "127.0.0.1" && host != "localhost" && host != "[::1]") {
+        return std::nullopt;
+    }
+    if (authority.ends_with(':') && port.empty()) {
+        return std::nullopt;
+    }
+    unsigned long port_value = 0UL;
+    for (const auto character : port) {
+        if (std::isdigit(static_cast<unsigned char>(character)) == 0) {
+            return std::nullopt;
+        }
+        port_value = port_value * 10UL +
+            static_cast<unsigned long>(character - '0');
+        if (port_value > 65535UL) {
+            return std::nullopt;
+        }
+    }
+    if (!port.empty() && port_value == 0UL) {
+        return std::nullopt;
+    }
+    return scheme + "://" + authority;
 }
 
 [[nodiscard]] std::vector<std::string> extract_string_values(
@@ -118,7 +214,7 @@ struct Probe final {
     return values;
 }
 
-[[nodiscard]] std::vector<std::string> parse_lm_studio_loaded_models(
+[[nodiscard]] LmStudioCatalog parse_lm_studio_models(
     const std::string_view body) {
     std::string error;
     const auto document = core::json::try_parse(body, error);
@@ -131,7 +227,8 @@ struct Probe final {
         return {};
     }
 
-    std::vector<std::string> result;
+    LmStudioCatalog result;
+    result.valid = true;
     for (const auto& model : *model_array) {
         if (core::json::string_or(model.find("type")) != "llm") {
             continue;
@@ -139,6 +236,13 @@ struct Probe final {
         const auto model_key = core::json::string_or(model.find("key"));
         const auto* instances = model.find("loaded_instances");
         const auto* instance_array = instances == nullptr ? nullptr : instances->as_array();
+        if (managed_teacher_family_name(model_key) != 0) {
+            result.models.push_back(LmStudioCatalogModel{
+                .model_name = model_key,
+                .runtime_ready = instance_array != nullptr && !instance_array->empty(),
+            });
+            continue;
+        }
         if (instance_array == nullptr) {
             continue;
         }
@@ -148,13 +252,50 @@ struct Probe final {
                 identifier = model_key;
             }
             if (!identifier.empty()) {
-                result.push_back(std::move(identifier));
+                result.models.push_back(LmStudioCatalogModel{
+                    .model_name = std::move(identifier),
+                    .runtime_ready = true,
+                });
             }
         }
     }
-    std::ranges::sort(result);
-    result.erase(std::ranges::unique(result).begin(), result.end());
+    std::ranges::sort(result.models, {}, &LmStudioCatalogModel::model_name);
+    std::vector<LmStudioCatalogModel> merged;
+    for (auto& model : result.models) {
+        if (!merged.empty() && merged.back().model_name == model.model_name) {
+            merged.back().runtime_ready =
+                merged.back().runtime_ready || model.runtime_ready;
+        } else {
+            merged.push_back(std::move(model));
+        }
+    }
+    result.models = std::move(merged);
     return result;
+}
+
+[[nodiscard]] std::optional<bool> catalog_model_ready(
+    const LmStudioCatalog& catalog,
+    const std::string_view model_name) {
+    if (!catalog.valid) {
+        return std::nullopt;
+    }
+    const auto target = lower_ascii(model_name);
+    const auto found = std::ranges::find_if(
+        catalog.models,
+        [&target](const LmStudioCatalogModel& candidate) {
+            return lower_ascii(candidate.model_name) == target;
+        });
+    return found == catalog.models.end()
+        ? std::optional<bool>{}
+        : std::optional<bool>{found->runtime_ready};
+}
+
+[[nodiscard]] std::string response_failure(
+    const LocalModelEndpointResponse& response) {
+    if (!response.error.empty()) {
+        return response.error;
+    }
+    return "HTTP " + std::to_string(response.status_code);
 }
 
 [[nodiscard]] bool coding_model_name(const std::string_view model_name) {
@@ -189,7 +330,8 @@ struct Probe final {
 
 [[nodiscard]] ModelProfile make_profile(
     const Probe& probe,
-    std::string model_name) {
+    std::string model_name,
+    const bool runtime_ready = true) {
     const auto coder = coding_model_name(model_name);
     auto capabilities = std::vector<std::string>{
         "english", "chat", "explanation", "transformation", "translation", "planning", "review"};
@@ -218,11 +360,178 @@ struct Probe final {
         .custom_model = false,
         .coding_agent = coder,
         .auto_discovered = true,
+        .runtime_ready = runtime_ready,
         .priority = coder ? 125 : 115,
     };
 }
 
 } // namespace
+
+bool is_managed_lm_studio_teacher(const ModelProfile& model) {
+    return managed_teacher_family_name(model.model_name) != 0 &&
+           loopback_management_base(model).has_value();
+}
+
+LocalModelActivationResult ensure_managed_lm_studio_teacher_ready(
+    const ModelProfile& model,
+    const std::chrono::milliseconds timeout,
+    const std::stop_token stop_token,
+    LocalModelEndpointRequest request) {
+    const auto management_base = loopback_management_base(model);
+    if (managed_teacher_family_name(model.model_name) == 0 ||
+        !management_base.has_value()) {
+        return LocalModelActivationResult{
+            .message = "Only the exact loopback Qwen and Nemotron teachers may be loaded automatically.",
+        };
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+    if (!request) {
+        request = [api_key = model.api_key](
+                      const std::string_view method,
+                      const std::string_view url,
+                      const std::string_view body,
+                      const std::chrono::milliseconds request_timeout) {
+            std::vector<backend::HttpHeader> headers;
+            if (method == "POST") {
+                headers.push_back(backend::HttpHeader{
+                    .name = "Content-Type",
+                    .value = "application/json; charset=utf-8",
+                });
+            }
+            if (!api_key.empty()) {
+                headers.push_back(backend::HttpHeader{
+                    .name = "Authorization",
+                    .value = "Bearer " + api_key,
+                });
+            }
+            const auto response = backend::http_request(backend::HttpRequest{
+                .method = std::string(method),
+                .url = std::string(url),
+                .body = std::string(body),
+                .headers = std::move(headers),
+                .timeout = request_timeout,
+            });
+            return LocalModelEndpointResponse{
+                .status_code = response.status_code,
+                .body = response.body,
+                .error = response.error,
+            };
+        };
+    }
+
+    // Foundation generation fans out several variants. Serialize only this
+    // lightweight readiness/load handshake so those workers cannot race the
+    // same LM Studio model lifecycle endpoint.
+    static std::timed_mutex activation_mutex;
+    std::unique_lock activation_lock(activation_mutex, std::defer_lock);
+    constexpr auto activation_poll = std::chrono::milliseconds(50);
+    const auto activation_deadline = std::chrono::steady_clock::now() +
+        std::max(timeout, std::chrono::milliseconds::zero());
+    while (!activation_lock.try_lock_for(activation_poll)) {
+        if (stop_token.stop_requested()) {
+            return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+        }
+        if (std::chrono::steady_clock::now() >= activation_deadline) {
+            return LocalModelActivationResult{
+                .message = "Timed out waiting for another teacher lifecycle check to finish.",
+            };
+        }
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+    const auto catalog_timeout = std::min(timeout, std::chrono::milliseconds(5000));
+    const auto catalog_url = join_url(*management_base, "/api/v1/models");
+    auto catalog_response = request("GET", catalog_url, {}, catalog_timeout);
+    if (!catalog_response.succeeded()) {
+        return LocalModelActivationResult{
+            .message = "LM Studio catalog check failed: " +
+                response_failure(catalog_response),
+        };
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+    auto catalog = parse_lm_studio_models(catalog_response.body);
+    if (!catalog.valid) {
+        return LocalModelActivationResult{
+            .message = "LM Studio returned a malformed model catalog.",
+        };
+    }
+    auto ready = catalog_model_ready(catalog, model.model_name);
+    if (!ready.has_value()) {
+        return LocalModelActivationResult{
+            .message = "The authorized teacher is not installed in LM Studio: " +
+                model.model_name,
+        };
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+    if (*ready) {
+        return LocalModelActivationResult{
+            .ready = true,
+            .message = "The authorized LM Studio teacher is already loaded.",
+        };
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+
+    const auto family = managed_teacher_family_name(model.model_name);
+    // These bounds apply only when EngCoder creates a new instance. Existing
+    // instances return above unchanged, so a model in use by another task is
+    // never reloaded or reconfigured. Qwen uses the deeper curriculum window;
+    // Nemotron uses the smaller routine window. Request concurrency remains
+    // bounded separately by the foundation runner (Qwen 1, Nemotron 4), since
+    // LM Studio's v1 load API does not document a parallel-load setting.
+    const auto context_length = family == 1 ? 32768 : 8192;
+    const auto payload = core::json::stringify(core::json::Value(
+        core::json::Value::Object{
+            {"context_length", context_length},
+            {"echo_load_config", true},
+            {"model", model.model_name},
+        }));
+    const auto load_response = request(
+        "POST",
+        join_url(*management_base, "/api/v1/models/load"),
+        payload,
+        timeout);
+    // The platform HTTP request is synchronous once dispatched. Observe
+    // cancellation immediately after it returns; never try to compensate by
+    // unloading a model that another local task may already be using.
+    if (!load_response.succeeded()) {
+        return LocalModelActivationResult{
+            .message = "LM Studio could not load the authorized teacher: " +
+                response_failure(load_response),
+        };
+    }
+    if (stop_token.stop_requested()) {
+        return LocalModelActivationResult{.message = "Teacher activation cancelled."};
+    }
+
+    catalog_response = request("GET", catalog_url, {}, catalog_timeout);
+    if (!catalog_response.succeeded()) {
+        return LocalModelActivationResult{
+            .message = "LM Studio loaded the teacher but its catalog could not be confirmed: " +
+                response_failure(catalog_response),
+        };
+    }
+    catalog = parse_lm_studio_models(catalog_response.body);
+    ready = catalog_model_ready(catalog, model.model_name);
+    if (!catalog.valid || !ready.value_or(false)) {
+        return LocalModelActivationResult{
+            .message = "LM Studio did not report the authorized teacher as loaded.",
+        };
+    }
+    return LocalModelActivationResult{
+        .ready = true,
+        .loaded_by_engcoder = true,
+        .message = "The authorized LM Studio teacher was loaded on demand.",
+    };
+}
 
 ProviderDiscoveryReport discover_local_models(
     const std::chrono::milliseconds timeout_per_endpoint,
@@ -250,10 +559,13 @@ ProviderDiscoveryReport discover_local_models(
             break;
         }
         auto used_lm_studio_native_api = false;
-        std::vector<std::string> model_names;
+        std::vector<LmStudioCatalogModel> catalog_models;
         if (probe.id == "lmstudio" && response.succeeded()) {
             used_lm_studio_native_api = true;
-            model_names = parse_lm_studio_loaded_models(response.body);
+            auto catalog = parse_lm_studio_models(response.body);
+            if (catalog.valid) {
+                catalog_models = std::move(catalog.models);
+            }
         } else if (probe.id == "lmstudio") {
             response = backend::http_get(
                 join_url(probe.endpoint, "/v1/models"),
@@ -267,31 +579,52 @@ ProviderDiscoveryReport discover_local_models(
             continue;
         }
         if (!used_lm_studio_native_api) {
-            model_names = extract_string_values(response.body, probe.model_key);
+            for (auto& model_name : extract_string_values(response.body, probe.model_key)) {
+                catalog_models.push_back(LmStudioCatalogModel{
+                    .model_name = std::move(model_name),
+                    .runtime_ready = true,
+                });
+            }
         }
-        if (model_names.empty()) {
+        if (catalog_models.empty()) {
             report.diagnostics.push_back(
                 used_lm_studio_native_api
-                    ? probe.display_name + " connected: no loaded LLM is ready"
+                    ? probe.display_name + " connected: no loaded LLM or authorized teacher is available"
                     : probe.display_name + " answered but exposed no text-generation model IDs");
             continue;
         }
         std::size_t added = 0;
-        for (auto& model_name : model_names) {
+        std::size_t ready_count = 0;
+        std::size_t loadable_teacher_count = 0;
+        for (auto& catalog_model : catalog_models) {
+            auto& model_name = catalog_model.model_name;
             const auto lower = lower_ascii(model_name);
             if (lower.find("embed") != std::string::npos || lower.find("rerank") != std::string::npos) {
                 continue;
             }
-            auto profile = make_profile(probe, std::move(model_name));
+            auto profile = make_profile(
+                probe,
+                std::move(model_name),
+                catalog_model.runtime_ready);
             const auto identity = profile.protocol + '|' + profile.endpoint + '|' + profile.model_name;
             if (seen.insert(identity).second) {
+                ready_count += profile.runtime_ready ? 1U : 0U;
+                loadable_teacher_count +=
+                    !profile.runtime_ready && is_managed_lm_studio_teacher(profile) ? 1U : 0U;
                 report.models.push_back(std::move(profile));
                 ++added;
             }
         }
-        report.diagnostics.push_back(
-            probe.display_name + " connected: " + std::to_string(added) +
-            (used_lm_studio_native_api ? " loaded LLM(s)" : " usable model(s)"));
+        if (used_lm_studio_native_api) {
+            report.diagnostics.push_back(
+                probe.display_name + " connected: " + std::to_string(ready_count) +
+                " loaded LLM(s), " + std::to_string(loadable_teacher_count) +
+                " authorized teacher(s) available to load");
+        } else {
+            report.diagnostics.push_back(
+                probe.display_name + " connected: " + std::to_string(added) +
+                " usable model(s)");
+        }
     }
     return report;
 }
@@ -324,6 +657,8 @@ bool merge_discovered_models(
         const auto custom_model = existing->custom_model;
         const auto coding_agent = existing->coding_agent;
         const auto priority = existing->priority;
+        const auto runtime_ready = existing->runtime_ready;
+        const auto validated_generation = existing->validated_generation;
 
         const auto changed_endpoint = existing->endpoint != candidate.endpoint ||
                                       existing->model_name != candidate.model_name ||
@@ -346,10 +681,21 @@ bool merge_discovered_models(
         existing->verifier = verifier;
         existing->custom_model = custom_model;
         existing->coding_agent = coding_agent;
+        existing->validated_generation = validated_generation;
         existing->priority = priority;
-        changed = changed || changed_endpoint;
+        changed = changed || changed_endpoint ||
+            runtime_ready != candidate.runtime_ready;
     }
 
+    for (auto& model : registry.models()) {
+        if (!model.auto_discovered || live_identifiers.contains(model.id) ||
+            !is_managed_lm_studio_teacher(model)) {
+            continue;
+        }
+        changed = changed || model.runtime_ready;
+        model.runtime_ready = false;
+        live_identifiers.insert(model.id);
+    }
     const auto old_size = registry.models().size();
     std::erase_if(registry.models(), [&live_identifiers](const ModelProfile& model) {
         return model.auto_discovered && !live_identifiers.contains(model.id);

@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -22,6 +23,8 @@ import threadspire.storage;
 import threadspire.tasks;
 
 namespace {
+
+std::filesystem::path workbench_executable;
 
 void require(const bool condition, const std::string& message) {
     if (!condition) {
@@ -309,6 +312,343 @@ void test_pack_transaction_rollback_and_selection_isolation() {
     std::filesystem::remove_all(root);
 }
 
+void test_explicit_trainer_install_keeps_native_serving_pack() {
+    using namespace threadspire::ai;
+    using namespace threadspire::ai::runtime;
+    const auto root = temporary_root();
+    const auto packs = root / "packs";
+    const auto native_source = root / "native-source";
+    const auto trainer_source = root / "trainer-source";
+
+    const auto catalog = CapabilityPackManager::catalog();
+    const auto native_descriptor = std::ranges::find(
+        catalog,
+        std::string_view{"compact-native-inference"},
+        &CapabilityPackDescriptor::id);
+    const auto trainer_descriptor = std::ranges::find(
+        catalog,
+        std::string_view{"internal-pytorch-training"},
+        &CapabilityPackDescriptor::id);
+    require(native_descriptor != catalog.end() && trainer_descriptor != catalog.end(),
+            "native serving and internal training pack fixtures must exist");
+
+    for (const auto& relative : native_descriptor->required_files) {
+        write_text(native_source / relative, "native-host-online");
+    }
+    for (const auto& relative : trainer_descriptor->required_files) {
+        write_text(trainer_source / relative, "trainer-fixture");
+    }
+
+    CapabilityPackManager manager(packs);
+    require(manager.install_transactional({
+                .descriptor = *native_descriptor,
+                .source_directory = native_source,
+            }).succeeded,
+            "the native serving fixture must install transactionally");
+    const auto native_host = manager.pack_path(native_descriptor->id) /
+        native_descriptor->required_files.front();
+    const auto native_manifest_before = read_text(
+        manager.pack_path(native_descriptor->id) / "pack.json");
+    std::ifstream active_native_session(native_host, std::ios::binary);
+    require(static_cast<bool>(active_native_session),
+            "the native host fixture must remain open as the simulated serving session");
+
+    const auto trainer_install = manager.install_transactional({
+        .descriptor = *trainer_descriptor,
+        .source_directory = trainer_source,
+    });
+
+    app::AppPaths paths;
+    paths.root = root;
+    paths.packs = packs;
+    const auto trainer = manager.pack_path(trainer_descriptor->id);
+    paths.python = trainer / "runtime" / "Scripts" / "python.exe";
+    paths.worker = trainer / "backend" / "model_worker.py";
+    paths.internal_model_module = trainer / "backend" / "internal_model.py";
+    paths.curriculum_guard_module = trainer / "backend" / "curriculum_guard.py";
+    require(trainer_install.succeeded && backend_files_present(paths),
+            "an explicit transaction must install and expose the separate trainer pack");
+    std::string live_native_reply;
+    active_native_session >> live_native_reply;
+    require(live_native_reply == "native-host-online" &&
+                manager.installed(native_descriptor->id) &&
+                read_text(manager.pack_path(native_descriptor->id) / "pack.json") ==
+                    native_manifest_before,
+            "trainer installation must leave the active native serving pack untouched");
+
+    const auto ui = read_text(
+        std::filesystem::path(THREADSPIRE_SOURCE_DIR) / "src" / "app" / "main_window.cpp");
+    const auto install_begin = ui.find("void MainWindow::install_backend(const bool automatic)");
+    const auto install_end = ui.find("void MainWindow::verify_backend", install_begin);
+    const auto verify_end = ui.find("void MainWindow::start_backend", install_end);
+    require(install_begin != std::string::npos && install_end > install_begin &&
+                verify_end > install_end,
+            "the automatic trainer install and verification lifecycle must remain inspectable");
+    const auto install_body = ui.substr(install_begin, install_end - install_begin);
+    const auto verify_body = ui.substr(install_end, verify_end - install_end);
+    require(install_body.find("if (automatic)") != std::string::npos &&
+                install_body.find("installed explicitly from Settings > AI & Tools") != std::string::npos &&
+                install_body.find("backend_server_.stop()") == std::string::npos &&
+                verify_body.find("backend_server_.running()") == std::string::npos &&
+                verify_body.find("runtime::verify_backend") != std::string::npos,
+            "the trainer must require explicit installation without stopping native serving or blocking verification");
+
+    const auto lifecycle_begin = ui.find("void MainWindow::drive_automatic_lifecycle()");
+    const auto lifecycle_end = ui.find(
+        "void MainWindow::update_internal_model_lifecycle_ui()", lifecycle_begin);
+    require(lifecycle_begin != std::string::npos && lifecycle_end > lifecycle_begin,
+            "the automatic lifecycle coordinator must remain inspectable");
+    const auto lifecycle_body = ui.substr(lifecycle_begin, lifecycle_end - lifecycle_begin);
+    const auto missing_trainer_begin = lifecycle_body.find(
+        "if (!runtime::backend_files_present(selected_paths))");
+    const auto missing_trainer_end = lifecycle_body.find(
+        "if (backend_repair_required_)", missing_trainer_begin);
+    const auto missing_trainer_body =
+        missing_trainer_begin == std::string::npos ||
+            missing_trainer_end == std::string::npos
+        ? std::string{}
+        : lifecycle_body.substr(
+            missing_trainer_begin,
+            missing_trainer_end - missing_trainer_begin);
+    const auto lifecycle_ui_end = ui.find(
+        "void MainWindow::update_global_activity()", lifecycle_end);
+    require(lifecycle_ui_end > lifecycle_end,
+            "the visible trainer lifecycle status must remain inspectable");
+    const auto lifecycle_ui = ui.substr(lifecycle_end, lifecycle_ui_end - lifecycle_end);
+    const auto activity_end = ui.find(
+        "void MainWindow::update_periodic_state()", lifecycle_ui_end);
+    require(activity_end > lifecycle_ui_end,
+            "the always-visible activity status must remain inspectable");
+    const auto activity_ui = ui.substr(lifecycle_ui_end, activity_end - lifecycle_ui_end);
+    const auto idle_ready_begin = activity_ui.find("READY — No work is running");
+    const auto idle_ready_end = activity_ui.find(
+        "if (storage_measurement_running)", idle_ready_begin);
+    const auto idle_ready_ui = idle_ready_begin == std::string::npos ||
+            idle_ready_end == std::string::npos
+        ? std::string{}
+        : activity_ui.substr(idle_ready_begin, idle_ready_end - idle_ready_begin);
+    const auto automation_toggle_begin = ui.find("case id::models_automation_toggle:");
+    const auto automation_toggle_end = ui.find(
+        "case id::models_advanced_header:", automation_toggle_begin);
+    const auto automation_toggle_body =
+        automation_toggle_begin == std::string::npos ||
+            automation_toggle_end == std::string::npos
+        ? std::string{}
+        : ui.substr(
+            automation_toggle_begin,
+            automation_toggle_end - automation_toggle_begin);
+    require(lifecycle_body.find("install_backend(true)") == std::string::npos &&
+                missing_trainer_body.find(
+                    "if (learning_pipeline.queued_updates > 0U)") !=
+                    std::string::npos &&
+                lifecycle_ui.find("Install selected package") != std::string::npos &&
+                lifecycle_ui.find(
+                    "Internal PyTorch Training is available but not installed") ==
+                    std::string::npos &&
+                lifecycle_ui.find(
+                    "Internal PyTorch Training is optional and not installed") ==
+                    std::string::npos &&
+                lifecycle_ui.find(
+                    "Native answers remain available. No neural learning work is waiting.") !=
+                    std::string::npos &&
+                !automation_toggle_body.empty() &&
+                automation_toggle_body.find("Install selected package") ==
+                    std::string::npos &&
+                activity_ui.find("ATTENTION — Internal PyTorch Training required") != std::string::npos &&
+                activity_ui.find("backend_repair_required_ && !internal_training_pack_ready") != std::string::npos &&
+                activity_ui.find("missing_training_requirements_text(training_paths)") != std::string::npos &&
+                !idle_ready_ui.empty() &&
+                idle_ready_ui.find("Internal PyTorch") == std::string::npos &&
+                idle_ready_ui.find("not installed") == std::string::npos,
+            "automatic coordination must keep an absent optional trainer silent until queued neural work is blocked, then show the exact durable manual action without installing it");
+
+    const auto create_begin = ui.find("void MainWindow::create_internal_model(");
+    const auto create_end = ui.find("void MainWindow::install_backend", create_begin);
+    require(create_begin != std::string::npos && create_end > create_begin,
+            "the isolated candidate-training lifecycle must remain inspectable");
+    const auto create_body = ui.substr(create_begin, create_end - create_begin);
+    const auto preservation_gate = create_body.find(
+        "const bool preserve_serving_generation = bootstrap && backend_server_.running()");
+    const auto destructive_stop = create_body.find("if (!bootstrap)", preservation_gate);
+    const auto promoted_generation = create_body.find(
+        "trained_state.manifest_valid || !trained_state.bootstrap_complete",
+        destructive_stop);
+    const auto promotion_stop = create_body.find(
+        "if (preserve_serving_generation)", promoted_generation);
+    const auto replacement_start = create_body.find(
+        "backend_server_.start(", promotion_stop);
+    require(preservation_gate != std::string::npos &&
+                destructive_stop > preservation_gate &&
+                promoted_generation > destructive_stop &&
+                promotion_stop > promoted_generation &&
+                replacement_start > promotion_stop,
+            "candidate training must preserve the working host and switch it only after a ready generation is promoted");
+
+    active_native_session.close();
+    std::filesystem::remove_all(root);
+}
+
+void test_backend_requirements_report_exact_missing_files() {
+    using namespace threadspire::ai;
+    using namespace threadspire::ai::runtime;
+    const auto root = temporary_root();
+    app::AppPaths paths;
+    paths.root = root;
+    paths.packs = root / "packs";
+
+    const auto catalog = CapabilityPackManager::catalog();
+    const auto descriptor = std::ranges::find(
+        catalog,
+        std::string_view{"internal-pytorch-training"},
+        &CapabilityPackDescriptor::id);
+    require(descriptor != catalog.end(),
+            "the internal trainer capability descriptor must exist");
+
+    auto missing = missing_backend_files(paths);
+    require(missing.size() == descriptor->required_files.size() + 1U &&
+                missing.front() == "internal-pytorch-training/pack.json" &&
+                std::ranges::find(
+                    missing,
+                    std::string{"internal-pytorch-training/backend/curriculum_compiler.py"}) !=
+                    missing.end(),
+            "an absent trainer must report its manifest and every exact descriptor requirement");
+
+    const auto pack = paths.packs / descriptor->id;
+    write_text(pack / "pack.json", "{\"id\":\"internal-pytorch-training\"}\n");
+    for (const auto& relative : descriptor->required_files) {
+        write_text(pack / relative, "trainer-requirement");
+    }
+    require(backend_files_present(paths) && missing_backend_files(paths).empty(),
+            "every descriptor requirement must satisfy the trainer presence check");
+
+    std::filesystem::remove(pack / "backend" / "curriculum_compiler.py");
+    missing = missing_backend_files(paths);
+    require(!backend_files_present(paths) && missing.size() == 1U &&
+                missing.front() ==
+                    "internal-pytorch-training/backend/curriculum_compiler.py",
+            "a partial trainer must identify curriculum_compiler.py by its exact pack path");
+    const auto verification = verify_backend(paths, root / "verify.log", {});
+    require(verification.state == util::OperationState::failed &&
+                verification.message.find(
+                    "internal-pytorch-training/backend/curriculum_compiler.py") !=
+                    std::string::npos &&
+                verification.message.find("nothing installs automatically") !=
+                    std::string::npos,
+            "a blocked trainer action must surface its exact missing path without installing it");
+    std::filesystem::remove_all(root);
+}
+
+void test_native_host_launch_never_installs_bundled_pack() {
+    using namespace threadspire::ai;
+    using namespace threadspire::ai::runtime;
+    const auto root = temporary_root();
+    app::AppPaths paths;
+    paths.executable = root / "release" / "EngCoder.exe";
+    paths.root = root / "isolated-state";
+    paths.packs = paths.root / "packs";
+    paths.logs = paths.root / "logs";
+    paths.ready_file = paths.root / "control" / "native.ready";
+    write_text(
+        paths.executable.parent_path() / "optional-packs" /
+            "compact-native-inference" / "bin" / "engcoder-native-host.exe",
+        "not-an-executable");
+
+    BackendServer server(paths);
+    std::string message;
+    require(!server.start({}, message),
+            "the invalid bundled-host fixture must fail to launch");
+    require(!std::filesystem::exists(paths.packs / "compact-native-inference"),
+            "starting the bundled native host must never publish an AppData pack");
+    std::filesystem::remove_all(root);
+}
+
+void test_backend_startup_accessors_remain_responsive_while_cancelling() {
+    using namespace threadspire::ai;
+    using namespace threadspire::ai::runtime;
+    const auto root = temporary_root();
+    app::AppPaths paths;
+    paths.executable = root / "release" / "EngCoder.exe";
+    paths.root = root / "isolated-state";
+    paths.packs = paths.root / "packs";
+    paths.logs = paths.root / "logs";
+    paths.ready_file = paths.root / "control" / "native.ready";
+    std::filesystem::create_directories(paths.logs);
+    std::filesystem::create_directories(paths.ready_file.parent_path());
+
+    const auto host = paths.executable.parent_path() / "optional-packs" /
+        "compact-native-inference" / "bin" / "engcoder-native-host.exe";
+    std::filesystem::create_directories(host.parent_path());
+    std::filesystem::copy_file(
+        workbench_executable,
+        host,
+        std::filesystem::copy_options::overwrite_existing);
+    std::error_code permission_error;
+    std::filesystem::permissions(
+        host,
+        std::filesystem::perms::owner_exec |
+            std::filesystem::perms::group_exec |
+            std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permission_error);
+
+    BackendServer server(paths);
+    std::string start_message;
+    auto startup = std::async(std::launch::async, [&] {
+        return server.start({}, start_message);
+    });
+    const auto launch_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!std::filesystem::exists(server.log_path()) &&
+           startup.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < launch_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    require(startup.wait_for(std::chrono::milliseconds(0)) ==
+                std::future_status::timeout,
+            "the fake native host must still be waiting for readiness");
+
+    const auto accessor_begin = std::chrono::steady_clock::now();
+    const auto reported_running = server.running();
+    const auto degradation = server.degradation_message();
+    const auto accessor_elapsed =
+        std::chrono::steady_clock::now() - accessor_begin;
+    require(!reported_running && degradation.empty() &&
+                accessor_elapsed < std::chrono::milliseconds(500),
+            "running and degradation accessors must not wait behind native startup polling");
+
+    server.stop();
+    require(startup.wait_for(std::chrono::seconds(5)) == std::future_status::ready &&
+                !startup.get() &&
+                start_message.find("startup cancelled") != std::string::npos,
+            "stop must promptly cancel and join a native startup that never becomes ready");
+    require(!server.running() && server.base_url().empty(),
+            "cancelled startup must leave no published native server state");
+    std::filesystem::remove_all(root);
+}
+
+void test_degraded_native_health_stays_labeled_as_foundation() {
+    const auto source = std::filesystem::path(THREADSPIRE_SOURCE_DIR);
+    const auto native_host = read_text(source / "src" / "native_host" / "main.cpp");
+    const auto backend_server = read_text(
+        source / "src" / "runtime" / "backend_server.cpp");
+    const auto ui = read_text(source / "src" / "app" / "main_window.cpp");
+
+    require(native_host.find("requested_generation") != std::string::npos &&
+                native_host.find("fallback_reason") != std::string::npos &&
+                native_host.find("\\\"degraded\\\":true") != std::string::npos &&
+                backend_server.find("health->find(\"degraded\")") != std::string::npos &&
+                backend_server.find("health->find(\"requested_generation\")") !=
+                    std::string::npos &&
+                backend_server.find("health->find(\"fallback_reason\")") !=
+                    std::string::npos &&
+                backend_server.find("serving the verified native foundation instead") !=
+                    std::string::npos &&
+                ui.find("backend_server_.degradation_message()") != std::string::npos &&
+                ui.find("ENGCODER — NATIVE FOUNDATION") != std::string::npos &&
+                ui.find("Requested neural generation was rejected") != std::string::npos,
+            "a rejected requested generation must remain an explicit degraded foundation in native health, backend state, and visible UI labels");
+}
+
 void test_pack_audit_reports_exact_files_licenses_roles_and_weights() {
     using namespace threadspire::ai::runtime;
     const auto root = temporary_root();
@@ -507,6 +847,51 @@ void test_persistent_queue_survives_concurrent_readers() {
     reloaded.load();
     require(reloaded.snapshot().size() == 32U,
             "all state transitions must remain durable while status readers are active");
+    std::filesystem::remove_all(root);
+}
+
+void test_persistent_queue_outwaits_transient_windows_reader() {
+    using namespace threadspire::ai::learning;
+    const auto root = temporary_root();
+    const auto state_file = root / "jobs" / "training-state.json";
+    PersistentTrainingQueue queue(state_file);
+    queue.load();
+    static_cast<void>(queue.submit("initial", "english-core"));
+
+#ifdef _WIN32
+    // MSVC's std::ifstream does not grant FILE_SHARE_DELETE. Hold that exact
+    // kind of status-reader handle beyond the former 500 ms writer budget.
+    std::ifstream blocking_reader(state_file, std::ios::binary);
+    require(static_cast<bool>(blocking_reader),
+            "the transient-reader regression must hold the published state file open");
+    std::promise<void> writer_entered;
+    auto entered = writer_entered.get_future();
+    auto writer = std::async(std::launch::async, [&] {
+        writer_entered.set_value();
+        try {
+            static_cast<void>(queue.submit("after-reader", "english-core"));
+            return std::string{};
+        } catch (const std::exception& exception) {
+            return std::string{exception.what()};
+        }
+    });
+    entered.wait();
+    std::this_thread::sleep_for(std::chrono::milliseconds(750));
+    const auto writer_waited =
+        writer.wait_for(std::chrono::milliseconds::zero()) == std::future_status::timeout;
+    blocking_reader.close();
+    const auto writer_error = writer.get();
+    require(writer_waited && writer_error.empty(),
+            "atomic queue publication must outwait a transient Windows reader instead of failing after 500 ms: " +
+                writer_error);
+#else
+    static_cast<void>(queue.submit("after-reader", "english-core"));
+#endif
+
+    PersistentTrainingQueue reloaded(state_file);
+    reloaded.load();
+    require(reloaded.snapshot().size() == 2U,
+            "the state update delayed by a transient reader must remain durable");
     std::filesystem::remove_all(root);
 }
 
@@ -956,9 +1341,12 @@ void test_named_module_and_native_base_contract() {
                 cmake.find("engcoder_native_inference_contract") != std::string::npos &&
                 backend_server.find(".executable = host") != std::string::npos &&
                 backend_server.find(".executable = python") == std::string::npos &&
-                backend_server.find("install_transactional") != std::string::npos &&
+                backend_server.find("install_transactional") == std::string::npos &&
+                backend_server.find("resolve_native_host") != std::string::npos &&
+                backend_server.find("return source / \"bin\" / \"engcoder-native-host.exe\"") != std::string::npos &&
                 backend_server.find("installed_pack_version") != std::string::npos &&
                 backend_server.find("descriptor->version") != std::string::npos &&
+                backend_server.find("degradation_message_") != std::string::npos &&
                 native_host.find("--engine-contract-self-test") != std::string::npos &&
                 native_host.find("generation_ = \"foundation\"") != std::string::npos &&
                 native_host.find("approved_response(normalized)") != std::string::npos &&
@@ -968,7 +1356,7 @@ void test_named_module_and_native_base_contract() {
                 native_host.find("valid_utf8") != std::string::npos &&
                 native_host.find("#include <Python") == std::string::npos &&
                 native_host.find("#include <torch") == std::string::npos,
-            "normal built-in answers must use the small transactional native pack with no Python or PyTorch dependency");
+            "normal built-in answers must run the verified release host in place or use an explicitly installed native pack, with no Python or PyTorch dependency");
     require(cmake.find("resources/engcoder-eagle.ico") != std::string::npos &&
                 cmake.find("OUTPUT_NAME \"EngCoder\"") != std::string::npos &&
                 resources.find("IDI_ENGCODER ICON") != std::string::npos &&
@@ -990,14 +1378,26 @@ void test_named_module_and_native_base_contract() {
 
 } // namespace
 
-int main() {
+int main(const int argument_count, char** arguments) {
+    if (argument_count > 1 && std::string_view(arguments[1]) == "--port") {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::hours(1));
+        }
+    }
+    workbench_executable = std::filesystem::absolute(arguments[0]);
     try {
         test_unified_routing_profiles_multimodal_and_artifacts();
         test_unified_cancellation();
         test_pack_transaction_rollback_and_selection_isolation();
+        test_explicit_trainer_install_keeps_native_serving_pack();
+        test_backend_requirements_report_exact_missing_files();
+        test_native_host_launch_never_installs_bundled_pack();
+        test_backend_startup_accessors_remain_responsive_while_cancelling();
+        test_degraded_native_health_stays_labeled_as_foundation();
         test_pack_audit_reports_exact_files_licenses_roles_and_weights();
         test_persistent_serialized_training_resume_and_coalescing();
         test_persistent_queue_survives_concurrent_readers();
+        test_persistent_queue_outwaits_transient_windows_reader();
         test_service_recovers_serialized_job_before_candidate_creation();
         test_service_reconciles_one_durable_job_per_interrupted_candidate();
         test_service_recovers_interrupted_internal_promotion_transaction();

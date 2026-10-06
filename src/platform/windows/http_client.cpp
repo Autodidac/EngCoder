@@ -263,7 +263,7 @@ HttpResponse http_request(const HttpRequest& request, HttpChunkCallback on_chunk
     }
 
     InternetHandle session(::WinHttpOpen(
-        L"EngCoder/0.9.1",
+        L"EngCoder/0.9.2",
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,

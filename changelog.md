@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.2 — 2026-10-02 explicit capabilities and task-first workbench
+
+- Reorganized the native window around a Codex-like task hierarchy: compact session/routing controls, a dominant conversation, reply-local review controls, a readable composer, and a narrower run-details rail. The larger default size clamps to the monitor work area and preserves useful conversation/composer height instead of collapsing primary work into thin rows.
+- Reworked the global activity card so every foreground and background operation remains visible, important detail wraps instead of being clipped, and the most recent completion remains readable while the Activity page retains the full audit.
+- Stopped fresh startup from copying the bundled compact native answer host into application data. The verified release host now runs in place; it remains a zero-weight base component rather than an optional dependency silently installed on first use.
+- Made optional capability handling explicit. A blocked neural job keeps its evidence and names **Internal PyTorch Training**, every missing required file, and the **Install selected package** action. Chat, Live Auto, foundation work, and startup never prepare or install an optional package as a side effect.
+- Separated teacher installation from runtime readiness. Foreground routing ignores unloaded models; Live Auto and foundation work may load only the exact locally installed loopback Qwen or Nemotron teacher on demand with a bounded role-specific context request, without downloading a teacher or unloading or reconfiguring an already-loaded model.
+- Kept malformed or incomplete independent reviews retry-pending instead of converting transport/schema failures into negative training judgments. Teacher cancellation and endpoint failures remain inspectable and resumable.
+- Kept the one-time full-rank English foundation request distinct from ordinary post-foundation skill microbatches so an early accepted batch cannot coalesce away or strand the foundation job.
+- Tightened candidate service and promotion reporting: parent/readiness checks occur under the promotion lock, and a host that falls back to the native foundation reports the requested versus served generation as degraded instead of claiming neural service.
+- Required successful compiler and test receipts before code-generation, debugging, or repository outcomes can become positive neural-weight evidence. Conversation remains the first measured curriculum, followed by planning and then evidence-backed coding.
+- Expanded deterministic endpoint and lifecycle coverage for loaded, unloaded, missing, failed, and cancelled teachers without disturbing a developer's shared LM Studio session.
+
 ## 0.9.1 — 2026-09-05 minimal sufficient curriculum
 
 - Added a deterministic, dependency-free curriculum compiler between the append-only evidence pool and every internal neural training run. The compiler writes a separate immutable JSONL selection and a complete hash/count/reason manifest; it never rewrites the evidence ledger.

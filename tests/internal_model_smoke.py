@@ -899,12 +899,170 @@ def main() -> int:
         )
         assert completed["status"] == "candidate-ready"
         assert completed["passed_evaluation_bool"] is True
+        assert completed["loss_gate_passed"] is True
+        assert completed["foundation_anchor_gate_passed"] is True
+        assert completed["structural_output_gate_passed"] is True
+        assert completed["identity_gate_passed"] is True
+        assert completed["privacy_gate_passed"] is True
+        assert completed["promotion_ready_bool"] is False
         assert completed["promoted_bool"] is False
         assert not checkpoint.exists()
         before_promotion = model.status_payload(temporary)
         assert before_promotion["ready"] is False
         assert before_promotion["generation"] == "g000000"
 
+        direct_guard_root = temporary / "direct-promotion-readiness"
+        model.initialize_model(direct_guard_root, config, force=True)
+        direct_original_loss = model.evaluate_loss
+        model.evaluate_loss = lambda *_args, **_kwargs: 4.0
+        try:
+            direct_guard = model.train_candidate(
+                direct_guard_root,
+                [source_root / "resources" / "bootstrap.jsonl"],
+                [source_root / "resources" / "bootstrap_anchors.jsonl"],
+                "all",
+                1,
+                3.0e-4,
+                1,
+                1,
+                1,
+                direct_guard_root / "control",
+                False,
+                honor_inference_priority=False,
+            )
+        finally:
+            model.evaluate_loss = direct_original_loss
+        assert direct_guard["passed_evaluation_bool"] is True
+        assert direct_guard["promotion_ready_bool"] is False
+        assert direct_guard["promoted_bool"] is False
+        assert model.status_payload(direct_guard_root)["generation"] == "g000000"
+
+        try:
+            model.promote_generation(
+                temporary,
+                completed["generation"],
+                completed["parent_generation"],
+            )
+        except RuntimeError as error:
+            message = str(error)
+            assert "not ready for promotion" in message
+            assert "bootstrap_complete" in message
+            assert "full_backbone_trained" in message
+            assert "generation_ready" in message
+        else:
+            raise AssertionError("unready internal candidate was promoted")
+        assert model.status_payload(temporary)["generation"] == "g000000"
+
+        # Replace the deliberately incomplete fixture with a fully qualified
+        # candidate so the remaining compare-and-swap and rollback checks can
+        # exercise the successful promotion path.
+        foundation = model.load_active_model(
+            temporary,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        rejected_direct_generation = "g-status-guard"
+        try:
+            model.save_generation(
+                temporary,
+                foundation.model,
+                foundation.config,
+                rejected_direct_generation,
+                status="trained-candidate",
+                parent=completed["parent_generation"],
+                steps=1,
+                tokens_seen=1,
+                validation_loss=4.0,
+                training_scope="all",
+                promote=True,
+                bootstrap_target_steps=1,
+                bootstrap_complete=True,
+                training_data_scope="english-core",
+                full_backbone_trained=True,
+                generation_ready=True,
+            )
+        except RuntimeError as error:
+            assert "status must be trained" in str(error)
+        else:
+            raise AssertionError("save_generation directly promoted a non-trained status")
+        assert not (
+            temporary
+            / "models"
+            / "internal"
+            / "generations"
+            / rejected_direct_generation
+        ).exists()
+
+        model.save_generation(
+            temporary,
+            foundation.model,
+            foundation.config,
+            completed["generation"],
+            status="trained-candidate",
+            parent=completed["parent_generation"],
+            steps=1,
+            tokens_seen=1,
+            validation_loss=4.0,
+            training_scope="all",
+            promote=False,
+            bootstrap_target_steps=1,
+            bootstrap_complete=True,
+            training_data_scope="english-core",
+            full_backbone_trained=True,
+            generation_ready=True,
+        )
+        candidate_manifest_path = (
+            temporary
+            / "models"
+            / "internal"
+            / "generations"
+            / completed["generation"]
+            / "manifest.json"
+        )
+        promotion_started = threading.Event()
+        promotion_errors: list[Exception] = []
+        promotion_results: list[dict[str, object]] = []
+
+        def promote_after_lock() -> None:
+            promotion_started.set()
+            try:
+                promotion_results.append(
+                    model.promote_generation(
+                        temporary,
+                        completed["generation"],
+                        completed["parent_generation"],
+                    )
+                )
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                promotion_errors.append(error)
+
+        with model._promotion_lock(temporary):
+            promotion_thread = threading.Thread(target=promote_after_lock)
+            promotion_thread.start()
+            assert promotion_started.wait(timeout=1.0)
+            time.sleep(0.1)
+            assert promotion_thread.is_alive()
+            swapped_manifest = json.loads(
+                candidate_manifest_path.read_text(encoding="utf-8")
+            )
+            swapped_manifest["generation_ready"] = False
+            model.atomic_write_text(
+                candidate_manifest_path,
+                json.dumps(swapped_manifest, indent=2) + "\n",
+            )
+        promotion_thread.join(timeout=5.0)
+        assert not promotion_thread.is_alive()
+        assert not promotion_results
+        assert len(promotion_errors) == 1
+        assert isinstance(promotion_errors[0], RuntimeError)
+        assert "generation_ready" in str(promotion_errors[0])
+        assert model.status_payload(temporary)["generation"] == "g000000"
+
+        swapped_manifest["generation_ready"] = True
+        model.atomic_write_text(
+            candidate_manifest_path,
+            json.dumps(swapped_manifest, indent=2) + "\n",
+        )
         promoted = model.promote_generation(
             temporary,
             completed["generation"],
@@ -912,7 +1070,7 @@ def main() -> int:
         )
         assert promoted["status"] == "promoted"
         status = model.status_payload(temporary)
-        assert status["ready"] is False
+        assert status["ready"] is True
         assert status["external_base_weights"] is False
         assert status["generation"] == "g000001"
 
@@ -1109,10 +1267,32 @@ def main() -> int:
             validation_loss=active.manifest.get("validation_loss"),
             training_scope="rollback-smoke",
             promote=True,
+            bootstrap_target_steps=1,
+            bootstrap_complete=True,
+            training_data_scope="english-core",
+            full_backbone_trained=True,
+            generation_ready=True,
         )
         rolled_back = model.activate_generation(temporary, "g000001", "g000002")
         assert rolled_back["status"] == "activated"
         assert model.status_payload(temporary)["generation"] == "g000001"
+
+        rollback_manifest_path = temporary / "models" / "internal" / "generations" / "g000002" / "manifest.json"
+        rollback_manifest = json.loads(rollback_manifest_path.read_text(encoding="utf-8"))
+        rollback_manifest["generation_ready"] = False
+        rollback_manifest_path.write_text(
+            json.dumps(rollback_manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            model.activate_generation(temporary, "g000002", "g000001")
+        except RuntimeError as error:
+            assert "rollback target is not ready for inference" in str(error)
+            assert "generation_ready" in str(error)
+        else:
+            raise AssertionError("an unready trained rollback target was activated")
+        assert model.status_payload(temporary)["generation"] == "g000001"
+
         try:
             model.activate_generation(temporary, "g000001", "g000002")
         except RuntimeError as error:
@@ -1132,6 +1312,11 @@ def main() -> int:
                 validation_loss=active.manifest.get("validation_loss"),
                 training_scope="stale-direct-promotion-smoke",
                 promote=True,
+                bootstrap_target_steps=1,
+                bootstrap_complete=True,
+                training_data_scope="english-core",
+                full_backbone_trained=True,
+                generation_ready=True,
             )
         except RuntimeError as error:
             assert "stale internal candidate" in str(error)

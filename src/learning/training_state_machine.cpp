@@ -34,9 +34,15 @@ void atomic_replace(
     const std::filesystem::path& temporary,
     const std::filesystem::path& destination) {
 #ifdef _WIN32
-    constexpr auto maximum_attempts = 100U;
+    // A CRT reader normally shares reads and writes but not deletion, so an
+    // atomic replacement can receive ERROR_ACCESS_DENIED until that reader
+    // closes. Status pollers and virus scanners can keep such handles alive
+    // longer than the old fixed 500 ms retry budget.
+    constexpr auto maximum_retry_time = std::chrono::seconds(5);
+    constexpr DWORD retry_delay_ms = 10U;
+    const auto retry_deadline = std::chrono::steady_clock::now() + maximum_retry_time;
     DWORD last_error = ERROR_SUCCESS;
-    for (auto attempt = 0U; attempt < maximum_attempts; ++attempt) {
+    for (;;) {
         if (::MoveFileExW(
                 temporary.c_str(), destination.c_str(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
@@ -45,12 +51,10 @@ void atomic_replace(
         last_error = ::GetLastError();
         const auto transient_reader = last_error == ERROR_SHARING_VIOLATION ||
             last_error == ERROR_LOCK_VIOLATION || last_error == ERROR_ACCESS_DENIED;
-        if (!transient_reader || attempt + 1U == maximum_attempts) {
+        if (!transient_reader || std::chrono::steady_clock::now() >= retry_deadline) {
             break;
         }
-        // CRT readers can briefly omit FILE_SHARE_DELETE. Wait boundedly instead
-        // of terminating the serialized training worker during a status poll.
-        ::Sleep(5U);
+        ::Sleep(retry_delay_ms);
     }
     throw std::system_error(
         static_cast<int>(last_error), std::system_category(),
@@ -126,12 +130,18 @@ PersistentTrainingQueue::PersistentTrainingQueue(std::filesystem::path state_fil
 void PersistentTrainingQueue::load() {
     std::lock_guard lock(mutex_);
     jobs_.clear();
-    std::ifstream stream(state_file_, std::ios::binary);
-    if (!stream) {
-        return;
+    std::string text;
+    {
+        std::ifstream stream(state_file_, std::ios::binary);
+        if (!stream) {
+            return;
+        }
+        text.assign(
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>());
     }
-    const std::string text{
-        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    // Release the non-delete-sharing CRT handle before JSON parsing. Another
+    // queue instance can then publish while a large snapshot is deserialized.
     std::string error;
     const auto document = core::json::try_parse(text, error);
     if (!document.has_value() || !document->is_array()) {

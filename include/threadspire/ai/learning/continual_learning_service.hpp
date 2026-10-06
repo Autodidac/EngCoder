@@ -103,6 +103,7 @@ public:
 
     [[nodiscard]] LearningSubmissionPreview preview(memory::Episode episode) const;
     [[nodiscard]] bool submit(memory::Episode episode);
+    [[nodiscard]] bool submit_without_automatic_update(memory::Episode episode);
     void request_skill_update(std::string skill);
     void request_foundation_update(
         std::filesystem::path training_dataset,
@@ -140,6 +141,7 @@ private:
         bool initialize_internal_model{false};
     };
 
+    [[nodiscard]] bool submit_impl(memory::Episode episode, bool schedule_automatic_update);
     void worker_loop(std::stop_token stop_token);
     void process_request(const LearningRequest& request, std::stop_token stop_token);
     [[nodiscard]] bool run_internal_update(

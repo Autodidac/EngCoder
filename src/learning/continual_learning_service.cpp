@@ -567,6 +567,16 @@ LearningSubmissionPreview ContinualLearningService::preview(memory::Episode epis
 }
 
 bool ContinualLearningService::submit(memory::Episode episode) {
+    return submit_impl(std::move(episode), true);
+}
+
+bool ContinualLearningService::submit_without_automatic_update(memory::Episode episode) {
+    return submit_impl(std::move(episode), false);
+}
+
+bool ContinualLearningService::submit_impl(
+    memory::Episode episode,
+    const bool schedule_automatic_update) {
     sanitize_learning_episode(episode);
     LearningSettings settings;
     {
@@ -621,7 +631,8 @@ bool ContinualLearningService::submit(memory::Episode episode) {
         }
         module.updated_unix_ms = memory::now_unix_ms();
         expert_registry_.save(module);
-        if (expert_registry_.ready_for_lora(module, settings.policy)) {
+        if (schedule_automatic_update &&
+            expert_registry_.ready_for_lora(module, settings.policy)) {
             skill_to_queue = module.skill;
         }
     }
@@ -697,24 +708,14 @@ void ContinualLearningService::queue_request(LearningRequest request) {
     }
     {
         std::lock_guard lock(mutex_);
-        if (request.candidate_id.has_value()) {
-            std::erase_if(queue_, [&request](const LearningRequest& pending) {
-                return pending.skill == request.skill &&
-                       !pending.candidate_id.has_value();
+        const auto duplicate = std::ranges::any_of(
+            queue_, [&request](const LearningRequest& pending) {
+                return pending.job_id == request.job_id;
             });
-            const auto duplicate = std::ranges::any_of(
-                queue_, [&request](const LearningRequest& pending) {
-                    return pending.candidate_id == request.candidate_id;
-                });
-            if (!duplicate) {
+        if (!duplicate) {
+            if (request.candidate_id.has_value()) {
                 queue_.push_front(std::move(request));
-            }
-        } else {
-            const auto skill_already_queued = std::ranges::any_of(
-                queue_, [&request](const LearningRequest& pending) {
-                    return pending.skill == request.skill;
-                });
-            if (!skill_already_queued) {
+            } else {
                 queue_.push_back(std::move(request));
             }
         }
@@ -1183,6 +1184,25 @@ void ContinualLearningService::process_request(
         transition_durable_phase(
             request.job_id, TrainingState::promoting, TrainingState::completed,
             status.progress_path, "candidate completed without replacing a working model early");
+
+        // Evidence can arrive after this candidate freezes its dataset. A
+        // successful promotion subtracts only the rows it actually consumed,
+        // so immediately serialize one follow-up when the preserved remainder
+        // already constitutes another complete microbatch. Rejected and
+        // recoverable jobs deliberately do not enter this branch and therefore
+        // cannot create an automatic retry loop.
+        auto follow_up_ready = false;
+        {
+            std::lock_guard lock(mutex_);
+            if (const auto* current = expert_registry_.find(request.skill);
+                current != nullptr) {
+                follow_up_ready =
+                    expert_registry_.ready_for_lora(*current, settings.policy);
+            }
+        }
+        if (follow_up_ready) {
+            request_skill_update(request.skill);
+        }
     } else if (rejected) {
         transition_durable_phase(
             request.job_id, TrainingState::training, TrainingState::evaluating,

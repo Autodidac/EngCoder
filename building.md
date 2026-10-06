@@ -35,7 +35,7 @@ cmake -DTHREADSPIRE_BASE_ROOT=out\install\windows-vs2022 -P tools\check_base_foo
 
 EngCoder stores live application data under `%LOCALAPPDATA%\EngCoder`. The obsolete `%LOCALAPPDATA%\ThreadSpire` directory is not recreated.
 
-The base release installs `EngCoder.exe`, the bundled compact native inference helper under its compatibility `optional-packs` path, and the required EngCoder/EpochGui license notices. The compact helper is part of the measured base and contains no neural weights. User-installed model weights and heavyweight training or media capability packs remain outside the base release and footprint measurement. The base does not materialize Python scripts or install a private Python runtime.
+The base release installs `EngCoder.exe`, the bundled compact native inference helper under its compatibility `optional-packs` path, and the required EngCoder/EpochGui license notices. The compact helper is part of the measured base, contains no neural weights, and runs directly from the verified release payload. EngCoder does not copy it into application data or publish an installed-pack manifest merely to answer a message. User-installed model weights and heavyweight training or media capability packs remain outside the base release and footprint measurement. The base does not materialize Python scripts or install a private Python runtime.
 
 ## C++23 modules
 
@@ -57,17 +57,20 @@ Implementation units and native tests consume the interfaces with `import`. Wind
 
 ## Capability packs
 
-Heavy functionality is separated into capability packs. EngCoder manages the small built-in answer engine automatically; built-in learning setup and repair live under **AI & Tools**; advanced fine-tuning, image, and audio add-ons are added explicitly under **Capabilities**. Each pack is staged and verified before an atomic commit; cancellation or failure restores the prior pack. Adding an optional pack never starts training, selects a model, starts a host, or interrupts a task.
+Heavy functionality is separated into capability packs. EngCoder manages the release-bundled native answer host automatically; built-in learning setup and repair live under **Settings**; advanced training, image, and audio add-ons are added explicitly under **Capabilities**. No optional pack is downloaded, prepared, or installed as a side effect of startup, Chat, Live Auto, foundation work, or a queued neural job. Each user-selected pack is staged and verified before an atomic commit; cancellation or failure restores the prior pack. Adding an optional pack never starts training, selects a model, starts a host, or interrupts a task.
 
-Supported pack classes are:
+The release-bundled runtime component is:
 
-- compact native inference
+- compact native inference, catalog ID `compact-native-inference`, run in place from the release payload
+
+Optional pack classes are:
+
 - internal PyTorch training
 - optional Transformers/PEFT fine-tuning (dependent on the training pack)
 - optional image engine
 - optional audio engine
 
-A prepared pack source must contain every file declared for that pack; EngCoder writes the installed `pack.json` only after validation and an atomic commit. Python is needed only inside packs that declare it. Internal training payloads include `model_worker.py`, `internal_model.py`, `curriculum_guard.py`, and `curriculum_compiler.py`; these files are source assets for pack assembly and are not embedded in the base executable.
+A prepared optional-pack source must contain every file declared for that pack; EngCoder writes the installed `pack.json` only after validation and an explicit atomic commit. Python is needed only inside packs that declare it. Internal PyTorch Training requires exactly `runtime/Scripts/python.exe`, `backend/model_worker.py`, `backend/internal_model.py`, `backend/curriculum_guard.py`, and `backend/curriculum_compiler.py`. These backend files are source assets for pack assembly and are not embedded in the base executable. If any required file is absent, EngCoder keeps the neural job queued and names the missing file plus the **Install selected package** action; it does not attempt package management itself.
 
 On a Windows training machine, prepare that pack without touching the base install:
 
@@ -75,7 +78,9 @@ On a Windows training machine, prepare that pack without touching the base insta
 .\tools\prepare_internal_training_pack.ps1
 ```
 
-The script creates an isolated Python runtime, installs PyTorch, NumPy, and Safetensors, runs the backend doctor, exercises NumPy, performs a Safetensors write/read round trip, and—unless CPU smoke-test mode was explicitly allowed—executes and synchronizes CUDA tensor math. It records the exact installed dependency versions and only then atomically places the completed payload in EngCoder's `pack-inbox`. It downloads no model weights. Pass `-Wheelhouse` for an offline, controlled wheel source. `-AllowCpuTraining` is intended only for slow smoke tests; normal internal training requires CUDA.
+Running that script is the operator's explicit package-preparation action. It creates an isolated Python runtime, installs PyTorch, NumPy, and Safetensors into that isolated payload, runs the backend doctor, exercises NumPy, performs a Safetensors write/read round trip, and—unless CPU smoke-test mode was explicitly allowed—executes and synchronizes CUDA tensor math. It records the exact installed dependency versions and only then atomically places the completed payload in EngCoder's `pack-inbox`. It downloads no model weights. Pass `-Wheelhouse` for an offline, controlled wheel source. `-AllowCpuTraining` is intended only for slow smoke tests; normal internal training requires CUDA.
+
+Authorized loopback teacher models have a separate lifecycle. Live Auto or the foundation builder may ask LM Studio to load the exact locally installed Qwen or Nemotron identifier when needed. EngCoder does not download a teacher, unload any model, change context or parallel settings on an already loaded model, or expose an unloaded teacher to foreground routing. A rejected or failed load stays in the audit as retry-pending.
 
 To select a CUDA-specific PyTorch channel, pass a trusted index explicitly:
 
@@ -90,7 +95,7 @@ Normal builds never migrate, quarantine, or rewrite `%LOCALAPPDATA%\EngCoder`. T
 
 ## Validation
 
-The CTest suite covers module consumption, unified routing and multimodal providers, cancellation and artifacts, transactional pack rollback, model-selection isolation, durable training resume/coalescing, atomic candidate-host promotion, storage accounting/cleanup, reset-path validation, the English Gate, and the base footprint.
+The CTest suite covers module consumption, unified routing and multimodal providers, loaded/unloaded/missing/failing teacher endpoints, cancellation and artifacts, transactional pack rollback, model-selection isolation, durable training resume/coalescing, atomic candidate-host promotion, degraded-host reporting, storage accounting/cleanup, reset-path validation, the English Gate, responsive-layout contracts, and the base footprint. Fake teacher endpoints are used for lifecycle and failure-path tests so validation does not unload or reconfigure a developer's shared LM Studio session.
 
 Optional Python validation for pack maintainers:
 
@@ -111,7 +116,7 @@ A release reset is permitted only after the replacement release build, CTest, sm
 ```powershell
 .\tools\reset_engcoder_appdata.ps1 `
   -Target "$env:LOCALAPPDATA\EngCoder" `
-  -ReplacementVersion 0.9.1 `
+  -ReplacementVersion 0.9.2 `
   -ValidateOnly
 ```
 
