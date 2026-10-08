@@ -1,0 +1,11 @@
+repository=https://github.com/GenerelSchwerz/llama.cpp.git
+branch=moe-cache
+commit=167742d9dfa01306786e7d3cfd31fcb8a8b185dc
+verified_date=2026-10-06
+engcoder_patch=patches/0001-qwen38-q2-padded-down.patch
+runtime_recipe=engcoder-qwenflash-2026.10.06-q2pad1
+feature=qwen38-q2-padded-down-v1
+
+vcpkg_repository=https://github.com/microsoft/vcpkg.git
+vcpkg_release=2026.07.29
+vcpkg_commit=9e593bb18ea69cc5095e012465dcd675a822ed0d
