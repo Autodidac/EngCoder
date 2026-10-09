@@ -62,7 +62,7 @@ struct Config {
     std::uint32_t qwen_flash_batch_size = 1024;
     std::uint32_t qwen_flash_ubatch_size = 256;
     std::string qwen_flash_runtime_policy = "recommended";
-    std::uint32_t qwen_flash_gpu_offload_percent = 95;
+    std::uint32_t qwen_flash_gpu_offload_percent = 50;
     std::uint32_t qwen_flash_gpu_layer_count_hint = 48;
     std::string qwen_flash_gpu_layers = "auto";
     bool qwen_flash_flash_attention = true;

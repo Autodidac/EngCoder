@@ -506,6 +506,9 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
       if (!response.ok) throw new Error(payload?.error || `Event polling failed: HTTP ${response.status}`);
       pollFailures = 0;
 
+      let renderPending = false;
+      let progressPending = false;
+      let processedEvents = 0;
       for (const event of payload?.events || []) {
         after = Math.max(after, Number(event?.sequence) || 0);
         if (event?.task_id !== submission.task_id) continue;
@@ -590,10 +593,27 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
 
         const terminal = terminalFromEvent(event);
         if (terminal) shouldRender = true;
-        if (shouldRender) updateAssistantMessage(assistantBody, assistantState);
-        persistProgress();
-        if (terminal) return terminal;
+        renderPending ||= shouldRender;
+        progressPending = true;
+        if (terminal) {
+          // Flush the completed content before returning, even on a very
+          // busy backend with many text fragments in one response.
+          updateAssistantMessage(assistantBody, assistantState);
+          persistProgress();
+          return terminal;
+        }
+        // A large event backlog must not monopolize the JS event loop and
+        // prevent Qwen Live, sidebar clicks or Stop from being painted.
+        if (++processedEvents % 128 === 0) {
+          if (renderPending) updateAssistantMessage(assistantBody, assistantState);
+          if (progressPending) persistProgress();
+          renderPending = false;
+          progressPending = false;
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
       }
+      if (renderPending) updateAssistantMessage(assistantBody, assistantState);
+      if (progressPending) persistProgress();
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       pollFailures += 1;
@@ -934,7 +954,9 @@ function applyQwenLiveEvents(state, events) {
     if (event.kind === 'start') {
       state.requestId = id;
       state.model = String(event.model || 'Qwen Next Flash');
-      state.rawOutput = '';
+      // A request start is not generated text. Retain the previous answer
+      // until an actual provider fragment replaces it.
+      state.awaitingNewOutput = true;
       state.live = true;
       started = true;
       continue;
@@ -947,10 +969,28 @@ function applyQwenLiveEvents(state, events) {
     if (event.kind === 'text' || event.kind === 'reasoning' || event.kind === 'arguments') {
       const fragment = String(event.delta || '');
       if (!fragment) continue;
+      if (state.awaitingNewOutput) {
+        state.rawOutput = '';
+        state.awaitingNewOutput = false;
+      }
       state.rawOutput = (state.rawOutput + fragment).slice(-RAW_OUTPUT_LIMIT);
     }
   }
   return started;
+}
+
+// Server snapshot is authoritative after a request finishes and when a slow
+// client misses start/delta events due to the bounded event journal. Never
+// discard a completed output simply because the generator became idle.
+function reconcileQwenLiveSnapshot(state, latest) {
+  if (!latest || !latest.request_id) return false;
+  const changed = state.requestId !== String(latest.request_id);
+  state.requestId = String(latest.request_id);
+  state.model = String(latest.model || 'Qwen Next Flash');
+  state.rawOutput = String(latest.output || '').slice(-RAW_OUTPUT_LIMIT);
+  state.live = latest.generating === true;
+  state.awaitingNewOutput = state.live && latest.has_current_output === false;
+  return changed;
 }
 
 async function pollQwenLiveOutput() {
@@ -963,17 +1003,29 @@ async function pollQwenLiveOutput() {
     const events = Array.isArray(payload.events) ? payload.events : [];
     const previous = qwenLiveState.requestId;
     const wasInitialized = qwenLiveInitialized;
-    const started = applyQwenLiveEvents(qwenLiveState, events);
-    qwenLiveCursor = Math.max(qwenLiveCursor, Number(payload.cursor) || 0);
+    const startedFromEvents = applyQwenLiveEvents(qwenLiveState, events);
+    const startedFromSnapshot = reconcileQwenLiveSnapshot(qwenLiveState, payload.latest);
+    const started = startedFromEvents || (startedFromSnapshot && qwenLiveState.live);
+    // A native server restart resets its process-local journal cursor.
+    const serverCursor = Number(payload.cursor) || 0;
+    qwenLiveCursor = serverCursor < qwenLiveCursor ? serverCursor : Math.max(qwenLiveCursor, serverCursor);
     qwenLiveInitialized = true;
     // When an external tool/MCP client starts Qwen, switch to the dedicated
     // monitor. Do not steal focus from an in-progress EngCoder chat task.
     if (started && (wasInitialized || qwenLiveState.live) && !activeEngCoderTaskId && !pipelineBusy) {
       rightPanelView = 'qwen';
-      thinkingDrawer.classList.add('open');
-      applyResponsiveShell();
+      if (!thinkingDrawer.classList.contains('open')) {
+        thinkingDrawer.classList.add('open');
+        syncShellLayout();
+        scheduleRightDrawerRender({ layout: true });
+      }
     }
-    if (rightPanelView === 'qwen' && (events.length || previous !== qwenLiveState.requestId)) syncThinkingDrawer();
+    // A live feed must not force expensive synchronous layout every 500 ms.
+    // Coalesce multiple provider fragments to one DOM update per browser frame.
+    if (rightPanelView === 'qwen' && thinkingDrawer.classList.contains('open') &&
+        (events.length || previous !== qwenLiveState.requestId || startedFromSnapshot)) {
+      scheduleRightDrawerRender();
+    }
   } catch (_) {
     // An optional status monitor must never interrupt the chat or inference.
   } finally {

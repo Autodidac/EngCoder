@@ -384,8 +384,8 @@
           <label>Micro-batch
             <input id="nativeUbatchSize" type="number" min="32" step="32" value="256" />
           </label>
-          <label>Qwen GPU layer offload <small>0–100% of EngCoder's safe model-layer budget · default 95%</small>
-            <input id="nativeGpuOffloadPercent" type="number" min="0" max="100" step="1" value="95" />
+          <label>Qwen GPU layer offload <small>0–100% of EngCoder's safe model-layer budget · default 50%</small>
+            <input id="nativeGpuOffloadPercent" type="number" min="0" max="100" step="1" value="50" />
             <small id="nativeGpuApplyHint">100% uses the configured safe maximum of Qwen's offloadable layers, not all GPU memory. Cache, KV and CUDA workspace need separate VRAM. Apply changes using Reload / Apply settings.</small>
           </label>
           <label>Model layer hint <small>Manual ratio mapping</small>

@@ -1,3 +1,28 @@
+## 0.7.1 Async UI 1 — responsive model loading and generation (2026-10-09)
+
+- Correct the fresh-profile Web GPU input to the documented 50% default; saved user profiles remain untouched.
+- EngCoder Lab no longer uses a modal backdrop that blocked every toolbar/sidebar click during model loading. It retains its styling, closes on an outside click, and allows Qwen Live to appear above it.
+- Right-side Output / Qwen Live / Run info drawer becomes visible immediately, even if no chat run is selected and native Qwen is still loading. Defer expensive layout and panel rendering until the next animation frame.
+- Qwen Live updates coalesce within a browser frame; opening an external-client monitor no longer forces a synchronous panel measurement during each poll.
+- Batch task-event generation updates: render/persist once per poll rather than once per token fragment; for large event backlogs yield every 128 events so clicks, Stop, and painting can run.
+- Preserve all original events, terminal handling, partial conversation recovery, Qwen Live 3 idle text retention, the GPU scale/default, and the 25-mission register. Build marker: `Async UI 1`.
+- **Acceptance not yet verified on Windows:** live Edge responsiveness while a 79 GB GGUF loads and Qwen generates; resource pressure and OS paging can still stall the *whole computer*, independently of UI scheduling.
+
+## 0.7.1 Qwen Live 3 hotfix — retained output during preparation (2026-10-09)
+
+- Keep the previous Qwen generation visible while another request prepares. A new request's start event is **not** a generated fragment; only actual text, reasoning, or tool-argument output replaces the previous display.
+- Preserve the last completed output if an attempted request fails or finishes without generating any fragments. After completion, display `Idle · last output retained` and allow reading without closing the Qwen Live tab.
+- Retain the same behavior when the Web client reconnects or refreshes from the bounded native snapshot. Distinguish the hotfix on screen with the `Qwen Live 3` build suffix.
+- Extend native Catch2 and Web regression coverage for start-without-deltas, empty completion, first-fragment replacement, and recovery snapshots. GPU percentages, UI layout, routes, and missions are unchanged.
+- Windows/MSVC and live external MCP tests remain required; this is not a claim of full live-hardware validation.
+
+## 0.7.1 — GPU default, version consistency, and regression review (2026-10-09)
+
+- Set the *new-model/default/reset* Qwen GPU layer offload to 50% in C++ model/config defaults, native GUI, Web UI and JSON fallback; preserve the existing percentage scale and effective-layer ceiling. Existing saved profiles are not overwritten, including custom 99% offload settings.
+- Synchronize CMake, vcpkg manifest, Web UI display and training worker/MCP-client version metadata to 0.7.1.
+- Keep previous Qwen Live 2 idle-output retention, authentication, multi-model handoff and UI behavior. Add a targeted release regression for consistency and GPU default fallback.
+- Known limits: Windows/MSVC, full Catch2 suite, LM Studio/Qwen live testing, and OS-level sandbox remain subject to validation; see FUTURE_MISSIONS.md.
+
 ## 0.6.9 Qwen live output integration — 2026-10-08
 
 - Observe provider-emitted Qwen Next Flash fragments at the native-model boundary, not only from EngCoder chat tasks. Calls through `/api/tasks`, `/v1/chat/completions` (streaming and non-streaming), and `/v1/responses` now share a bounded Qwen-output journal. External MCP/tool clients must use EngCoder's `/v1` URL for this observation; direct calls to standalone llama-server or LM Studio cannot be intercepted.
@@ -423,3 +448,12 @@
 - The TPS marker is explicitly approximate, based on rendered text length, not actual llama.cpp tokenizer usage; no unsupported measured-speed claims.
 - Persisted task-start and first-output timestamps so duration and speed displays survive a browser refresh without silently restarting the clock.
 - No model, GPU, route, theme, or math-rendering configuration changes.
+
+
+## 0.6.9 Qwen Live 2 — retained completed output (2026-10-09)
+
+- Keep the **Qwen live** monitor visible while idle, even when clicking the main composer or chat; only explicit close/toggle closes it. Run info and normal Output retain their previous behavior.
+- Show **Idle · last output retained** after the active Qwen generation completes, without clearing any generated fragments until the next generation starts.
+- Maintain a bounded, in-memory **latest Qwen invocation** snapshot in the native provider journal, independent of its prunable event ring. The authenticated `/api/engcoder/qwen-output` endpoint includes this snapshot so delayed/served clients and refreshed pages can recover the most recent generation without a missing start event.
+- Retain the 96 KiB display limit, 512 KiB/2048-event journal bounds, existing tool/MCP coverage, and the existing model/GPU configuration. Send full recovery output only on first load or after missed events, not on every 500 ms idle poll; preserve UTF-8 boundaries for long output.
+- Add C++ and Web regression coverage for idle retention, new generation reset, completed refresh recovery, and overlapping requests. This is a source hotfix; Windows and live MCP operation must still be verified.

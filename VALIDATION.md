@@ -1,10 +1,33 @@
-## Repository sync validation (2026-10-08)
+## 0.7.1 Windows release verification (2026-10-09)
 
-- **PASS:** clean Windows x64 Visual Studio 2022 Release build; all 56 CTest cases passed.
-- **PASS:** clean Windows x64 Visual Studio 2022 Debug build; all 56 CTest cases passed.
-- **PASS:** all 13 Web/served-runtime smoke tests and the 25-mission source-sync check.
-- **Corrected:** the native vcpkg manifest now reports `0.6.9`, matching CMake and the shared Web client.
-- **Not claimed:** no live Qwen/LM Studio inference, GPU-residency, remote-authentication, or visual UI acceptance was performed during this repository sync.
+- **Passed:** Visual Studio 2022 x64 Release build and all 61 CTest cases.
+- **Passed:** Visual Studio 2022 x64 Debug build and all 61 CTest cases.
+- **Passed:** all 16 Web smoke tests and syntax checks for all 10 Web JavaScript files.
+- **Passed:** isolated Release `EngCoderServer.exe` startup on loopback port 14329, `/health` reporting EngCoder 0.7.1, `/ui/` returning HTTP 200, and `/api/engcoder/qwen-output` returning the retained-output snapshot contract.
+- **Fixed during release audit:** the new-profile Web GPU input still declared `value="95"` while every other 0.7.1 default and its label used 50%. It now starts at 50%, and the release-default smoke test protects both the label and input value. Saved profiles remain authoritative and are not rewritten.
+- **Not claimed:** live GGUF generation, physical GPU-layer allocation, live LM Studio 9B/27B routing, remote-LAN operation, or interactive Edge responsiveness during a 79 GB cold model load. Those require available models/hardware and hands-on acceptance; the source retains those limitations below.
+
+## 0.7.1 Async UI 1 checks (2026-10-09)
+
+- `release_071_async_sidebar_live_smoke.cjs`: tests immediate drawer visibility while a model load is pending, non-modal Lab access, deferred/coalesced panel painting, and bounded event-loop yielding with terminal persistence.
+- All Web smoke tests and JavaScript syntax checks must pass. Existing idle retention, MathML, retry and role-routing tests must remain green.
+- **Windows acceptance pending:** start native model loading (cold, large GGUF), immediately toggle Output / Qwen Live / Run info, send/stream text with available loaded model or `/v1` client, confirm partial output appears and the sidebar remains clickable; repeat in served Edge client. Verify Stop and chat refresh while generating.
+
+## 0.7.1 Qwen Live 3 idle-retention hotfix (2026-10-09)
+
+- The right-panel Qwen Live view retains its last generated output after completion and through empty/failed request starts. A real provider fragment from a new request replaces the retained output. The status shows `Qwen preparing · last output retained` until replacement begins, then `Idle · last output retained` on completion.
+- `projects/web/tests/qwen_live_idle_persistence_smoke.cjs` checks start/finish/next-delta and snapshot-recovery transitions; existing Web tests must remain green.
+- Native `test_qwen_output_journal.cpp` now covers the same transitions. C++23 isolated journal checks can be run under GCC/Clang; the full Catch2/MSVC suite and a live MCP-hosted inference test remain outstanding.
+
+## EngCoder 0.7.1 source-package verification (2026-10-09)
+
+- **Passed in the supplied source package:** all 16 Web smoke tests (`node projects/web/tests/*smoke.cjs`, including the new release/default/scale contract check). The 25-mission Web regression passes.
+- **Reviewed:** C++ model default (50%), native GUI default/reset (50%), Web form/default/reset (50%), 0–100% scale and 60%-layer ceiling unchanged. The 48-layer hint maps the new 50% default to `-ngl 14`; prior custom 99% still maps to 29.
+- **Native regression added:** `0.7.1 keeps saved Qwen GPU tuning when the default changes` verifies a revision-9 saved 99% model survives two manager startups and its persisted manifest does not change. Also updated old migration tests for the new default.
+- **Fixed regression drift:** An older Web smoke test hardcoded `0.6.9`; it now checks semantic version format, leaving version specificity to the 0.7.1 test.
+- **Fixed:** GPU layer display fallback to 50% for malformed/NaN profile data; legitimate values and mapping remain unchanged.
+- **Fixed:** Release version metadata previously disagreed (`0.6.8` vs `0.6.9`). Native CMake, vcpkg, browser and training worker now declare `0.7.1`.
+- **Superseded by the Windows release verification above:** the package author did not have the full native toolchain; this repository pass subsequently completed both MSVC configurations and CTest. Actual Qwen GPU-layer allocation, remote clients, and live inference remain unverified.
 
 ## Qwen live provider output hotfix (2026-10-08)
 
@@ -218,3 +241,5 @@ Track remaining work, especially security and MTP compatibility certification, i
 - `node projects/web/tests/release_069_run_quick_metrics_smoke.cjs`: verifies Run quick-reference position, completion/live timing, TPS estimate labeling, and persisted original clock anchors.
 - Model TPS is an estimate until the backend exposes tokenizer-based inference stats; llama.cpp CLI benchmarks cannot be equated to end-to-end agent task speed.
 - A live Windows/Edge test with Qwen and LM Studio remains required.
+
+- Qwen Live 2 idle persistence: `node projects/web/tests/qwen_live_idle_persistence_smoke.cjs`; native journal test cases also check `QwenOutputSnapshot.latest` after finish and ring pruning.

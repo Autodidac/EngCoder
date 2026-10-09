@@ -805,7 +805,7 @@ struct NativeProfileEditor {
 
     int source{}; // 0 = Hugging Face, 1 = local GGUF
     int runtime_policy{}; // 0 = Recommended, 1 = Automatic, 2 = Manual
-    int gpu_offload_percent{95};
+    int gpu_offload_percent{50};
     int gpu_layer_count_hint{48};
     int context_tokens{81'920};
     int parallel_slots{1};
@@ -855,7 +855,7 @@ struct NativeProfileEditor {
         const auto keep_local = local_path;
         const auto keep_source = source;
         runtime_policy = 0;
-        gpu_offload_percent = 95;
+        gpu_offload_percent = 50;
         gpu_layer_count_hint = 48;
         context_tokens = 81'920;
         parallel_slots = 1;
@@ -904,7 +904,7 @@ struct NativeProfileEditor {
         source = model.value("source", std::string{"hugging-face"}) == "local-gguf" ? 1 : 0;
         const auto policy = model.value("runtime_policy", std::string{"recommended"});
         runtime_policy = policy == "automatic" ? 1 : (policy == "manual" ? 2 : 0);
-        gpu_offload_percent = static_cast<int>(model.value("gpu_offload_percent", 95U));
+        gpu_offload_percent = static_cast<int>(model.value("gpu_offload_percent", 50U));
         gpu_layer_count_hint = static_cast<int>(model.value("gpu_layer_count_hint", 48U));
         context_tokens = static_cast<int>(model.value("context_tokens", 81'920U));
         parallel_slots = static_cast<int>(model.value("parallel_slots", 1U));
@@ -1594,7 +1594,7 @@ int run_native_ui() {
             }
             if (runtime.contains("effective_profile") && runtime["effective_profile"].is_object() && !runtime["effective_profile"].empty()) {
                 const auto& effective = runtime["effective_profile"];
-                const auto loaded_percent = effective.value("gpu_offload_percent", 95U);
+                const auto loaded_percent = effective.value("gpu_offload_percent", 50U);
                 const auto loaded_ngl = effective.value("gpu_layers", std::string{"auto"});
                 ImGui::TextDisabled("Launch GPU offload: %u%% (old %.1f%%)  ·  -ngl %s",
                     loaded_percent, static_cast<double>(loaded_percent) * 0.6, loaded_ngl.c_str());
@@ -1753,8 +1753,8 @@ int run_native_ui() {
                         promote_manual();
                         copy_text(native_profile_editor.gpu_layers, "auto");
                     }
-                    default_button("gpu-percent", [&]{ native_profile_editor.gpu_offload_percent = 95; copy_text(native_profile_editor.gpu_layers, "auto"); promote_manual(); });
-                    ImGui::TextDisabled("95%% default; 100%% uses the safe Qwen GPU-layer budget (not total VRAM).");
+                    default_button("gpu-percent", [&]{ native_profile_editor.gpu_offload_percent = 50; copy_text(native_profile_editor.gpu_layers, "auto"); promote_manual(); });
+                    ImGui::TextDisabled("50%% default; 100%% uses the safe Qwen GPU-layer budget (not total VRAM).");
                     if (ImGui::InputInt("Model layer hint", &native_profile_editor.gpu_layer_count_hint, 1, 4)) promote_manual(); default_button("gpu-hint", [&]{ native_profile_editor.gpu_layer_count_hint = 48; promote_manual(); });
                     if (ImGui::InputText("Exact GPU layers", native_profile_editor.gpu_layers.data(), native_profile_editor.gpu_layers.size())) promote_manual(); default_button("gpu-exact", [&]{ copy_text(native_profile_editor.gpu_layers, "auto"); promote_manual(); });
                     ImGui::Checkbox("FlashAttention", &native_profile_editor.flash_attention); default_button("flash", [&]{ native_profile_editor.flash_attention = true; promote_manual(); });

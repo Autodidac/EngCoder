@@ -64,7 +64,8 @@ toggleThinkingDrawerBtn.addEventListener('click', () => {
 for (const tab of [generatedOutputTab, qwenLiveTab, runInfoTab]) {
   tab?.addEventListener('click', () => {
     rightPanelView = tab.dataset.runView === 'info' ? 'info' : tab.dataset.runView === 'qwen' ? 'qwen' : 'output';
-    syncThinkingDrawer();
+    // A tab click should never synchronously rebuild a large transcript.
+    scheduleRightDrawerRender();
   });
 }
 closeThinkingDrawerBtn?.addEventListener('click', event => {
@@ -80,7 +81,11 @@ document.addEventListener('click', event => {
   const clickedActivityControl = event.target.closest('#toggleThinkingDrawer')
     || event.target.closest('.thinking-wrap')
     || event.target.closest('.activity-launch');
+  // Qwen Live is a persistent monitor: keep the last generation readable
+  // while idle, including when clicking or editing the main conversation.
+  // The explicit close button and the panel toggle still close it.
   if (thinkingDrawer.classList.contains('open')
+      && rightPanelView !== 'qwen'
       && !thinkingDrawer.contains(event.target)
       && !clickedActivityControl
       && !clickedChatControl) {
@@ -649,7 +654,15 @@ settingsDialog?.addEventListener('click', event => {
 });
 
 function openLab() {
-  openDialog(labDialog);
+  // EngCoder Lab owns long-running model loads. A modal dialog makes the
+  // Qwen Live/Run info toolbar behind it unclickable until loading ends.
+  // Keep the same Lab window, but use non-modal <dialog>.show() so the rest
+  // of the app remains interactive while its fetch is pending.
+  if (labDialog && typeof labDialog.show === 'function') {
+    if (!labDialog.open) labDialog.show();
+  } else {
+    openDialog(labDialog);
+  }
   void probeModels(false);
   void refreshServingStatus().catch(() => {});
   void refreshProviderStatus().catch(() => {});
@@ -665,6 +678,13 @@ $('openLabFromSettings')?.addEventListener('click', () => {
 $('closeLab')?.addEventListener('click', () => closeDialog(labDialog));
 labDialog?.addEventListener('click', event => {
   if (event.target === labDialog) closeDialog(labDialog);
+});
+// Outside clicks still dismiss Lab, but are no longer swallowed by a modal
+// backdrop. In particular, clicking the right-hand inspector opens it now.
+document.addEventListener('click', event => {
+  if (!dialogVisible(labDialog) || labDialog.contains(event.target)) return;
+  if (event.target.closest('#labBtn, #openLabFromSettings')) return;
+  closeDialog(labDialog);
 });
 $('labRefreshModels')?.addEventListener('click', () => runSettingsAction('Refreshing models', () => probeModels(false)));
 $('refreshModelLibrary')?.addEventListener('click', () => runSettingsAction('Refreshing library', refreshNativeModelLibrary));

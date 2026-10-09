@@ -141,7 +141,7 @@ TEST_CASE("native model manager seeds Qwen Flash and derives ids for user models
     CHECK(seeded->runtime == engcoder::model::RuntimeKind::qwen_flash);
     CHECK(seeded->repo == "unsloth/Qwen3.8-Flash-Next-GGUF");
     CHECK(seeded->runtime_policy == "recommended");
-    CHECK(seeded->gpu_offload_percent == 95U);
+    CHECK(seeded->gpu_offload_percent == 50U);
     CHECK(seeded->gpu_layer_count_hint == 48U);
     CHECK(seeded->context_tokens == 81920);
     CHECK(seeded->parallel_slots == 1);
@@ -151,6 +151,14 @@ TEST_CASE("native model manager seeds Qwen Flash and derives ids for user models
     CHECK(seeded->speculative_repo.empty());
     CHECK(seeded->speculative_model.empty());
     CHECK(seeded->profile_revision == 9U);
+
+    // 0.7.1 changes the default, not the safe GPU scale or a saved user value.
+    CHECK(engcoder::model::gpu_offload_default_percent == 50U);
+    CHECK(engcoder::model::gpu_offload_legacy_ceiling_percent == 60U);
+    auto half_scale = *seeded;
+    half_scale.gpu_layers = "auto";
+    CHECK(engcoder::model::effective_gpu_layers(half_scale) == "14");
+
 
     auto registered = manager.register_model({
         {"source", "hugging-face"},
@@ -404,13 +412,13 @@ TEST_CASE("legacy GPU offload scale is migrated once without resetting custom co
         const auto tuned_model = manager.find("qwenflash://" + custom);
         REQUIRE(default_model.has_value());
         REQUIRE(tuned_model.has_value());
-        CHECK(default_model->gpu_offload_percent == 95U); // Untouched built-in adopts the new default.
+        CHECK(default_model->gpu_offload_percent == 50U); // Only old-format untouched presets migrate to the current default.
         CHECK(tuned_model->gpu_offload_percent == 92U); // 55% old ≈ 92% of the new 60% ceiling.
         CHECK(default_model->profile_revision == 9U);
         CHECK(tuned_model->profile_revision == 9U);
         CHECK(default_model->context_tokens == 65'536U);
         CHECK(tuned_model->context_tokens == 65'536U);
-        CHECK(engcoder::model::effective_gpu_layers(*default_model) == "27");
+        CHECK(engcoder::model::effective_gpu_layers(*default_model) == "14");
         CHECK(engcoder::model::effective_gpu_layers(*tuned_model) == "26");
     }
     // Migration must not apply twice after an app restart.
@@ -419,8 +427,54 @@ TEST_CASE("legacy GPU offload scale is migrated once without resetting custom co
     const auto tuned_again = reopened.find("qwenflash://" + custom);
     REQUIRE(default_again.has_value());
     REQUIRE(tuned_again.has_value());
-    CHECK(default_again->gpu_offload_percent == 95U);
+    CHECK(default_again->gpu_offload_percent == 50U);
     CHECK(tuned_again->gpu_offload_percent == 92U);
+}
+
+TEST_CASE("0.7.1 keeps saved Qwen GPU tuning when the default changes") {
+    TempTree temp{unique_temp_root("engcoder-gpu-v071-existing")};
+    const auto data_root = temp.root / "state";
+    const auto id = std::string{"qwen3.8-flash-next-ud-q2-k-xl"};
+    const auto catalog = data_root / "models" / "runtimes" / id;
+    std::filesystem::create_directories(catalog);
+
+    engcoder::model::RuntimeModelProfile saved{
+        .id = id,
+        .display_name = "Existing custom GPU model",
+        .runtime = engcoder::model::RuntimeKind::qwen_flash,
+        .source = engcoder::model::ModelSourceKind::hugging_face,
+        .repo = "unsloth/Qwen3.8-Flash-Next-GGUF",
+        .quant = "UD-Q2_K_XL",
+        .profile_revision = engcoder::model::runtime_profile_revision,
+        .runtime_policy = "manual",
+        .gpu_offload_percent = 99U,
+        .gpu_layer_count_hint = 48U,
+        .context_tokens = 81'920U,
+    };
+    const auto manifest_path = catalog / "manifest.json";
+    const auto saved_json = engcoder::model::to_json(saved);
+    {
+        std::ofstream output(manifest_path, std::ios::binary | std::ios::trunc);
+        REQUIRE(output.good());
+        output << saved_json.dump(2) << '\n';
+    }
+    engcoder::core::Config config;
+    config.workspace = temp.root / "workspace";
+    config.data_root = data_root;
+    config.model_root = data_root / "models";
+    config.model_cache_root = data_root / "model-cache";
+    config.qwen_flash_enabled = false;
+
+    for (int startup = 0; startup < 2; ++startup) {
+        engcoder::model::NativeModelManager manager(config, data_root);
+        const auto loaded = manager.find("qwenflash://" + id);
+        REQUIRE(loaded.has_value());
+        CHECK(loaded->gpu_offload_percent == 99U);
+        CHECK(engcoder::model::effective_gpu_layers(*loaded) == "29");
+        std::ifstream persisted(manifest_path);
+        REQUIRE(persisted.good());
+        CHECK(nlohmann::json::parse(persisted) == saved_json);
+    }
 }
 
 TEST_CASE("managed controller and foundation URIs are not invented as external models") {

@@ -1,5 +1,5 @@
-const APP_VERSION = '0.6.9'; // EngCoder product version.
-const BUILD_SUFFIX = ' · Qwen Live 1'; // Visible maintenance build identity.
+const APP_VERSION = '0.7.1'; // EngCoder product version.
+const BUILD_SUFFIX = ' · Qwen Live 3 · Async UI 1'; // Retention + nonblocking sidebar/generation rendering.
 const $ = id => document.getElementById(id);
 
 const chatEl = $('chat');
@@ -109,7 +109,7 @@ let currentChatId = null;
 let activeThinkingState = null;
 // Host-level output is separate from chat transcript state, so tool clients
 // using /v1 also appear without changing or saving the current conversation.
-let qwenLiveState = { rawOutput: '', rawOutputFormat: 'generated-v1', requestId: '', model: '', live: false };
+let qwenLiveState = { rawOutput: '', rawOutputFormat: 'generated-v1', requestId: '', model: '', live: false, awaitingNewOutput: false };
 let qwenLiveCursor = 0;
 let qwenLivePolling = false;
 let qwenLiveInitialized = false;

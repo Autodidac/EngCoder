@@ -12,7 +12,7 @@ namespace engcoder::model {
 // Slider 100% is deliberately limited to 60% of the former layer-offload
 // range. This is a limit on model layers, not on total GPU memory usage.
 inline constexpr std::uint32_t gpu_offload_legacy_ceiling_percent = 60U;
-inline constexpr std::uint32_t gpu_offload_default_percent = 95U;
+inline constexpr std::uint32_t gpu_offload_default_percent = 50U;
 inline constexpr std::uint32_t runtime_profile_revision = 9U;
 
 enum class RuntimeKind {

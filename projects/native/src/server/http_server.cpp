@@ -727,8 +727,24 @@ bool HttpServer::listen() {
                 {"model", item.model}, {"kind", item.kind}, {"delta", item.delta}
             });
         }
+        json payload = {{"cursor", snapshot.cursor}, {"events", std::move(events)}};
+        // Full recovery text is needed on first load or after the event ring
+        // pruned events the client never saw. Do not resend up to 96 KiB
+        // every half-second while idle or during an ordinary live stream.
+        const bool missed_events = !snapshot.events.empty() &&
+            snapshot.events.front().sequence > after &&
+            snapshot.events.front().sequence - after > 1;
+        if (after == 0 || missed_events || after > snapshot.cursor) {
+            payload["latest"] = {
+                {"request_id", snapshot.latest.request_id},
+                {"model", snapshot.latest.model},
+                {"output", snapshot.latest.output},
+                {"generating", snapshot.latest.generating},
+                {"has_current_output", snapshot.latest.has_current_output}
+            };
+        }
         response.set_header("Cache-Control", "no-store");
-        response.set_content(json{{"cursor", snapshot.cursor}, {"events", std::move(events)}}.dump(), "application/json");
+        response.set_content(payload.dump(), "application/json");
     });
 
     http.Get("/api/model/discovery", [&](const httplib::Request&, httplib::Response& response) {

@@ -1531,6 +1531,16 @@ dialog#labDialog {
   box-shadow:0 40px 80px -38px rgba(4,6,12,.9);
   overflow:hidden;
 }
+/* Lab remains the same styled window, but is not modal: users can read the
+   live-output drawer while a model launch request is still pending. */
+dialog#labDialog:not(.fallback) {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  z-index: 24;
+}
+body.activity-open .thinking-drawer { z-index: 26; }
 dialog#labDialog .settings-wrap { max-height:94vh; overflow-y:auto; overscroll-behavior:contain; }
 dialog#labDialog::backdrop { background:rgba(4,7,14,.65); backdrop-filter:blur(10px); }
 dialog#labDialog.fallback { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); display:none; z-index:100; }

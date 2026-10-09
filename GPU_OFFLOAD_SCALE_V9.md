@@ -1,3 +1,5 @@
+> Historical GPU scale migration record (0.6.5). **EngCoder 0.7.1 changes the default to 50% without changing the 0–100 control or its GPU-layer cap.** Existing saved profiles are preserved. Details below are historical.
+
 # EngCoder 0.6.5 — GPU offload scale v9
 
 **Latest user requirement:** new 100% equals the old 60% model-layer offload; default new 95% (old 57%).

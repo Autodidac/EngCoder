@@ -68,3 +68,7 @@ Use `projects/web/js/math.js` for offline, DOM-only MathML formatting. Preserve 
 ### Preparatory model output contract (0.6.9 maintenance)
 
 Non-authoritative 9B/27B advisors must emit compact structured handoffs, not raw reasoning or source-code replacements. Validate provider text, tool calls, and `finish_reason` before admitting notes to KeyMaker context. Send KeyMaker the complete original request after untrusted notes. Use `warrants_specialist_handoff` to avoid calling small/reviewer models for basic code examples. Never retry a failed small preflight automatically, and never downgrade the final responder's tool authority or change the Qwen GPU profile as a routing side effect. Preserve every mission in `docs/FUTURE_MISSIONS.md`.
+
+### 0.7.1 preservation contract
+
+The Qwen GPU control remains 0..100% on the established 60%-layer ceiling. Only the default changed from 95% to 50%; do not alter its scale or overwrite saved user profiles (including custom 99%). Version identifiers for the UI, CMake, vcpkg and training worker must agree. Qwen Live 2 idle-retained output and all mission entries are protected regression behavior.

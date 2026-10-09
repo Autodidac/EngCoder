@@ -1,4 +1,4 @@
-# EngCoder future-information and engineering missions (0.6.9)
+# EngCoder future-information and engineering missions (0.7.1)
 
 Keep all unresolved missions until acceptance evidence is recorded. Status labels describe **work remaining**, not feature promises.
 

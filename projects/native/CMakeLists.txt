@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(EngCoder VERSION 0.6.9 LANGUAGES CXX)
+project(EngCoder VERSION 0.7.1 LANGUAGES CXX)
 
 option(ENGCODER_BUILD_TESTS "Build EngCoder tests" ON)
 option(ENGCODER_BUILD_GUI "Build native EngCoder GUI" ON)

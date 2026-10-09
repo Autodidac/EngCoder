@@ -43,7 +43,7 @@ There is no Current/Local/Custom runtime selector. The page always calls the sam
 Engineering/model controls live in a separate `EngCoder Lab` dialog with five panels:
 
 - **Runtime:** local serving status, trusted-LAN **Serve remotely**, external model-provider health and process-local API token.
-- **Models:** Native Model Library plus KeyMaker Foundation, Architect, capability addon assignments and routing controls. Qwen Flash cards expose Download/Load/Configure/Use as KeyMaker/Unload/Clear cache. The configuration form is pre-populated with the recommended 81,920/1-slot RTX 5080 profile, exposes Recommended / Automatic / Manual tuning (GPU offload default 95% of the configured safe layer budget; explicit layer overrides cannot bypass the cap), and shows effective context per slot including a below-75K warning.
+- **Models:** Native Model Library plus KeyMaker Foundation, Architect, capability addon assignments and routing controls. Qwen Flash cards expose Download/Load/Configure/Use as KeyMaker/Unload/Clear cache. The configuration form is pre-populated with the recommended 81,920/1-slot RTX 5080 profile, exposes Recommended / Automatic / Manual tuning (GPU offload default 50% of the configured safe layer budget; explicit layer overrides cannot bypass the cap), and shows effective context per slot including a below-75K warning.
 - **GPU:** physical/logical residency, pinned core activation, and idle-addon release.
 - **Training:** model initialization, training target/profile, checkpoint cadence, pause/resume/cancel.
 - **Learning:** verified evidence and immediate retrieval-memory status.

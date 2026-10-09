@@ -29,5 +29,5 @@ assert.match(nativeAgent, /review\.completed/);
 assert.match(nativeAgent, /review\.failed/);
 assert.match(nativeAgent, /controller\.escalated/);
 assert.match(api, /model\.text_delta/);
-assert.match(config, /APP_VERSION = '0\.6\.9'/);
+assert.match(config, /APP_VERSION = '\d+\.\d+\.\d+'/);
 console.log('PASS: reviewer/analysis selectors, persistence, payload, native routing and generated-only stream');

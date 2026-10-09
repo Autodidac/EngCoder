@@ -137,7 +137,8 @@ function syncQwenLiveOutput() {
     thinkingDrawerBody.appendChild(pre);
   }
   const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 48;
-  const visible = qwenLiveState.rawOutput || 'Waiting for Qwen Next Flash output…';
+  const visible = qwenLiveState.rawOutput || (qwenLiveState.live
+    ? 'Waiting for generated output…' : 'No Qwen generation recorded yet.');
   if (pre.textContent !== visible) pre.textContent = visible;
   if (atBottom) pre.scrollTop = pre.scrollHeight;
 }
@@ -263,16 +264,33 @@ function syncThinkingDrawer() {
   else if (view === 'qwen') syncQwenLiveOutput();
   else syncGeneratedOutput();
   const state = activeThinkingState;
-  thinkingStateEl.textContent = view === 'qwen' ? (qwenLiveState.live ? 'Qwen generating' : qwenLiveState.model ? 'Qwen idle' : 'Idle') : !state ? 'Idle' : state.thinkingLive ? 'Generating' :
+  thinkingStateEl.textContent = view === 'qwen' ? (qwenLiveState.live
+    ? (qwenLiveState.awaitingNewOutput && qwenLiveState.rawOutput ? 'Qwen preparing · last output retained' : 'Qwen generating')
+    : qwenLiveState.rawOutput ? 'Idle · last output retained' : 'Qwen idle') : !state ? 'Idle' : state.thinkingLive ? 'Generating' :
     (state.completionAt ? `Finished at ${state.completionAt}` : 'Finished');
+}
+// Opening the inspector is UI-only: never wait for inference, model loading,
+// model discovery or expensive Run info rendering before showing the drawer.
+let rightDrawerFrame = 0;
+function scheduleRightDrawerRender({ layout = false } = {}) {
+  if (rightDrawerFrame) return;
+  rightDrawerFrame = requestAnimationFrame(() => {
+    rightDrawerFrame = 0;
+    if (!thinkingDrawer.classList.contains('open')) return;
+    syncThinkingDrawer();
+    if (layout) applyResponsiveShell();
+  });
 }
 function openThinkingDrawer(state) {
   if (state) activeThinkingState = state;
-  syncThinkingDrawer();
-  if (activeThinkingState || rightPanelView === 'qwen') {
-    thinkingDrawer.classList.add('open');
+  if (!activeThinkingState && rightPanelView !== 'qwen') {
+    // Even without a selected response, let the user open the panel and
+    // switch to Qwen Live / Run info while a native model is loading.
+    rightPanelView = 'qwen';
   }
-  applyResponsiveShell();
+  thinkingDrawer.classList.add('open');
+  syncShellLayout();
+  scheduleRightDrawerRender({ layout: true });
 }
 
 function createMessageShell(role) {

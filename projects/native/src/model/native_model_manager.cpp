@@ -59,7 +59,7 @@ namespace {
 // Revision 9 changes the scale, not the physical meaning of old saved values:
 // old 18% -> new 30%; old 55% -> new 92%; old >=60% -> new 100%.
 // Keep the old load approximately unchanged for customized profiles. The
-// recognizable factory built-in preset instead picks up the new 95% default.
+// recognizable factory built-in preset instead uses the current default.
 [[nodiscard]] std::uint32_t rescale_legacy_gpu_percent(std::uint32_t old_percent) noexcept {
     return std::min<std::uint32_t>(100U,
         (old_percent * 100U + gpu_offload_legacy_ceiling_percent / 2U) /

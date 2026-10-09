@@ -603,7 +603,7 @@ function renderNativeModelLibrary(payload) {
     label.textContent = 'Effective launch profile';
     const policy = String(profile.runtime_policy || 'recommended');
     const ngl = String(profile.gpu_layers ?? 'auto');
-    const offloadPercent = Number(profile.gpu_offload_percent ?? 95);
+    const offloadPercent = Number(profile.gpu_offload_percent ?? 50);
     const expert = Number(profile.expert_cache_mib || 0);
     const pinned = Number(profile.pinned_host_mib || 0);
     const batch = Number(profile.batch_size || 0);
@@ -678,7 +678,7 @@ function renderNativeModelLibrary(payload) {
     const meta = document.createElement('div');
     meta.className = 'model-library-meta';
     const policy = model.runtime_policy || 'recommended';
-    const gpuPercent = Number(model.gpu_offload_percent ?? 95);
+    const gpuPercent = Number(model.gpu_offload_percent ?? 50);
     const gpuTarget = nativeGpuLayerTarget(model);
     const gpuPolicy = `${gpuPercent}% of safe Qwen layer budget · -ngl ${gpuTarget}${String(model.gpu_layers || 'auto') !== 'auto' ? ' capped override' : ''}`;
     const effective = model.active && runtime.effective_profile && runtime.active_model === model.id ? runtime.effective_profile : null;
@@ -847,7 +847,8 @@ function promoteNativeTuningToManual() {
 }
 
 function nativeGpuLayerTarget(model) {
-  const hint = Math.max(1, Math.trunc(Number(model?.gpu_layer_count_hint ?? 48)));
+  const rawHint = Number(model?.gpu_layer_count_hint ?? 48);
+  const hint = Number.isFinite(rawHint) ? Math.max(1, Math.trunc(rawHint)) : 48;
   const ceiling = Math.round(hint * .6);
   const exact = String(model?.gpu_layers ?? 'auto').trim();
   if (exact && exact !== 'auto') {
@@ -855,7 +856,8 @@ function nativeGpuLayerTarget(model) {
     if (/^\d+$/.test(exact)) return String(Math.min(Number(exact), ceiling));
     return exact;
   }
-  const percent = Math.max(0, Math.min(100, Math.trunc(Number(model?.gpu_offload_percent ?? 95))));
+  const rawPercent = Number(model?.gpu_offload_percent ?? 50);
+  const percent = Number.isFinite(rawPercent) ? Math.max(0, Math.min(100, Math.trunc(rawPercent))) : 50;
   if (percent <= 0) return '0';
   return String(Math.min(ceiling, Math.max(1, Math.round(hint * .6 * percent / 100))));
 }
@@ -886,7 +888,7 @@ function populateNativeModelForm(model = null) {
   setValue('nativeModelDisplay', 'display_name', 'Qwen3.8 Flash Next · UD-Q2_K_XL');
   setValue('nativeModelLocalPath', 'local_path', '');
   setValue('nativeRuntimePolicy', 'runtime_policy', 'recommended');
-  setValue('nativeGpuOffloadPercent', 'gpu_offload_percent', 95);
+  setValue('nativeGpuOffloadPercent', 'gpu_offload_percent', 50);
   setValue('nativeGpuLayerCountHint', 'gpu_layer_count_hint', 48);
   setValue('nativeContextTokens', 'context_tokens', 81920);
   setValue('nativeParallelSlots', 'parallel_slots', 1);
@@ -1009,7 +1011,7 @@ async function registerNativeModel({ refresh = true, runtimeOnly = false } = {})
     local_path: localPath,
     display_name: displayName,
     runtime_policy: $('nativeRuntimePolicy')?.value || 'recommended',
-    gpu_offload_percent: Math.max(0, Math.min(100, Math.trunc(nativeNumber('nativeGpuOffloadPercent', 95)))),
+    gpu_offload_percent: Math.max(0, Math.min(100, Math.trunc(nativeNumber('nativeGpuOffloadPercent', 50)))),
     gpu_layer_count_hint: Math.max(1, Math.trunc(nativeNumber('nativeGpuLayerCountHint', 48))),
     context_tokens: Math.max(4096, Math.trunc(nativeNumber('nativeContextTokens', 81920))),
     parallel_slots: Math.max(1, Math.trunc(nativeNumber('nativeParallelSlots', 1))),
