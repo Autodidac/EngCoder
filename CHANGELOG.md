@@ -2,6 +2,8 @@
 
 - Added a one-shot candidate mode in EngCoder Lab with exact edit approvals, CMake/CTest gates and at most two repair attempts.
 - Added native activity events for build, test and repair, and a local-only admission boundary for configured candidate checkouts.
+- Kept candidate replies out of verified memory and training, with native task provenance for ordinary thumbs-up feedback.
+- Simplified the header to display the EngCoder version without maintenance labels.
 
 ## 0.7.1 Async UI 1 — responsive model loading and generation (2026-10-09)
 

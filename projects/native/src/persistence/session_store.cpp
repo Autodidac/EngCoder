@@ -1,6 +1,7 @@
 #include "engcoder/persistence/session_store.hpp"
 #include <sqlite3.h>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 
 namespace engcoder::persistence {
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, session_id TEXT NOT NUL
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_ms);
 CREATE TABLE IF NOT EXISTS events(rowid_pk INTEGER PRIMARY KEY AUTOINCREMENT, sequence INTEGER NOT NULL, project_id TEXT, session_id TEXT, task_id TEXT, type TEXT NOT NULL, data TEXT NOT NULL, created_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON events(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_events_session_task_type ON events(session_id, task_id, type);
 )SQL";
     char* err=nullptr;if(sqlite3_exec(db_,schema,nullptr,nullptr,&err)!=SQLITE_OK){std::string msg=err?err:"schema error";sqlite3_free(err);throw std::runtime_error(msg);}
 }
@@ -32,6 +34,38 @@ std::expected<void,core::Error> SessionStore::append_event(const core::Event&e){
 std::expected<std::uint64_t,core::Error> SessionStore::max_event_sequence(){std::scoped_lock l(mutex_);sqlite3_stmt*s=nullptr;const char*q="SELECT COALESCE(MAX(sequence),0) FROM events";if(sqlite3_prepare_v2(db_,q,-1,&s,nullptr)!=SQLITE_OK)return std::unexpected(db_error(db_,"prepare max event sequence"));const auto rc=sqlite3_step(s);if(rc!=SQLITE_ROW){sqlite3_finalize(s);return std::unexpected(db_error(db_,"read max event sequence"));}const auto value=static_cast<std::uint64_t>(sqlite3_column_int64(s,0));sqlite3_finalize(s);return value;}
 std::expected<std::vector<core::Event>,core::Error> SessionStore::events_after(std::string_view sid,std::uint64_t seq,std::size_t limit){std::scoped_lock l(mutex_);sqlite3_stmt*s=nullptr;const char*q="SELECT sequence,project_id,session_id,task_id,type,data,created_ms FROM events WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT ?";if(sqlite3_prepare_v2(db_,q,-1,&s,nullptr)!=SQLITE_OK)return std::unexpected(db_error(db_,"prepare events"));sqlite3_bind_text(s,1,sid.data(),static_cast<int>(sid.size()),SQLITE_TRANSIENT);sqlite3_bind_int64(s,2,static_cast<sqlite3_int64>(seq));sqlite3_bind_int64(s,3,static_cast<sqlite3_int64>(limit));std::vector<core::Event> out;while(sqlite3_step(s)==SQLITE_ROW){core::Event e;e.sequence=static_cast<std::uint64_t>(sqlite3_column_int64(s,0));e.project_id=reinterpret_cast<const char*>(sqlite3_column_text(s,1));e.session_id=reinterpret_cast<const char*>(sqlite3_column_text(s,2));e.task_id=reinterpret_cast<const char*>(sqlite3_column_text(s,3));e.type=reinterpret_cast<const char*>(sqlite3_column_text(s,4));e.data=json::parse(reinterpret_cast<const char*>(sqlite3_column_text(s,5)));e.timestamp=std::chrono::system_clock::time_point(std::chrono::milliseconds(sqlite3_column_int64(s,6)));out.push_back(std::move(e));}sqlite3_finalize(s);return out;}
 std::expected<std::vector<model::Message>,core::Error> SessionStore::load_messages(std::string_view sid,std::size_t limit){std::scoped_lock l(mutex_);sqlite3_stmt*s=nullptr;const char*q="SELECT role,content,tool_calls,tool_call_id FROM (SELECT rowid AS ord,role,content,tool_calls,tool_call_id FROM messages WHERE session_id=? ORDER BY rowid DESC LIMIT ?) ORDER BY ord";if(sqlite3_prepare_v2(db_,q,-1,&s,nullptr)!=SQLITE_OK)return std::unexpected(db_error(db_,"prepare messages"));sqlite3_bind_text(s,1,sid.data(),static_cast<int>(sid.size()),SQLITE_TRANSIENT);sqlite3_bind_int64(s,2,static_cast<sqlite3_int64>(limit));std::vector<model::Message> out;while(sqlite3_step(s)==SQLITE_ROW){model::Message m;m.role=reinterpret_cast<const char*>(sqlite3_column_text(s,0));m.content=reinterpret_cast<const char*>(sqlite3_column_text(s,1));m.tool_calls=json::parse(reinterpret_cast<const char*>(sqlite3_column_text(s,2)));m.tool_call_id=reinterpret_cast<const char*>(sqlite3_column_text(s,3));out.push_back(std::move(m));}sqlite3_finalize(s);return out;}
+std::expected<std::optional<std::string>, core::Error> SessionStore::learnable_reply(
+    std::string_view session_id, std::string_view task_id) {
+    std::scoped_lock lock(mutex_);
+    constexpr auto query = R"SQL(
+SELECT data FROM events AS terminal
+WHERE session_id=? AND task_id=? AND type='task.completed'
+AND NOT EXISTS (
+    SELECT 1 FROM events AS iteration
+    WHERE iteration.session_id=terminal.session_id AND iteration.task_id=terminal.task_id
+    AND iteration.type='iteration.started'
+)
+ORDER BY sequence DESC LIMIT 1
+)SQL";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db_, query, -1, &raw, nullptr) != SQLITE_OK) {
+        return std::unexpected(db_error(db_, "prepare learning provenance"));
+    }
+    const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+    if (sqlite3_bind_text(raw, 1, session_id.data(), static_cast<int>(session_id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_text(raw, 2, task_id.data(), static_cast<int>(task_id.size()), SQLITE_TRANSIENT) != SQLITE_OK) {
+        return std::unexpected(db_error(db_, "bind learning provenance"));
+    }
+    const auto result = sqlite3_step(raw);
+    if (result == SQLITE_DONE) return std::nullopt;
+    if (result != SQLITE_ROW) return std::unexpected(db_error(db_, "read learning provenance"));
+    const auto* bytes = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
+    if (!bytes) return std::unexpected(db_error(db_, "read learning result"));
+    const auto data = json::parse(bytes, nullptr, false);
+    if (!data.is_object() || !data.contains("result") || !data.at("result").is_string()) return std::nullopt;
+    return data.at("result").get<std::string>();
+}
+
 std::expected<void,core::Error> SessionStore::delete_session(std::string_view sid){
     std::scoped_lock l(mutex_);
     if(auto begun=exec_locked("BEGIN IMMEDIATE");!begun)return begun;

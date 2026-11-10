@@ -66,3 +66,5 @@ The assistant thumbs-up action is an explicit human acceptance signal. It stores
 `thumbs-up -> verified memory -> training eligibility -> internal EngCoder training`
 
 This remains true while Qwen or another provider model is serving as the live KeyMaker.
+
+Candidate self-iteration approvals and build receipts stay in the task history. Candidate replies are excluded from verified memory and weight training. The evidence endpoint checks the original session and task IDs against native completion and iteration events. A reply whose native record is missing cannot be saved from chat. Older evidence already saved remains visible in Learning & memory for individual review and removal.

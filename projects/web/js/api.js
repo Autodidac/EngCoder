@@ -520,6 +520,7 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
         after = Math.max(after, Number(event?.sequence) || 0);
         if (event?.task_id !== submission.task_id) continue;
         sawTaskEvent = true;
+        if (event.type === 'iteration.started') assistantState.candidateIteration = true;
 
         const activity = eventActivityLine(event);
         recordExecutionEvent(assistantState, event, activity);
@@ -712,6 +713,8 @@ function assistantMessageSnapshot(state, sourcePrompt, fallbackContent = '') {
     rawOutputFormat: GENERATED_OUTPUT_FORMAT,
     reasoningOutput: String(state.reasoningOutput || '').slice(-RAW_OUTPUT_LIMIT),
     runtimeTaskId: state.runtimeTaskId || '',
+    runtimeSessionId: state.runtimeSessionId || '',
+    candidateIteration: state.candidateIteration === true,
     approvalRequest: state.approvalRequest && typeof state.approvalRequest === 'object'
       ? JSON.parse(JSON.stringify(state.approvalRequest)) : null,
     lastEventSequence: Number(state.lastEventSequence) || 0,
@@ -733,6 +736,7 @@ async function resumeSavedEngCoderTask() {
   const state = container.closest('.msg')?.__assistantState;
   if (!state) return;
   Object.assign(state, last, { thinkingLive: true });
+  state.runtimeSessionId = last.runtimeSessionId || chat.runtimeSessionId;
   updateAssistantMessage(container, state);
   controller = new AbortController();
   activeEngCoderTaskId = last.runtimeTaskId;
@@ -887,6 +891,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
     activeEngCoderTaskId = submission.task_id;
     activeEngCoderSessionId = submission.session_id;
     assistantState.runtimeTaskId = submission.task_id;
+    assistantState.runtimeSessionId = submission.session_id;
     storeAssistant(); // task id must survive a page refresh
     appendActivity(assistantState, 'Queued in EngCoder runtime');
     updateAssistantMessage(assistantBody, assistantState);

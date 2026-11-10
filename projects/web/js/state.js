@@ -231,6 +231,11 @@ function sanitizeMessage(msg) {
       ? msg.rawOutput.slice(-96 * 1024) : '';
     base.reasoningOutput = typeof msg.reasoningOutput === 'string' ? msg.reasoningOutput.slice(-96 * 1024) : '';
     base.runtimeTaskId = typeof msg.runtimeTaskId === 'string' ? msg.runtimeTaskId : '';
+    base.runtimeSessionId = typeof msg.runtimeSessionId === 'string' ? msg.runtimeSessionId : '';
+    base.candidateIteration = msg.candidateIteration === true;
+    base.sourcePrompt = typeof msg.sourcePrompt === 'string' ? msg.sourcePrompt : '';
+    base.selectedAddon = typeof msg.selectedAddon === 'string' ? msg.selectedAddon : '';
+    base.verifiedForLearning = msg.verifiedForLearning === true;
     base.approvalRequest = msg.approvalRequest && typeof msg.approvalRequest === 'object'
       ? { ...msg.approvalRequest, pending: false } : null;
     base.lastEventSequence = Number(msg.lastEventSequence) || 0;

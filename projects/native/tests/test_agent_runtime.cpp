@@ -347,6 +347,35 @@ TEST_CASE("agent runtime persists streamed text and terminal completion") {
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE("learning provenance excludes completed candidate runs") {
+    using namespace engcoder;
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-learning-provenance";
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    } cleanup{root};
+    persistence::SessionStore store(root / "provenance.db");
+    const auto append = [&](std::uint64_t seq, std::string task, std::string type, core::json data) {
+        REQUIRE(store.append_event({.sequence = seq, .session_id = "shared",
+            .task_id = std::move(task), .type = std::move(type), .data = std::move(data)}));
+    };
+    append(1, "normal", "task.completed", {{"result", "Normal reply"}});
+    append(2, "candidate", "iteration.started", {{"repair_limit", 2}});
+    append(3, "candidate", "task.completed", {{"result", "Candidate repair summary"}});
+    append(4, "failed", "task.failed", {{"error", "build failed"}});
+    const auto normal = store.learnable_reply("shared", "normal");
+    REQUIRE(normal);
+    CHECK(*normal == "Normal reply");
+    for (const auto* task : {"candidate", "failed", "missing"}) {
+        const auto result = store.learnable_reply("shared", task);
+        REQUIRE(result);
+        CHECK_FALSE(result->has_value());
+    }
+    const auto wrong_session = store.learnable_reply("other", "normal");
+    REQUIRE(wrong_session);
+    CHECK_FALSE(wrong_session->has_value());
+}
+
 TEST_CASE("candidate iteration requires approved edits and native validation") {
     using namespace engcoder;
     const auto root = std::filesystem::temp_directory_path() / "engcoder-candidate-iteration";

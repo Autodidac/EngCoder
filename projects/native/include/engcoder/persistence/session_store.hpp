@@ -2,6 +2,7 @@
 #include <expected>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -27,6 +28,8 @@ public:
     [[nodiscard]] std::expected<void, core::Error> append_event(const core::Event& event);
     [[nodiscard]] std::expected<std::uint64_t, core::Error> max_event_sequence();
     [[nodiscard]] std::expected<std::vector<core::Event>, core::Error> events_after(std::string_view session_id, std::uint64_t sequence, std::size_t limit = 500);
+    [[nodiscard]] std::expected<std::optional<std::string>, core::Error> learnable_reply(
+        std::string_view session_id, std::string_view task_id);
     [[nodiscard]] std::expected<std::vector<model::Message>, core::Error> load_messages(std::string_view session_id, std::size_t limit = 256);
     [[nodiscard]] std::expected<void, core::Error> delete_session(std::string_view session_id);
     [[nodiscard]] std::expected<std::vector<json>, core::Error> search_sessions(std::string_view query, std::size_t limit = 50);

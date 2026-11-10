@@ -557,7 +557,18 @@ function setVerifyButtonState(button, saved, label = 'Saved for learning') {
   }
 }
 
+function isCandidateReply(message) {
+  return message?.candidateIteration === true ||
+    message?.activityEvents?.some(event => event?.type === 'iteration.started') === true;
+}
+
+function canSaveAssistantForLearning(message) {
+  return !!message?.runtimeTaskId && !!message?.runtimeSessionId &&
+    message.completionReason === 'engcoder-task' && !isCandidateReply(message);
+}
+
 async function markAssistantVerified(message, button) {
+  if (!canSaveAssistantForLearning(message)) return;
   if (message?.verifiedForLearning) {
     setVerifyButtonState(button, true);
     return;
@@ -578,9 +589,11 @@ async function markAssistantVerified(message, button) {
     reranker: 'reranking'
   };
   const payload = {
+    session_id: message.runtimeSessionId,
+    task_id: message.runtimeTaskId,
     skill: skillMap[message.selectedAddon] || 'keymaker-foundation',
     prompt,
-    response: responseText,
+    response: cleanAssistantContent(message.content),
     source: 'user-accepted',
     confidence: 1.0,
     verified: true
@@ -607,7 +620,8 @@ async function markAssistantVerified(message, button) {
         const item = chat.messages[index];
         if (item?.role !== 'assistant') continue;
         if (cleanAssistantContent(item.content || '') === responseText &&
-            String(item.sourcePrompt || prompt) === prompt) {
+            item.runtimeTaskId === message.runtimeTaskId &&
+            item.runtimeSessionId === message.runtimeSessionId) {
           item.sourcePrompt = prompt;
           item.verifiedForLearning = true;
           break;
@@ -805,9 +819,12 @@ function renderAssistantBody(container, message) {
 
       const feedbackStatus = document.createElement('span');
       feedbackStatus.className = 'assistant-feedback-status';
-      feedbackStatus.hidden = true;
-      actions.append(regen, copyBtn, verifyBtn);
-      if (message?.verifiedForLearning === true) {
+      feedbackStatus.hidden = !isCandidateReply(message);
+      if (!feedbackStatus.hidden) feedbackStatus.textContent = 'Candidate review · excluded from learning';
+      actions.append(regen, copyBtn);
+      const canLearn = canSaveAssistantForLearning(message);
+      if (canLearn) actions.append(verifyBtn);
+      if (canLearn && message?.verifiedForLearning === true) {
         const removeLearn = document.createElement('button');
         removeLearn.type = 'button';
         removeLearn.className = 'assistant-action-btn';
@@ -890,6 +907,9 @@ function addTextMessage(role, content, options = {}) {
       timestampFull: options.timestampFull || '',
       activityThinkingOpen: options.activityThinkingOpen === true,
       sourcePrompt: options.sourcePrompt || '',
+      runtimeTaskId: options.runtimeTaskId || '',
+      runtimeSessionId: options.runtimeSessionId || '',
+      candidateIteration: options.candidateIteration === true,
       selectedAddon: options.selectedAddon || '',
       verifiedForLearning: options.verifiedForLearning === true,
       executionStats: options.executionStats && typeof options.executionStats === 'object' ? options.executionStats : null,
@@ -970,6 +990,8 @@ function renderActiveChat() {
         rawOutputFormat: msg.rawOutputFormat || '',
         reasoningOutput: msg.reasoningOutput || '',
         runtimeTaskId: msg.runtimeTaskId || '',
+        runtimeSessionId: msg.runtimeSessionId || chat.runtimeSessionId || '',
+        candidateIteration: msg.candidateIteration === true,
         approvalRequest: msg.approvalRequest || null,
         lastEventSequence: msg.lastEventSequence || 0,
         showRegenerate: isLatestAssistantMessage(msg)

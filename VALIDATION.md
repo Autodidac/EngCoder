@@ -4,6 +4,7 @@
 - All 16 Web smoke tests and 10 JavaScript syntax checks passed. All 25 mission entries synchronized.
 - A loopback smoke test drove the Release server with a scripted streaming provider. An approved exact edit caused a real MSVC compilation failure. The next model request received the diagnostic, a second approved edit fixed it, and the real rebuild and CTest passed. The served UI exposed the candidate control.
 - Live KeyMaker inference, interactive desktop acceptance and Linux builds remain unverified for this release.
+- The learning-boundary candidate applied eight exact approved patches through EngCoder self-iteration and passed 63 Release CTest cases and 16 Web smoke tests. A fresh loopback server using the candidate binary rejected completed candidate feedback, missing provenance and a mismatched ordinary reply. It accepted a matching ordinary reply as the sole verified evidence record. The patch provider was scripted.
 
 ## 0.7.1 Windows release verification (2026-10-09)
 

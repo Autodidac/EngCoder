@@ -1135,11 +1135,40 @@ bool HttpServer::listen() {
     const auto learning_evidence_handler = [&](const httplib::Request& request, httplib::Response& response) {
         try {
             const auto body = json::parse(request.body);
+            const auto session_id = body.value("session_id", std::string{});
+            const auto task_id = body.value("task_id", std::string{});
+            if (session_id.empty() || session_id.size() > 256 || task_id.empty() || task_id.size() > 256) {
+                response.status = 400;
+                response.set_content(json{{"error", "Learning requires the original session and task IDs."}}.dump(), "application/json");
+                return;
+            }
+            const auto reply = store_.learnable_reply(session_id, task_id);
+            if (!reply) {
+                response.status = 503;
+                response.set_content(json{{"error", "Unable to verify the reply's learning eligibility."}}.dump(), "application/json");
+                return;
+            }
+            if (!*reply) {
+                response.status = 409;
+                response.set_content(json{{"error", "Candidate runs and replies without a completed native task cannot enter learning."}}.dump(), "application/json");
+                return;
+            }
+            const auto trim = [](std::string_view value) -> std::string_view {
+                const auto first = value.find_first_not_of(" \t\r\n\f\v");
+                if (first == std::string_view::npos) return {};
+                return value.substr(first, value.find_last_not_of(" \t\r\n\f\v") - first + 1);
+            };
+            const auto submitted = body.at("response").get<std::string>();
+            if (trim(submitted) != trim(**reply)) {
+                response.status = 409;
+                response.set_content(json{{"error", "The response does not match the completed native task."}}.dump(), "application/json");
+                return;
+            }
             learning::EvidenceRecord record;
             record.skill = body.value("skill", std::string{"keymaker-foundation"});
             record.prompt = body.at("prompt").get<std::string>();
-            record.response = body.at("response").get<std::string>();
-            record.source = body.value("source", std::string{"user-verified"});
+            record.response = trim(**reply);
+            record.source = "user-accepted";
             record.confidence = body.value("confidence", 1.0);
             record.verified = body.value("verified", true);
             if (learning_.is_banned(record.prompt, record.response)) {

@@ -1,5 +1,6 @@
 // Set the app version in the header
-try { const v = document.getElementById('appVersion'); if (v) v.textContent = 'v' + APP_VERSION + BUILD_SUFFIX; } catch {}
+const appVersion = document.getElementById('appVersion');
+if (appVersion) appVersion.textContent = `v${APP_VERSION}`;
 
 loadAll();
 void resumeSavedEngCoderTask();

@@ -4,7 +4,7 @@ Candidate self-iteration in **EngCoder Lab → Runtime** runs a coding task in a
 
 **Async UI 1 maintenance:** The right-side inspector opens without waiting for a model-loading API call or a selected assistant message; its expensive content and layout are deferred. Model output/event bursts update in batches and yield for browser paint. This is a UI responsiveness improvement, **not** a second native inference worker, GPU concurrency guarantee, or a change to Qwen loading and offload.
 
-**Qwen Live 3 maintenance:** The right-side Qwen Live view keeps the last generation visible after completion and through later requests that have not yet produced any text. The next actual provider fragment replaces the previous output. The release can be identified by `Qwen Live 3` beside the version. See `VALIDATION.md` and `CHANGELOG.md` for coverage and Windows acceptance requirements.
+**Qwen Live:** The right-side view keeps the last generation visible after completion and through later requests that have not yet produced text. The next provider fragment replaces it. See `VALIDATION.md` and `CHANGELOG.md` for coverage.
 
 **0.7.1 release:** Default Qwen GPU layer-offload setting is now 50% for new profiles and Reset/Default controls. The existing 0–100% scale and cap, manually configured percentages, and Qwen Live 2 behavior are unchanged. CMake, vcpkg, Web UI and training-worker version identifiers are synchronized. See [`docs/DEVELOPMENT_0.7.1.md`](docs/DEVELOPMENT_0.7.1.md).
 
