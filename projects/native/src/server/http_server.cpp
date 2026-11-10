@@ -1559,6 +1559,12 @@ bool HttpServer::listen() {
             task.session_id = body.value("session_id", core::make_id("session"));
             task.task_id = core::make_id("task");
             task.user_message = body.at("message").get<std::string>();
+            task.self_iteration = body.value("self_iteration", false);
+            if (task.self_iteration && !is_loopback_client(request.remote_addr)) {
+                response.status = 403;
+                response.set_content(R"({"error":"Self-iteration requires a local client"})", "application/json");
+                return;
+            }
             task.foundation_model = body.value("foundation_model", std::string{});
             task.simple_model = body.value("simple_model", std::string{});
             task.retry_model = body.value("retry_model", std::string{});
@@ -1681,6 +1687,11 @@ bool HttpServer::listen() {
     });
 
     http.Post(R"(/api/tasks/([A-Za-z0-9_-]+)/approval)", [&](const httplib::Request& request, httplib::Response& response) {
+        if (!config_.iteration_candidate.empty() && !is_loopback_client(request.remote_addr)) {
+            response.status = 403;
+            response.set_content(R"({"error":"Approvals on a candidate host require a local client"})", "application/json");
+            return;
+        }
         try {
             const auto body = request.body.empty() ? json::object() : json::parse(request.body);
             if (!body.contains("approved") || !body.at("approved").is_boolean()) {

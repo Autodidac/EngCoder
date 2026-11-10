@@ -48,6 +48,7 @@ struct TaskRequest {
     bool auto_route{true};
     bool addons_enabled{true};
     bool wait_for_approval{false};
+    bool self_iteration{false};
 };
 
 struct TaskResult {

@@ -115,6 +115,10 @@ Internal inference follows NVMe artifact storage -> system-RAM warm state -> CUD
 
 Verified interactions enter durable retrieval memory immediately but do not mutate active weights. Eligible evidence is admitted to candidate training; candidates are evaluated and atomically promoted or rejected. Foreground inference preempts background training at safe checkpoint boundaries and the interrupted job resumes afterward. See `LEARNING_POLICY.md` and `TRAINING.md`.
 
+## Source self-iteration
+
+The source iteration loop lives inside the existing RuntimeHost task flow. KeyMaker inspects and proposes changes in an operator-designated candidate. Native policy binds edit approval to the current call and checkpoints the target. The host owns CMake and CTest execution, records their exit results, and feeds bounded failure evidence back to KeyMaker for a targeted repair. A passing candidate stays in its checkout for operator review. See [candidate self-iteration](SELF_ITERATION.md).
+
 ## Current three-model runtime (0.6.9)
 
 Automatic System 1 Architect selection and deterministic fallback remain the task ingress. The optional small external model can answer safe/simple text, or generate a bounded, untrusted checklist for a configured specialist. A separate optional medium external model reviews the checklist, before KeyMaker performs final complex reasoning/tool work. Math and sensitive cases bypass the small/middle advisory path. The stages execute sequentially with stop tokens and deadlines; this is **not** recursive independent subagent execution or an operating-system sandbox. A model-based controller proposal is distinguishable from the final responder model. Operational setup: [SUBAGENTS_QUICKSTART.md](SUBAGENTS_QUICKSTART.md).

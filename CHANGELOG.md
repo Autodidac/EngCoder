@@ -1,3 +1,8 @@
+## 0.7.3 — Candidate self-iteration (2026-11-10)
+
+- Added a one-shot candidate mode in EngCoder Lab with exact edit approvals, CMake/CTest gates and at most two repair attempts.
+- Added native activity events for build, test and repair, and a local-only admission boundary for configured candidate checkouts.
+
 ## 0.7.1 Async UI 1 — responsive model loading and generation (2026-10-09)
 
 - Correct the fresh-profile Web GPU input to the documented 50% default; saved user profiles remain untouched.

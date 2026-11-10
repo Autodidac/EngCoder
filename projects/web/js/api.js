@@ -364,6 +364,10 @@ function eventActivityLine(event) {
     case 'tool.review_failed': return `Tool review failed · ${data.name || 'unknown'}`;
     case 'tool.failed': return `Tool failed · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error)}`;
     case 'agent.stall_detected': return 'Changed strategy after repeated action';
+    case 'iteration.started': return 'Candidate self-iteration started';
+    case 'iteration.check_started': return `Candidate ${data.check} · running`;
+    case 'iteration.check_finished': return `Candidate ${data.check} · ${data.exit_code === 0 ? 'passed' : 'failed'}`;
+    case 'iteration.repair': return `Candidate repair ${data.attempt} of 2`;
     case 'verification.completed': return `Verified · ${data.status || 'completed'}`;
     case 'task.completed': return 'Completed';
     case 'task.failed': return `Failed · ${conciseRuntimeError(data.error)}`;
@@ -421,6 +425,7 @@ async function resolveTaskApproval(state, approved, container) {
 }
 
 async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole = '') {
+  const candidateIteration = $('candidateIteration');
   const addonsEnabled = $('enableAddons')?.checked !== false;
   const addonModels = {};
   const mappings = [
@@ -440,6 +445,7 @@ async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole
     project_id: 'web',
     session_id: sessionId,
     message,
+    self_iteration: candidateIteration?.checked === true,
     foundation_model: $('foundationModel')?.value || '',
     simple_model: $('simpleResponseModel')?.value || '',
     retry_model: retryModel,
@@ -487,6 +493,7 @@ async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.error || `EngCoder task submission failed: HTTP ${response.status}`);
   if (!payload?.task_id || !payload?.session_id) throw new Error('EngCoder task submission returned an invalid response.');
+  if (requestPayload.self_iteration) candidateIteration.checked = false;
   return payload;
 }
 
@@ -589,6 +596,10 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
           setStatus('Thinking', 'busy');
         } else if (event.type === 'model.request') {
           setStatus('Thinking', 'busy');
+        } else if (event.type === 'iteration.check_started') {
+          setStatus(event.data?.check === 'tests' ? 'Testing candidate' : 'Building candidate', 'busy');
+        } else if (event.type === 'iteration.repair') {
+          setStatus(`Preparing repair ${event.data?.attempt || 1} of 2`, 'busy');
         }
 
         const terminal = terminalFromEvent(event);

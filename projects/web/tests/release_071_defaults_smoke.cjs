@@ -23,11 +23,12 @@ assert.equal(target(50,{gpu_layers:'40'}),'29');
 assert.equal(target('invalid'),'14', 'malformed provider response has safe display fallback');
 assert.equal(target(50,{gpu_layer_count_hint:'invalid'}),'14');
 
-assert.match(src('js/config.js'),/APP_VERSION = '0\.7\.1'/);
-assert.match(src('../native/CMakeLists.txt'),/project\(EngCoder VERSION 0\.7\.1/);
-assert.equal(JSON.parse(src('../native/vcpkg.json'))['version-semver'],'0.7.1');
-assert.match(src('../native/resources/training/model_worker.py'),/EngCoder\/0\.7\.1/);
-assert.match(src('../native/resources/training/model_worker.py'),/'?"version": "0\.7\.1"/);
+const version = src('js/config.js').match(/APP_VERSION = '(\d+\.\d+\.\d+)'/)?.[1];
+assert.ok(version);
+assert.ok(src('../native/CMakeLists.txt').includes(`project(EngCoder VERSION ${version} `));
+assert.equal(JSON.parse(src('../native/vcpkg.json'))['version-semver'],version);
+assert.ok(src('../native/resources/training/model_worker.py').includes(`server_version = "EngCoder/${version}"`));
+assert.ok(src('../native/resources/training/model_worker.py').includes(`"version": "${version}"`));
 assert.match(src('../native/include/engcoder/model/runtime_model.hpp'),/gpu_offload_default_percent = 50U;/);
 assert.match(src('../native/include/engcoder/model/runtime_model.hpp'),/gpu_offload_legacy_ceiling_percent = 60U;/);
 assert.match(src('../native/include/engcoder/core/config.hpp'),/qwen_flash_gpu_offload_percent = 50;/);
@@ -39,4 +40,4 @@ assert.match(web,/setValue\('nativeGpuOffloadPercent', 'gpu_offload_percent', 50
 assert.match(web,/nativeNumber\('nativeGpuOffloadPercent', 50\)/);
 assert.match(src('../native/tests/test_native_model_manager.cpp'),/0\.7\.1 keeps saved Qwen GPU tuning/);
 assert.match(src('../native/tests/test_native_model_manager.cpp'),/loaded->gpu_offload_percent == 99U/);
-console.log('PASS: v0.7.1 release metadata, GPU defaults, 0..100 mapping, saved-profile regression, malformed-input fallback');
+console.log('PASS: synchronized release metadata, GPU defaults, 0..100 mapping, saved-profile regression, malformed-input fallback');

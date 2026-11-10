@@ -1,4 +1,6 @@
-# EngCoder 0.7.1
+# EngCoder 0.7.3
+
+Candidate self-iteration in **EngCoder Lab → Runtime** runs a coding task in a separately configured checkout. Approve each source edit in chat. EngCoder runs the candidate build and tests, then gives KeyMaker up to two repair attempts when a check fails. See [candidate setup and review](docs/SELF_ITERATION.md).
 
 **Async UI 1 maintenance:** The right-side inspector opens without waiting for a model-loading API call or a selected assistant message; its expensive content and layout are deferred. Model output/event bursts update in batches and yield for browser paint. This is a UI responsiveness improvement, **not** a second native inference worker, GPU concurrency guarantee, or a change to Qwen loading and offload.
 

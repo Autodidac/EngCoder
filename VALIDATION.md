@@ -1,3 +1,10 @@
+## 0.7.3 Candidate self-iteration (2026-11-10)
+
+- Windows VS2022 x64 Debug and Release builds passed. CTest passed 62/62 in each configuration. The new native test covers approved repair, denied edits, an out-of-candidate cache, and exhausting the two-repair limit.
+- All 16 Web smoke tests and 10 JavaScript syntax checks passed. All 25 mission entries synchronized.
+- A loopback smoke test drove the Release server with a scripted streaming provider. An approved exact edit caused a real MSVC compilation failure. The next model request received the diagnostic, a second approved edit fixed it, and the real rebuild and CTest passed. The served UI exposed the candidate control.
+- Live KeyMaker inference, interactive desktop acceptance and Linux builds remain unverified for this release.
+
 ## 0.7.1 Windows release verification (2026-10-09)
 
 - **Passed:** Visual Studio 2022 x64 Release build and all 61 CTest cases.

@@ -1,4 +1,4 @@
-const APP_VERSION = '0.7.1'; // EngCoder product version.
+const APP_VERSION = '0.7.3'; // EngCoder product version.
 const BUILD_SUFFIX = ' · Qwen Live 3 · Async UI 1'; // Retention + nonblocking sidebar/generation rendering.
 const $ = id => document.getElementById(id);
 

@@ -216,6 +216,8 @@ Config Config::from_environment() {
     config.web_root = product_environment_value(
         "WEB_ROOT",
         (config.workspace / "projects" / "web").string());
+    config.iteration_candidate = product_environment_value("ITERATION_CANDIDATE");
+    config.iteration_build_dir = product_environment_value("ITERATION_BUILD_DIR");
     config.lm_studio_url = product_environment_value(
         "MODEL_SERVER_URL",
         product_environment_value("LMSTUDIO_URL", config.lm_studio_url));

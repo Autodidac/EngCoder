@@ -263,6 +263,12 @@
     <section class="lab-panel active" data-lab-panel="runtime">
       <div class="settings-section">
         <div class="settings-section-head">
+          <div><h3>Candidate self-iteration</h3><p>Run the next coding request against a configured candidate checkout. Approve each edit in chat. EngCoder builds and tests the result and can request up to two repairs.</p></div>
+        </div>
+        <label><input id="candidateIteration" type="checkbox" /> Use candidate self-iteration for the next send</label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-head">
           <div><h3>Serving</h3><p>EngCoder always serves this UI locally. Remote serving exposes the same runtime and page to your LAN; it does not start a second backend.</p></div>
           <span id="servingStatus" class="settings-status-dot">Local only</span>
         </div>

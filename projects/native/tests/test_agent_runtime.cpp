@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "engcoder/agent/agent_runtime.hpp"
 #include "engcoder/core/config.hpp"
@@ -16,10 +17,42 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 
 namespace {
+
+class IterationModel final : public engcoder::model::IModelProvider {
+public:
+    unsigned turns{};
+    std::expected<engcoder::model::ModelResponse, engcoder::core::Error> complete(
+        const engcoder::model::ModelRequest& request) override {
+        for (const auto& tool : request.tools) {
+            CHECK(tool.at("function").at("name") != "process.run");
+        }
+        const auto turn = turns++;
+        if (turn == 2) {
+            CHECK(request.messages.back().content.find("missing fixture symbol") != std::string::npos);
+        }
+        if (turn % 2 == 0) {
+            return engcoder::model::ModelResponse{.tool_calls = {
+                {"unexpected-" + std::to_string(turn), "process.run", {{"executable", "ctest"}}},
+                {"edit-" + std::to_string(turn), "workspace.patch",
+                    {{"path", "fixture.cpp"}, {"expected", "old"}, {"replacement", "new"}}},
+            }};
+        }
+        return engcoder::model::ModelResponse{.text = "Candidate change summary"};
+    }
+
+    engcoder::model::ProviderCapabilities capabilities() const noexcept override {
+        return {.custom_tools = true};
+    }
+
+    std::expected<engcoder::model::json, engcoder::core::Error> discover() override {
+        return engcoder::model::json{{"reachable", true}};
+    }
+};
 
 class FakeModelProvider final : public engcoder::model::IModelProvider {
 public:
@@ -312,6 +345,83 @@ TEST_CASE("agent runtime persists streamed text and terminal completion") {
     }
 
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("candidate iteration requires approved edits and native validation") {
+    using namespace engcoder;
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-candidate-iteration";
+    std::filesystem::create_directories(root / "build");
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    } cleanup{root};
+
+    core::Config config;
+    config.workspace = root;
+    config.iteration_candidate = root;
+    config.iteration_build_dir = "build";
+    config.data_root = root / ".engcoder";
+    config.model = "fixture-model";
+    config.training_enabled = false;
+    const bool foreign_source = GENERATE(false, true);
+    const auto source = foreign_source ? root.parent_path() : root;
+    std::ofstream(root / "build" / "CMakeCache.txt") << "CMAKE_HOME_DIRECTORY:INTERNAL=" << source.generic_string() << '\n';
+    const bool deny = GENERATE(false, true);
+    const bool keep_failing = GENERATE(false, true);
+
+    IterationModel model;
+    decision::DeterministicDecisionEngine decisions;
+    models::ModelRegistry models(config, config.data_root);
+    residency::ModelResidencyManager residency;
+    addons::AddonRegistry addons(config, model, models);
+    controller::ArchitectController controller(config, model, addons, models, residency);
+    training::TrainingService training(config, config.data_root, models, residency);
+    learning::LearningService learning(config.data_root);
+    tools::ToolRegistry tools(decisions);
+    unsigned edits = 0;
+    std::vector<std::string> checks;
+    tools.add({{"workspace.patch", "fixture edit", core::json::object()},
+        [&](const core::json&, const tools::Context&) -> std::expected<core::json, core::Error> {
+            ++edits;
+            return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
+        }});
+    tools.add({{"process.run", "fixture process", core::json::object()},
+        [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
+            const auto command = args.at("executable").get<std::string>();
+            checks.push_back(command);
+            if (command == "ctest") CHECK(args.at("arguments").back() == "--no-tests=error");
+            return core::json{{"exit_code", checks.size() == 1 || keep_failing ? 1 : 0},
+                {"timed_out", false}, {"cancelled", false}, {"stderr", "missing fixture symbol"}};
+        }});
+    persistence::SessionStore store(config.data_root / "iteration.db");
+    core::EventBus events;
+    agent::AgentRuntime runtime(config, model, addons, controller, models, residency, training, learning, tools, store, events);
+    const auto subscription = events.subscribe([&](const core::Event& event) {
+        if (event.type == "task.awaiting_approval") {
+            CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
+        }
+    });
+    const auto result = runtime.run({.project_id = "candidate", .session_id = "iteration",
+        .task_id = "iteration-task", .user_message = "Update the fixture source.",
+        .include_history = false, .wait_for_approval = true, .self_iteration = true});
+    events.unsubscribe(subscription);
+
+    if (foreign_source || deny) {
+        CHECK_FALSE(result);
+        CHECK(edits == 0);
+        CHECK(checks.empty());
+        CHECK(model.turns == (foreign_source ? 0u : 2u));
+    } else if (keep_failing) {
+        REQUIRE_FALSE(result);
+        CHECK(result.error().code == core::make_error_code(core::Errc::iteration_limit));
+        CHECK(edits == 3);
+        CHECK(checks == std::vector<std::string>{"cmake", "cmake", "cmake"});
+    } else {
+        REQUIRE(result);
+        CHECK(result->final_text == "Candidate change summary");
+        CHECK(edits == 2);
+        CHECK(checks == std::vector<std::string>{"cmake", "cmake", "ctest"});
+    }
 }
 
 TEST_CASE("agent runtime emits weighted tool review telemetry before execution") {
