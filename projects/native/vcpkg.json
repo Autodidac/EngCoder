@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "engcoder-native",
+  "version-semver": "0.7.4",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "dependencies": [
+    "nlohmann-json",
+    "cpp-httplib",
+    "curl",
+    "sqlite3",
+    "catch2",
+    "sdl3",
+    {
+      "name": "imgui",
+      "features": [
+        "sdl3-binding",
+        "sdl3-renderer-binding"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "$schema": "https://cmake.org/cmake/help/v3.28/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "ENGCODER_BUILD_TESTS": "ON",
+        "VCPKG_MANIFEST_MODE": "ON"
+      }
+    },
+    {
+      "name": "windows-vs2026",
+      "inherits": "base",
+      "displayName": "Windows x64 - Visual Studio 2026",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/../../out/build/windows-vs2026"
+    },
+    {
+      "name": "windows-vs2022",
+      "inherits": "base",
+      "displayName": "Windows x64 - Visual Studio 2022",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/../../out/build/windows-vs2022"
+    },
+    {
+      "name": "windows-ninja",
+      "inherits": "base",
+      "displayName": "Windows x64 - Ninja Multi-Config",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/../../out/build/windows-ninja"
+    },
+    {
+      "name": "linux",
+      "inherits": "base",
+      "displayName": "Linux",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/../../out/build/linux"
+    },
+    {
+      "name": "macos",
+      "inherits": "base",
+      "displayName": "macOS",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/../../out/build/macos"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-vs2026-debug",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-vs2026-release",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-vs2022-debug",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-vs2022-release",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-ninja-debug",
+      "configurePreset": "windows-ninja",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-ninja-release",
+      "configurePreset": "windows-ninja",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux",
+      "configuration": "Release"
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos",
+      "configuration": "Debug"
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-vs2026-debug",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2026-release",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2022-debug",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vs2022-release",
+      "configurePreset": "windows-vs2022",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-ninja-debug",
+      "configurePreset": "windows-ninja",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-ninja-release",
+      "configurePreset": "windows-ninja",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

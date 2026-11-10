@@ -1,0 +1,33 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const read=p=>fs.readFileSync(path.resolve(root,p),'utf8');
+const html=read('index.html'), state=read('js/state.js');
+const ui=read('js/ui.js'), main=read('js/main.js');
+const http=read('../native/src/server/http_server.cpp');
+const agent=read('../native/src/agent/agent_runtime.cpp');
+const intent=read('../native/src/controller/task_intent.cpp');
+for (const theme of ['dark','light','windows-system','windows-dark','windows-light','matrix']) {
+  assert.match(html,new RegExp(`value="${theme}"`));
+  assert.ok(http.includes(`"${theme}"`));
+}
+assert.match(http,/http\.Get\("\/api\/engcoder\/appearance"/);
+assert.match(http,/http\.Post\("\/api\/engcoder\/appearance"/);
+assert.match(http,/core::replace_file\(staged, theme_path\)/);
+assert.match(state,/async function syncSharedTheme\(\)/);
+assert.match(state,/async function persistSharedTheme\(\)/);
+assert.match(ui,/persistSharedTheme\(\)/);
+assert.match(main,/syncSharedTheme\(\)/);
+assert.match(intent, /"square root"/);
+assert.match(intent,/has_digit && has_operator/);
+assert.match(agent,/handoff\.draft_requested/);
+assert.match(agent,/handoff\.draft_completed/);
+assert.match(agent,/review\.requested/);
+assert.match(agent,/review\.completed/);
+assert.match(agent,/foundation_model/);
+assert.match(agent,/draft\.tool_choice = "none"/);
+assert.match(agent,/review_request\.tool_choice = "none"/);
+assert.match(ui,/rightPanelView = tab\.dataset\.runView/);
+console.log('PASS: all six themes share native settings; 3-tier bounded handoffs; math escalation; served UI route');

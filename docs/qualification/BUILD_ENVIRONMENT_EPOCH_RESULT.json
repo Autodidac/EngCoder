@@ -1,0 +1,13 @@
+{
+  "qualified": false,
+  "environment": "OpenAI build sandbox (not user Windows runtime)",
+  "endpoint": "http://127.0.0.1:14321/v1/chat/completions",
+  "request": {
+    "stream": false,
+    "tool_choice": "named-function",
+    "timeout_seconds": 10800
+  },
+  "note": "No access to the user-local EngCoder/Qwen runtime from this execution environment.",
+  "elapsed_ms": 10,
+  "exact_failure": "URLError: <urlopen error [Errno 111] Connection refused>"
+}

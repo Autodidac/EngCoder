@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>EngCoder</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#07111a" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 rx=%2714%27 fill=%27%2307121c%27/%3E%3Cpath d=%27M18 17h30v8H27v7h18v8H27v7h21v8H18z%27 fill=%27%2379b8e8%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/engcoder.css" />
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="title">
+      <span>EngCoder</span>
+      <span class="subtitle">Studio <span id="appVersion" class="version" title="EngCoder version"></span></span>
+    </div>
+
+    <div class="toolbar">
+      <button id="toggleDrawer" type="button" class="icon-btn" title="Chats" aria-label="Chats" aria-controls="drawer" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16"></path><path d="M4 12h16"></path><path d="M4 16.5h16"></path></svg>
+      </button>
+      <button id="toggleThinkingDrawer" type="button" class="icon-btn" title="Generated output" aria-label="Generated output">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"></rect><path d="M11.5 4v16"></path></svg>
+      </button>
+      <button id="labBtn" type="button" class="toolbar-text-btn">EngCoder Lab</button>
+      <button id="settingsBtn" type="button" class="gradient">Session Settings</button>
+    </div>
+
+    <div class="status-pill">
+      <span class="status-dot" id="statusDot" data-state="idle"></span>
+      <span id="status" class="status">Ready</span>
+    </div>
+  </header>
+
+  <div id="fileOriginMicBanner" class="file-origin-mic-banner" hidden>
+    <span>Voice input needs a localhost/HTTP origin for stable microphone permission.</span>
+    <button id="dismissFileOriginMicBanner" type="button" aria-label="Dismiss">×</button>
+  </div>
+
+  <main id="chat" class="chat" aria-live="polite"></main>
+
+  <section class="composer">
+    <div id="error" class="error" role="alert" hidden><span id="errorText"></span><button id="retryLast" type="button" class="error-retry" hidden>Retry</button></div>
+    <div class="row">
+      <div class="grow">
+        <textarea id="prompt" placeholder="Ask anything"></textarea>
+        <div class="img-preview" id="imgPreview" hidden></div>
+        <div id="voiceMeter" class="voice-meter silent" hidden aria-hidden="true">
+          <span class="voice-meter-bar"></span><span class="voice-meter-bar"></span><span class="voice-meter-bar"></span>
+          <span class="voice-meter-bar"></span><span class="voice-meter-bar"></span><span class="voice-meter-bar"></span>
+          <span class="voice-meter-bar"></span><span class="voice-meter-bar"></span><span class="voice-meter-bar"></span>
+        </div>
+      </div>
+      <input id="imgInput" type="file" accept=".txt,.md,.markdown,.json,.jsonl,.csv,.log,.xml,.html,.htm,.js,.mjs,.cjs,.ts,.tsx,.jsx,.css,.cpp,.cc,.cxx,.c,.h,.hh,.hpp,.hxx,.ixx,.cppm,.py,.ps1,.bat,.cmd,.sh,.cmake,.toml,.yaml,.yml,.ini,.cfg,.conf,.sql,.rs,.go,.java,.cs,.glsl,.hlsl,.vert,.frag,.comp,.wgsl" multiple hidden />
+      <input id="folderInput" type="file" multiple hidden />
+      <button id="attach" class="btn-secondary" type="button" aria-label="Add context" title="Add context" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></button>
+      <div id="attachMenu" class="attach-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-attach-action="files"><span class="attach-menu-icon">↥</span><span><strong>Add files</strong><small>Text, source, config, logs</small></span></button>
+        <button type="button" role="menuitem" data-attach-action="folder"><span class="attach-menu-icon">▣</span><span><strong>Add folder</strong><small>Attach supported source files from one folder</small></span></button>
+        <button type="button" role="menuitem" data-attach-action="clipboard"><span class="attach-menu-icon">▤</span><span><strong>Paste clipboard text</strong><small>Add clipboard contents as context</small></span></button>
+        <button type="button" role="menuitem" data-attach-action="vision"><span class="attach-menu-icon">◫</span><span><strong>Image / vision</strong><small>Requires the vision transport; not silently faked</small></span></button>
+        <div class="attach-menu-separator" role="separator"></div>
+        <button type="button" role="menuitem" data-attach-action="controls"><span class="attach-menu-icon">⚙</span><span><strong>Session controls</strong><small>Model, capability, temperature, output</small></span></button>
+        <button type="button" role="menuitem" data-attach-action="runtime"><span class="attach-menu-icon">◈</span><span><strong>Runtime / GPU</strong><small>Native model and hardware controls</small></span></button>
+        <button type="button" role="menuitem" data-attach-action="settings"><span class="attach-menu-icon">⋯</span><span><strong>Session settings</strong><small>History, voice, appearance, instructions</small></span></button>
+      </div>
+      <button id="mic" class="btn-secondary voice-btn" type="button" aria-label="Dictate" title="Dictate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"></path><path d="M19 11a7 7 0 0 1-14 0"></path><path d="M12 18v3"></path></svg></button>
+      <button id="send" class="send" type="button" aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path></svg></button>
+      <button id="stop" class="btn-secondary hidden" type="button" aria-label="Stop generating" title="Stop generating"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="0" fill="currentColor"></rect></svg></button>
+    </div>
+    <div id="composerQuickBar" class="composer-quickbar" aria-label="Quick session controls">
+      <button id="quickMode" type="button" class="composer-pill" title="Change routing/capability mode"><span class="pill-label">Mode</span><strong id="quickModeValue">Auto</strong><span aria-hidden="true">▾</span></button>
+      <button id="quickModel" type="button" class="composer-pill" title="Open KeyMaker selection"><span class="pill-label">KeyMaker</span><strong id="quickModelValue">Auto</strong></button>
+      <button id="quickHistory" type="button" class="composer-pill" aria-pressed="true" title="Toggle conversation history"><span aria-hidden="true">↶</span><strong id="quickHistoryValue">History on</strong></button>
+      <button id="quickRuntime" type="button" class="composer-pill" title="Open runtime and GPU controls"><span aria-hidden="true">◈</span><strong>Runtime</strong></button>
+      <button id="quickMissions" type="button" class="composer-pill composer-missions" title="Open unresolved engineering missions" aria-haspopup="dialog"><span>Missions</span><strong id="missionCount">0</strong></button>
+      <button id="quickControls" type="button" class="composer-pill composer-pill-more" title="Open session settings"><span aria-hidden="true">•••</span></button>
+      <span id="quickAttachmentCount" class="composer-attachment-count" hidden></span>
+      <div id="quickModeMenu" class="quick-mode-menu" role="menu" hidden>
+        <button type="button" role="menuitemradio" data-mode="auto"><strong>Auto</strong><small>Architect routes capabilities when useful</small></button>
+        <button type="button" role="menuitemradio" data-mode="foundation"><strong>Foundation only</strong><small>KeyMaker only; no capability addons</small></button>
+        <button type="button" role="menuitemradio" data-mode="cpp"><strong>C++23</strong><small>Force the C++ capability lane</small></button>
+        <button type="button" role="menuitemradio" data-mode="planner"><strong>Planning</strong><small>Force planning / decomposition</small></button>
+        <button type="button" role="menuitemradio" data-mode="docs"><strong>Documentation</strong><small>Force documentation capability</small></button>
+        <button type="button" role="menuitemradio" data-mode="tools"><strong>Tool use</strong><small>Prefer the tool-use capability lane</small></button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<aside id="drawer" class="drawer" aria-label="Chats">
+  <div class="drawer-header"><h3>Chats</h3><span class="small">Right-click to delete</span></div>
+  <button id="newChat" class="newchat" type="button">New Chat</button>
+  <ul id="chatList" class="chat-list"></ul>
+</aside>
+
+<aside id="thinkingDrawer" class="thinking-drawer" aria-label="Generated output">
+  <div class="drawer-header">
+    <h3>Generated output</h3><span class="small" id="thinkingState">Idle</span>
+    <button id="closeThinkingDrawer" type="button" class="icon-btn drawer-close" title="Close generated output" aria-label="Close generated output">×</button>
+  </div>
+  <div class="run-panel-tabs" role="tablist" aria-label="Right panel views">
+    <button id="generatedOutputTab" type="button" class="run-panel-tab active" role="tab" aria-controls="thinkingDrawerBody" aria-selected="true" data-run-view="output">Output</button>
+    <button id="qwenLiveTab" type="button" class="run-panel-tab" role="tab" aria-controls="thinkingDrawerBody" aria-selected="false" data-run-view="qwen">Qwen live</button>
+    <button id="runInfoTab" type="button" class="run-panel-tab" role="tab" aria-controls="thinkingDrawerBody" aria-selected="false" data-run-view="info">Run info</button>
+  </div>
+  <div id="thinkingDrawerBody" class="thinking-drawer-body" role="tabpanel" aria-label="Generated output">
+    <div class="thinking-empty">Select an assistant message to view generated output.</div>
+  </div>
+</aside>
+
+<div id="ctxMenu">Delete chat</div>
+
+<dialog id="missionsDialog" aria-labelledby="missionDialogTitle">
+  <div class="missions-wrap">
+    <div class="missions-head">
+      <div><h2 id="missionDialogTitle">Engineering &amp; Future Missions</h2>
+        <p>Unfinished work carried forward from previous releases; no item is marked complete without acceptance evidence.</p></div>
+      <button id="closeMissions" type="button" aria-label="Close missions">×</button>
+    </div>
+    <div class="mission-filters">
+      <label>Search <input id="missionSearch" type="search" placeholder="Filter by objective or requirement" autocomplete="off" /></label>
+      <label>Priority <select id="missionPriority"><option value="all">All priorities</option><option value="P0">P0 — safety / blockers</option><option value="P1">P1 — correctness / architecture</option><option value="P2">P2 — future development</option></select></label>
+    </div>
+    <p id="missionCaption" class="mission-caption"></p>
+    <ul id="missionList" class="mission-list"></ul>
+  </div>
+</dialog>
+
+<dialog id="settingsDialog">
+  <div class="settings-wrap session-settings">
+    <div class="settings-head">
+      <div>
+        <h2>Session settings</h2>
+        <p class="settings-subtitle">Conversation, voice, activity, and appearance. Changes apply immediately.</p>
+      </div>
+      <button id="closeSettings" type="button" class="icon-btn" aria-label="Close settings">×</button>
+    </div>
+
+    <div class="runtime-strip">
+      <div>
+        <strong>EngCoder runtime</strong>
+        <span>This page is served by the runtime it controls.</span>
+      </div>
+      <span id="runtimeHealth" class="settings-status-dot">Checking</span>
+      <button id="probe" type="button">Refresh</button>
+    </div>
+    <input id="endpoint" type="hidden" />
+
+    <div class="settings-section">
+      <div class="settings-section-head">
+        <div><h3>System 1 Architect and KeyMaker</h3><p>Architect routes requests and delegates bounded preparation. KeyMaker is the foundation that verifies specialist advice, uses tools and produces the final answer.</p></div>
+        <button id="openLabFromSettings" type="button">Open EngCoder Lab</button>
+      </div>
+      <div id="modelRoleList" class="model-role-list"></div>
+      <div id="modelRoleStatus" class="model-role-status">Probe the runtime to detect models.</div>
+      <div class="model-role-actions">
+        <button id="resetModelRoles" type="button">Refresh architecture</button>
+      </div>
+      <input id="model" value="auto" hidden />
+    </div>
+
+    <div class="settings-section">
+      <h3>Behaviour</h3>
+      <div class="settings-grid">
+        <label style="grid-column:1 / -1;">Session instructions
+          <textarea id="system" rows="4" placeholder="Additional instructions for this conversation. EngCoder's native policy remains active."></textarea>
+        </label>
+        <label>Temperature
+          <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.15" />
+        </label>
+        <label>Max output tokens (-1 unlimited)
+          <input id="max_tokens" type="number" min="-1" step="1" value="-1" />
+        </label>
+        <label class="check-row"><input id="stream" type="checkbox" checked /> Stream responses</label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Context</h3>
+      <div class="settings-grid">
+        <label class="check-row"><input id="includeHistory" type="checkbox" checked /> Include previous messages as context</label>
+        <label>Max history turns (0 = all)
+          <input id="maxHistoryTurns" type="number" min="0" step="1" value="0" />
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Voice</h3>
+      <div class="settings-grid">
+        <label>Speech language
+          <select id="voiceLang"><option value="en-US">English (US)</option><option value="en-CA">English (Canada)</option><option value="en-GB">English (UK)</option><option value="en-AU">English (Australia)</option></select>
+        </label>
+        <label class="check-row"><input id="speakReplies" type="checkbox" /> Speak typed replies too</label>
+        <label class="check-row"><input id="autoRelisten" type="checkbox" checked /> Auto-relisten after reply</label>
+        <label>Silence-finish timeout
+          <select id="silenceFinishMs"><option value="800">Fast · 0.8 s</option><option value="1000">Quick · 1.0 s</option><option value="1350" selected>Balanced · 1.35 s</option><option value="1750">Patient · 1.75 s</option><option value="2200">Long pauses · 2.2 s</option></select>
+        </label>
+        <label>Voice rate<input id="voiceRate" type="range" min="0.5" max="2" step="0.1" value="1" /></label>
+        <label>Voice pitch<input id="voicePitch" type="range" min="0" max="2" step="0.1" value="1" /></label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Run info</h3>
+      <div class="settings-grid">
+        <label class="check-row"><input id="thinkingExpandDefault" type="checkbox" /> Keep completed runtime timeline expanded</label>
+        <label class="check-row"><input id="thinkingShowEmpty" type="checkbox" /> Show runtime timeline when empty</label>
+        <label class="check-row"><input id="showActivityDetails" type="checkbox" checked /> Store detailed Architect/addon/tool timeline</label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Appearance</h3>
+      <div class="settings-grid">
+        <label>Theme
+          <select id="theme">
+            <option value="dark">EngCoder Dark</option>
+            <option value="light">EngCoder Light</option>
+            <option value="windows-system">Windows System</option>
+            <option value="windows-dark">Windows Dark</option>
+            <option value="windows-light">Windows Light</option>
+            <option value="matrix">Matrix Green</option>
+          </select>
+        </label>
+        <label>Message style<select id="messageStyle"><option value="bubble">Bubble</option><option value="block">Block</option></select></label>
+        <label>Font size<select id="fontSize"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l">Large</option></select></label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Utilities</h3>
+      <div class="settings-actions">
+        <button id="clear" type="button">Clear chat</button>
+        <button id="copyAll" type="button">Copy all text</button>
+        <button id="applySettings" type="button" class="gradient">Done</button>
+      </div>
+    </div>
+    <input id="apiKey" type="password" value="" hidden />
+  </div>
+</dialog>
+
+<dialog id="labDialog">
+  <div class="settings-wrap engcoder-lab">
+    <div class="settings-head">
+      <div>
+        <h2>EngCoder Lab</h2>
+        <p class="settings-subtitle">System 1 Architect routes work to safe responders and subagents; KeyMaker verifies complex tasks and runs approved tools. Configure models, GPU, training and learning here.</p>
+      </div>
+      <button id="closeLab" type="button" class="icon-btn" aria-label="Close EngCoder Lab">×</button>
+    </div>
+
+    <nav class="lab-tabs" aria-label="EngCoder Lab sections">
+      <button type="button" class="lab-tab active" data-lab-tab="runtime">Runtime</button>
+      <button type="button" class="lab-tab" data-lab-tab="models">Models</button>
+      <button type="button" class="lab-tab" data-lab-tab="gpu">GPU</button>
+      <button type="button" class="lab-tab" data-lab-tab="training">Training</button>
+      <button type="button" class="lab-tab" data-lab-tab="learning">Learning</button>
+    </nav>
+
+    <section class="lab-panel active" data-lab-panel="runtime">
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>Candidate self-iteration</h3><p>Run the next coding request in a local candidate checkout. Approve each edit in chat. Run info shows build and test results, model escalation, and any verified boundary lesson saved to memory.</p></div>
+        </div>
+        <label><input id="candidateIteration" type="checkbox" /> Use candidate self-iteration for the next send</label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>Serving</h3><p>EngCoder always serves this UI locally. Remote serving exposes the same runtime and page to your LAN; it does not start a second backend.</p></div>
+          <span id="servingStatus" class="settings-status-dot">Local only</span>
+        </div>
+        <div class="runtime-facts">
+          <div><span>Local UI</span><strong id="localUiUrl">http://127.0.0.1:14321/ui/</strong></div>
+          <div><span>Remote UI</span><strong id="remoteUiUrl">Disabled</strong></div>
+          <div><span>OpenAI API base</span><strong id="openAiBaseUrl">http://127.0.0.1:14321/v1</strong></div>
+          <div><span>Chat Completions</span><strong id="chatCompletionsUrl">http://127.0.0.1:14321/v1/chat/completions</strong></div>
+          <div><span>Responses</span><strong id="responsesUrl">http://127.0.0.1:14321/v1/responses</strong></div>
+          <div><span>Full EngCoder agent</span><strong id="agentTasksUrl">http://127.0.0.1:14321/api/tasks</strong></div>
+          <div><span>Agent events</span><strong id="agentEventsUrl">http://127.0.0.1:14321/api/sessions/{session_id}/events?after=0</strong></div>
+          <div><span>MCP</span><strong id="mcpEndpointUrl">Not exposed — MCP is a tool protocol, not inference</strong></div>
+        </div>
+        <label class="switch-row"><span><strong>Serve remotely</strong><small>Trusted LAN only. Remote devices can use this EngCoder runtime and its tools. Off by default.</small></span><input id="remoteServing" type="checkbox" /></label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>Model provider</h3><p>External KeyMaker-compatible models can come from LM Studio or another OpenAI-compatible local server.</p></div>
+          <span id="providerStatus" class="settings-status-dot">Checking</span>
+        </div>
+        <div class="runtime-facts">
+          <div><span>Provider</span><strong id="providerName">LM Studio / OpenAI-compatible</strong></div>
+          <div><span>Endpoint</span><strong id="providerUrl">http://127.0.0.1:1234</strong></div>
+        </div>
+        <div class="provider-auth-row">
+          <label>API token <input id="providerToken" type="password" autocomplete="off" placeholder="Only needed when your model server requires authentication" /></label>
+          <button id="applyProviderToken" type="button">Apply token</button>
+          <button id="clearProviderToken" type="button">Clear</button>
+        </div>
+        <p id="providerHint" class="settings-hint">The token is kept in this EngCoder process only. Environment configuration still works for CLI/headless use.</p>
+      </div>
+    </section>
+
+    <section class="lab-panel" data-lab-panel="models">
+      <div class="settings-section model-library-section">
+        <div class="settings-section-head">
+          <div>
+            <h3>Model Library</h3>
+            <p>EngCoder-native model runtimes. Download or import weights, load/unload them, then assign one as KeyMaker without changing LM Studio, Bionic, or the internal learned models.</p>
+          </div>
+          <div class="settings-actions compact-actions">
+            <button id="refreshModelLibrary" type="button">Refresh library</button>
+            <button id="installNativeRuntime" type="button">Install Qwen Runtime Backend</button>
+            <button id="unloadNativeModel" type="button">Unload native model</button>
+            <button id="resetNativeProfileDefaults" type="button">Reset all settings…</button>
+          </div>
+        </div>
+        <details class="model-hosting-guide">
+          <summary>Adding your own models · what EngCoder hosts</summary>
+          <p>EngCoder can register and download compatible Hugging Face GGUF weights, or use a GGUF file already on the host PC. Enter its repository/quant or local path below, save the profile, then use Download and Load on the model card. Saved model profiles persist across updates.</p>
+          <p><strong>Current limitation:</strong> the native runtime hosts one active GGUF at a time. Your small 9B and middle 27B models can run together with KeyMaker through an OpenAI-compatible local provider such as LM Studio. This is HTTP model inference, <strong>not an MCP server</strong>. Assign them once under System 1 Architect + KeyMaker.</p>
+          <p>Native simultaneous 9B → 27B → KeyMaker hosting is tracked as a separate engineering mission; it needs per-model ports, compatible llama.cpp options, memory budgets, and verified crash/restart handling. Loading extra large models without those limits is not enabled silently.</p>
+        </details>
+        <div id="nativeRuntimeFacts" class="runtime-facts">
+          <div><span>Native runtime</span><strong>Checking</strong></div>
+          <div><span>Model cache</span><strong>Checking</strong></div>
+        </div>
+        <div class="model-library-add">
+          <label>Runtime type
+            <select id="nativeRuntimeType">
+              <option value="qwen-flash">Qwen Flash / Sparse MoE</option>
+            </select>
+          </label>
+          <label>Hugging Face repository
+            <input id="nativeModelRepo" type="text" autocomplete="off" value="unsloth/Qwen3.8-Flash-Next-GGUF" />
+          </label>
+          <label>Quant / variant
+            <input id="nativeModelQuant" type="text" autocomplete="off" value="UD-Q2_K_XL" />
+          </label>
+          <label>Display name
+            <input id="nativeModelDisplay" type="text" autocomplete="off" value="Qwen3.8 Flash Next · UD-Q2_K_XL" />
+          </label>
+          <label>Local GGUF path <small>Immediate Load override · Save profile to persist</small>
+            <input id="nativeModelLocalPath" type="text" autocomplete="off" placeholder="C:\Models\model-00001-of-00003.gguf" />
+          </label>
+          <label>Runtime tuning
+            <select id="nativeRuntimePolicy">
+              <option value="recommended" selected>Recommended · QFR tuned 5080 / 64 GB</option>
+              <option value="automatic">Automatic · Hardware-aware</option>
+              <option value="manual">Manual · Full control</option>
+            </select>
+            <small id="nativeRuntimePolicyHint">Recommended tuning is active. Editing any tuning field switches this profile to Manual.</small>
+          </label>
+          <label>Context window
+            <select id="nativeContextTokens">
+              <option value="81920" selected>81,920 · Recommended 5080/64 GB</option>
+              <option value="98304">98,304 · High context</option>
+              <option value="131072">131,072</option>
+              <option value="196608">196,608</option>
+              <option value="262144">262,144 · Native maximum</option>
+            </select>
+          </label>
+          <label>Parallel slots
+            <select id="nativeParallelSlots"><option value="1" selected>1 · Recommended</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select>
+          </label>
+          <label>Effective context / slot
+            <input id="nativeEffectiveContext" type="text" value="81,920" readonly />
+          </label>
+          <label>Context reserve
+            <input id="nativeContextReserve" type="number" min="2048" step="1024" value="4096" />
+          </label>
+          <label class="switch-row"><span><strong>Automatic context compaction</strong><small>Compact older transcript/tool state before the hard model window.</small></span><input id="nativeAutoCompact" type="checkbox" checked /></label>
+          <label>Compact at
+            <input id="nativeCompactTrigger" type="number" min="50" max="98" step="1" value="97" />
+          </label>
+          <label>Compact toward
+            <input id="nativeCompactTarget" type="number" min="25" max="90" step="1" value="72" />
+          </label>
+          <label>CPU threads
+            <input id="nativeThreads" type="number" min="1" max="64" value="12" />
+          </label>
+          <label>Batch threads
+            <input id="nativeBatchThreads" type="number" min="1" max="64" value="12" />
+          </label>
+          <label>Batch size
+            <input id="nativeBatchSize" type="number" min="64" step="64" value="1024" />
+          </label>
+          <label>Micro-batch
+            <input id="nativeUbatchSize" type="number" min="32" step="32" value="256" />
+          </label>
+          <label>Qwen GPU layer offload <small>0–100% of EngCoder's safe model-layer budget · default 50%</small>
+            <input id="nativeGpuOffloadPercent" type="number" min="0" max="100" step="1" value="50" />
+            <small id="nativeGpuApplyHint">100% uses the configured safe maximum of Qwen's offloadable layers, not all GPU memory. Cache, KV and CUDA workspace need separate VRAM. Apply changes using Reload / Apply settings.</small>
+          </label>
+          <label>Model layer hint <small>Manual ratio mapping</small>
+            <input id="nativeGpuLayerCountHint" type="number" min="1" max="512" step="1" value="48" />
+          </label>
+          <label>Exact GPU layers override <small>Automatic follows the safe GPU-layer budget; manual overrides are capped</small>
+            <input id="nativeGpuLayers" type="text" value="auto" />
+          </label>
+          <label>Expert cache mode
+            <select id="nativeExpertCacheMode"><option value="auto" selected>Auto · compatibility-qualified</option><option value="off">Off · stable baseline</option><option value="on">On · force experimental cache</option></select>
+          </label>
+          <label>GPU expert cache MiB
+            <input id="nativeExpertCache" type="number" min="0" step="256" value="6144" />
+          </label>
+          <label>Pinned host cache MiB
+            <input id="nativePinnedHost" type="number" min="0" step="256" value="12288" />
+          </label>
+          <label>Prompt cache MiB <small>Manual mode</small>
+            <input id="nativePromptCache" type="number" min="0" step="256" value="2048" />
+          </label>
+          <label>KV K type
+            <select id="nativeKvK"><option value="q4_0" selected>q4_0 · Recommended</option><option value="q8_0">q8_0</option><option value="f16">f16</option></select>
+          </label>
+          <label>KV V type
+            <select id="nativeKvV"><option value="q4_0" selected>q4_0 · Recommended</option><option value="q8_0">q8_0</option><option value="f16">f16</option></select>
+          </label>
+          <label>KV GPU layers
+            <input id="nativeKvGpuLayers" type="number" min="0" value="0" />
+          </label>
+          <label>Load mode
+            <select id="nativeLoadMode"><option value="mmap" selected>mmap · Recommended</option><option value="mmap+mlock">mmap+mlock</option><option value="mlock">mlock</option><option value="none">none</option></select>
+          </label>
+          <label>Lazy mode
+            <select id="nativeLazyMode"><option value="on" selected>On · Recommended</option><option value="auto">Auto</option><option value="off">Off</option></select>
+          </label>
+          <label>Tensor override
+            <input id="nativeTensorOverride" type="text" value="per_layer_token_embd.weight=CPU" />
+          </label>
+          <label class="switch-row"><span><strong>FlashAttention</strong><small>Recommended on RTX 5080.</small></span><input id="nativeFlashAttention" type="checkbox" checked /></label>
+          <label class="switch-row"><span><strong>KV GPU offload</strong><small>Manual override. Recommended preserves the proven QFR backend default; Automatic chooses from context + VRAM.</small></span><input id="nativeKvOffload" type="checkbox" /></label>
+          <label class="switch-row"><span><strong>Pinned CPU KV</strong><small>Recommended: keep the CPU-resident KV cache in pinned host memory.</small></span><input id="nativeKvCpuPinned" type="checkbox" checked /></label>
+          <label class="switch-row"><span><strong>Phase-aware workspace</strong><small>Shrink/regrow workspace between prefill and decode.</small></span><input id="nativePhaseWorkspace" type="checkbox" checked /></label>
+          <label class="switch-row"><span><strong>Early expert router</strong><small>Experimental; off by default.</small></span><input id="nativeEarlyRouter" type="checkbox" /></label>
+          <label class="switch-row"><span><strong>Preserve reasoning history</strong><small>Off by default to keep agent context lean.</small></span><input id="nativeReasoningPreserve" type="checkbox" /></label>
+          <label class="switch-row"><span><strong>Backend context shift</strong><small>Off: EngCoder compacts explicitly instead.</small></span><input id="nativeContextShift" type="checkbox" /></label>
+          <label class="switch-row"><span><strong>MTP speculative decoding</strong><small>Requires an independent, compatible local GGUF draft model and a verified native backend. LM Studio subagents cannot act as MTP drafts.</small></span><input id="nativeSpeculative" type="checkbox" /></label>
+          <label>Speculative type
+            <select id="nativeSpecType"><option value="draft-mtp" selected>Qwen draft-MTP · local compatible GGUF only</option></select>
+          </label>
+          <label hidden>Legacy draft repository (unsupported for qualified local MTP)
+            <input id="nativeSpecRepo" type="text" value="" disabled />
+          </label>
+          <label>Draft model path <small>Preferred for Qwen MTP sidecars</small>
+            <input id="nativeSpecModel" type="text" placeholder="C:\Models\qwen-mtp.gguf" />
+          </label>
+          <label>Draft tokens
+            <input id="nativeSpecTokens" type="number" min="1" max="16" value="2" />
+          </label>
+          <div class="settings-actions model-library-add-actions">
+            <button id="registerNativeModel" type="button">Add / save model profile</button>
+          </div>
+        </div>
+        <p class="settings-hint">Hugging Face models are downloaded into EngCoder's model cache. Local GGUF files are referenced in place. The Qwen Runtime Backend is the llama.cpp/CUDA software that executes the model; it is separate from Qwen model weights. Installing or updating it does not retrain or replace Qwen. Model weights are downloaded only when a model profile has no usable local/cached copy.</p>
+        <div id="nativeModelInstallStatus" class="model-library-install-status">No native model download is active.</div>
+        <div id="nativeInstallProgress" class="model-install-progress" hidden>
+          <div class="model-install-progress-head"><span id="nativeInstallProgressPhase">Idle</span><strong id="nativeInstallProgressPercent">0%</strong></div>
+          <div class="model-install-progress-track"><div id="nativeInstallProgressBar" class="model-install-progress-bar"></div></div>
+          <small id="nativeInstallProgressDetail"></small>
+        </div>
+        <div id="nativeModelLibrary" class="model-library-grid"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>System 1 Architect + KeyMaker</h3><p>Architect classifies each request and chooses the fastest safe route. KeyMaker is the large model that owns difficult answers, coding, tools and final verification.</p></div>
+          <div class="settings-actions compact-actions"><button id="labRefreshModels" type="button">Refresh</button><button id="autofill" type="button">Assign small + middle</button></div>
+        </div>
+        <details class="settings-hint" id="subagentSetupHelp">
+          <summary><strong>Three-model setup — where external models come from and when they run</strong></summary>
+          <p><strong>1. Load models in LM Studio on the host computer.</strong> In LM Studio, download a lightweight model and a different medium-size model. Start LM Studio's local OpenAI-compatible API server (commonly port 1234). EngCoder connects to that API; it does not download or load those weights itself.</p>
+          <p><strong>2. Connect EngCoder.</strong> EngCoder connects from its <em>server computer</em> to LM Studio at <code>http://127.0.0.1:1234</code> by default. The host endpoint is configured at startup using <code>ENGCODER_MODEL_SERVER_URL</code> (or <code>ENGCODER_LMSTUDIO_URL</code>), <strong>not</strong> the Session Settings browser endpoint. Reload EngCoder after changing its server URL. Choose Refresh here to discover available external models. In served Web mode, LM Studio still runs on the host, not on the browser's machine.</p>
+          <p><strong>3. Assign roles.</strong> Leave internal Qwen as KeyMaker; choose the lightweight model under Small and a different model under Middle. The Assign button fills these roles without replacing KeyMaker. Optional specialist selectors can use additional external models; without one, small-model checklists fill in automatically.</p>
+          <p><strong>4. Use it.</strong> Automatic routing sends safe greetings to Small, routes coding and complex tasks through bounded specialist preparation and Middle review, and leaves final decisions to KeyMaker. Math, numerical proofs, security and other reliability-sensitive requests go straight to KeyMaker. Run info shows which stages actually ran; Output remains just generated text.</p>
+          <p><strong>5. Understand failures.</strong> Missing external model or refused request causes a stage failure, then KeyMaker proceeds when safe. This is advisory delegation, not independent code execution by subagents. GPU offload below applies only to native Qwen.</p>
+        </details>
+        <div class="settings-grid model-selector-grid">
+          <label>KeyMaker Foundation<select id="foundationModel"></select></label>
+          <label>System 1 Architect controller <small>Fast policy and trainable shadow: selects a route, not a substitute final answer. Deterministic fallback stays active during training.</small><select id="controllerModel"></select></label>
+          <label>Small model · quick replies &amp; draft handoffs <small>External LM Studio model: answers safe greetings, short drafting and simple text. For complex non-sensitive work it may prepare a checklist; KeyMaker remains final authority. Math and code never use it as the final responder.</small><select id="simpleResponseModel"></select><small id="simpleRoutingStatus" aria-live="polite">Choose a small external model for quick replies and optional preparatory handoffs.</small></label>
+          <label>Middle model · verification <small>A different external model from LM Studio audits bounded small-model checklists and specialist advice before large KeyMaker. It never gets tools or overrides KeyMaker.</small><select id="reviewModel"></select><small id="reviewRoutingStatus" aria-live="polite">Select a different model from the small responder.</small></label>
+          <label>Multi-model verification <small>Auto: quick middle review; Deep: larger review budget; Off: skip review. If models are unavailable, KeyMaker continues safely.</small><select id="reviewMode"><option value="auto">Automatic (recommended)</option><option value="deep">Deep review</option><option value="off">Off / fast</option></select></label>
+          <label>KeyMaker analysis <small>Auto balances tasks; Deep encourages more cross-checking. This is guidance, not an unsupported provider flag.</small><select id="thinkingMode"><option value="auto">Automatic (recommended)</option><option value="fast">Fast / concise</option><option value="deep">Deep / thorough</option></select></label>
+          <label>C++23 specialist <small>Optional external model. If unassigned, the Small model provides checklists only; KeyMaker writes and verifies code.</small><select id="addonCppModel"></select></label>
+          <label>Documentation specialist <small>Optional external model for bounded advice.</small><select id="addonDocsModel"></select></label>
+          <label>Planning addon<select id="addonPlannerModel"></select></label>
+          <label>Tool-use addon<select id="addonToolsModel"></select></label>
+          <label>Context reranker<select id="addonRerankerModel"></select></label>
+          <label>Force capability for this session<select id="forcedAddon"><option value="">Automatic</option><option value="cpp">C++23</option><option value="docs">Documentation</option><option value="planner">Planning</option><option value="tools">Tool use</option><option value="reranker">Reranker</option></select></label>
+        </div>
+        <div class="toggle-stack">
+          <label class="switch-row"><span><strong>System 1 Architect · automatic routing</strong><small>Small for safe short text, optional middle review for complex handoffs, large KeyMaker for code, math, tools, security and final verification.</small></span><input id="autoRouting" type="checkbox" checked /></label>
+          <label class="switch-row"><span><strong>Enable capability addons</strong><small>Allow KeyMaker to consult specialist models; turning this off does not disable simple-response routing.</small></span><input id="enableAddons" type="checkbox" checked /></label>
+        </div>
+      </div>
+    </section>
+
+    <section class="lab-panel" data-lab-panel="gpu">
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>GPU residency</h3><p>NVMe → RAM warm cache → VRAM hot set. KeyMaker + Architect stay pinned; addons load on demand.</p></div>
+          <button id="refreshResidency" type="button">Refresh</button>
+        </div>
+        <div id="gpuSummary" class="gpu-summary">Residency information not loaded.</div>
+        <div id="residencyComponents" class="residency-grid"></div>
+        <div class="settings-actions">
+          <button id="loadCoreModels" type="button">Load KeyMaker + Architect</button>
+          <button id="releaseAddons" type="button">Release idle addons</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="lab-panel" data-lab-panel="training">
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>EngCoder Internal Trainer</h3><p>Train EngCoder's own KeyMaker/Architect/addon weights. The currently selected runtime KeyMaker may be Qwen, LM Studio, or the internal generation.</p></div>
+          <button id="refreshTraining" type="button">Refresh</button>
+        </div>
+        <div id="trainingRelationship" class="training-relationship" aria-live="polite"></div>
+        <div class="settings-grid training-grid">
+          <label>Scratch model size<select id="trainingProfile"><option value="desktop-16gb" selected>359M params · 16 GB GPU target · recommended</option><option value="desktop-250m">262M params · Desktop</option><option value="large-local">123M params · Large</option><option value="standard">65.7M params · Standard</option><option value="micro">29.6M params · Micro · test only</option></select></label>
+          <label>Training target<select id="trainingScope"><option value="keymaker-foundation">Internal KeyMaker Foundation</option><option value="architect-controller">Architect</option><option value="cpp23-core">C++23 core addon</option><option value="cpp23-debugging">C++ debugging addon</option><option value="documentation">Documentation addon</option><option value="planning">Planning addon</option><option value="tool-use">Tool-use addon</option><option value="reranking">Context reranker</option></select></label>
+          <label>Training run length<select id="trainingSteps"><option value="100">100 steps · smoke</option><option value="500" selected>500 steps · short</option><option value="1000">1,000 steps</option><option value="5000">5,000 steps</option><option value="10000">10,000 steps</option><option value="50000">50,000 steps · long</option></select></label>
+          <label>Checkpoint interval<select id="checkpointSteps"><option value="10">Every 10 steps</option><option value="50" selected>Every 50 steps</option><option value="100">Every 100 steps</option><option value="250">Every 250 steps</option><option value="500">Every 500 steps</option></select></label>
+        </div>
+        <p class="settings-hint training-profile-hint"><strong>Scratch model size</strong> is EngCoder's trainable internal architecture, created from its own weights; it is not the selected Qwen/LM Studio model and does not rewrite GGUF weights. Current totals: 359M = 259.9M foundation + 99.1M addons; 262M = 197.4M + 65.0M; 123M = 71.5M + 51.6M; 65.7M = 38.2M + 27.5M; 29.6M = 17.2M + 12.4M. <strong>Training target</strong> chooses which internal component is updated. Thumbs-up saves a verified example immediately to memory and makes it eligible for this internal training pipeline.</p>
+        <div id="trainingStatus" class="training-status">Training status not loaded.</div>
+        <div class="settings-actions training-actions">
+          <button id="initializeModel" type="button">Create internal weights</button>
+          <button id="startTraining" type="button" class="gradient">Start / resume training</button>
+          <button id="pauseTraining" type="button">Pause</button>
+          <button id="resumeTraining" type="button">Resume</button>
+          <button id="cancelTraining" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="lab-panel" data-lab-panel="learning">
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <div><h3>Learning &amp; memory</h3><p>Verified responses become retrievable memory immediately. Weight updates still pass evidence and promotion gates.</p></div>
+          <button id="refreshLearning" type="button">Refresh</button>
+        </div>
+        <div id="learningSummary" class="learning-summary">Learning status not loaded.</div>
+        <div id="recentMemory" class="recent-memory"></div>
+        <h4>Learning denylist</h4>
+        <div id="learningBans" class="recent-memory"></div>
+        <p class="settings-hint">Use the verify action under a completed answer to teach EngCoder. A single correction becomes memory; it does not directly mutate weights.</p>
+      </div>
+    </section>
+  </div>
+</dialog>
+
+<script src="js/config.js" defer></script>
+<script src="js/state.js" defer></script>
+<script src="js/api.js" defer></script>
+<script src="js/math.js" defer></script>
+<script src="js/render.js" defer></script>
+<script src="js/voice.js" defer></script>
+<script src="js/ui.js" defer></script>
+<script src="js/mission_data.js" defer></script>
+<script src="js/missions.js" defer></script>
+<script src="js/main.js" defer></script>
+</body>
+</html>
