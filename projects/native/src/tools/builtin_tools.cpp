@@ -272,7 +272,7 @@ void register_builtin_tools(
                 {"content", string_schema()},
             },
             {"path", "content"}),
-        [&workspace, &checkpoints](const json& arguments, const Context&) -> std::expected<json, core::Error> {
+        [&workspace, &checkpoints](const json& arguments, const Context& context) -> std::expected<json, core::Error> {
             const auto path = arguments.at("path").get<std::string>();
 
             const auto checkpoint = checkpoints.capture(path);
@@ -282,7 +282,7 @@ void register_builtin_tools(
 
             const auto write_result = workspace.write_text(
                 path,
-                arguments.at("content").get<std::string>());
+                arguments.at("content").get<std::string>(), !context.create_files_only);
 
             if (!write_result) {
                 return std::unexpected(write_result.error());

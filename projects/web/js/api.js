@@ -365,9 +365,15 @@ function eventActivityLine(event) {
     case 'tool.failed': return `Tool failed · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error)}`;
     case 'agent.stall_detected': return 'Changed strategy after repeated action';
     case 'iteration.started': return 'Candidate self-iteration started';
-    case 'iteration.check_started': return `Candidate ${data.check} · running`;
-    case 'iteration.check_finished': return `Candidate ${data.check} · ${data.exit_code === 0 ? 'passed' : 'failed'}`;
+    case 'iteration.check_started': return `${data.stage === 'baseline' ? 'Baseline' : 'Candidate'} ${data.check} · running`;
+    case 'iteration.check_finished': return `${data.stage === 'baseline' ? 'Baseline' : 'Candidate'} ${data.check} · ${data.exit_code === 0 ? 'passed' : 'failed'}`;
     case 'iteration.repair': return `Candidate repair ${data.attempt} of 2`;
+    case 'iteration.escalated': return `Escalated · ${data.from} → ${data.to} · ${data.reason}`;
+    case 'iteration.escalation_unavailable': return `Escalation unavailable · ${data.model} · keeping current model`;
+    case 'iteration.lesson': return data.stored === true
+      ? `Saved verified memory · ${data.lesson} · No weight update`
+      : `Verified lesson · ${data.lesson} · No new memory or weight update`;
+    case 'iteration.lesson_reused': return `Recalled C++ boundary memory · ${data.lesson}`;
     case 'verification.completed': return `Verified · ${data.status || 'completed'}`;
     case 'task.completed': return 'Completed';
     case 'task.failed': return `Failed · ${conciseRuntimeError(data.error)}`;
@@ -601,6 +607,8 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
           setStatus(event.data?.check === 'tests' ? 'Testing candidate' : 'Building candidate', 'busy');
         } else if (event.type === 'iteration.repair') {
           setStatus(`Preparing repair ${event.data?.attempt || 1} of 2`, 'busy');
+        } else if (event.type === 'iteration.escalated') {
+          setStatus(`Repair escalated to ${event.data?.to || 'configured model'}`, 'busy');
         }
 
         const terminal = terminalFromEvent(event);

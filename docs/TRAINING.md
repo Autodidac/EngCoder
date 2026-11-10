@@ -4,6 +4,24 @@ EngCoder owns the model lifecycle; the included Python/PyTorch worker performs n
 
 ## C++ boundary repair lab
 
+### Run a generated repair in EngCoder
+
+Use a disposable CMake candidate with independently written regression tests and configure its build before opening EngCoder. Set these variables for the candidate runtime:
+
+| Setting | Value |
+| --- | --- |
+| `ENGCODER_ITERATION_CANDIDATE` | Absolute candidate checkout path, also used as the server workspace |
+| `ENGCODER_ITERATION_BUILD_DIR` | Configured CMake build directory relative to the candidate |
+| `ENGCODER_ITERATION_ESCALATION_MODEL` | Optional exact ID of a stronger model advertised by the configured provider |
+| `ENGCODER_ITERATION_BOUNDARY_SOURCE` | Candidate-relative path to the one `.cpp` file the models may edit |
+| `ENGCODER_ITERATION_BOUNDARY_RULE` | `clamp`, `index`, `closed`, or `capacity` |
+
+In **EngCoder Lab → Runtime**, enable candidate self-iteration for the next send. Choose the initial model and describe the repair in chat. Each edit needs its own approval. Existing files require exact patches, and changes to the file while approval is pending invalidate that approval. The boundary workflow reproduces a real CTest failure before any edit and restricts edits to the configured source. When a candidate regression test fails, Architect can switch once to the configured stronger model within the existing two-repair limit. The next model gets the same candidate and actual validation output. Build and test process failures without a reported regression stay on the original route. Candidate runtimes bind to loopback.
+
+Open the answer's **Run info** for the route change, build and test timeline, and saved lesson. After the source changes and all checks pass, EngCoder records the configured boundary rule as verified memory and can recall it for future scoped runs. It stores the compact rule without copying the candidate source or model prose into Learning, and this record is excluded from weight training. **EngCoder Lab → Learning** shows the memory and its source. This generated-repair workflow and the CLI's 228-byte option ranker have separate responsibilities.
+
+### Train and compare the option ranker
+
 Run from an EngCoder checkout with Python 3.8 or later, CMake, and a C++23 compiler. Choose a new output directory for each experiment.
 
 ```powershell

@@ -226,6 +226,9 @@ function syncRunInfo() {
     ? state.activityEvents
     : cleanThinkingContent(state.thinking || '').split('\n').filter(Boolean).map(text => ({ text }));
   const timelineOpen = !!state.activityThinkingOpen;
+  const candidateEvidence = events.filter(item => item.type === 'iteration.escalated' || item.type === 'iteration.lesson');
+  const candidate = candidateEvidence.length ? sectionHtml('Candidate repair evidence', candidateEvidence.map(item =>
+    `<div class="activity-line">${esc(item.text || '')}</div>`).join('')) : '';
   const timeline = events.length ? `<section class="activity-section">
     <div class="activity-section-header">Runtime timeline</div>
     <details class="activity-details" data-activity-thinking ${timelineOpen ? 'open' : ''}>
@@ -239,6 +242,7 @@ function syncRunInfo() {
 
   thinkingDrawerBody.innerHTML = `<div class="activity-sections">
     ${sectionHtml('Run', overview)}
+    ${candidate}
     ${sectionHtml('Models & routing', `<div class="activity-meta-grid">${modelRows}</div>`)}
     ${sectionHtml('Timing', `<div class="activity-meta-grid">${timingRows}</div>`)}
     ${sectionHtml('Tools & context', `<div class="activity-meta-grid">${toolRows}</div>`)}
@@ -748,7 +752,9 @@ function renderAssistantBody(container, message) {
       const cwd = String(args.cwd || '.');
       detail.textContent = `${command || 'process.run'}\ncwd: ${cwd}`;
     } else {
-      detail.textContent = JSON.stringify(args, null, 2);
+      detail.textContent = approval.tool === 'workspace.patch'
+        ? `File: ${String(args.path || '')}\n\nReplace exactly:\n${String(args.expected ?? '')}\n\nWith:\n${String(args.replacement ?? '')}`
+        : JSON.stringify(args, null, 2);
     }
     card.appendChild(detail);
 

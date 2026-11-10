@@ -1,4 +1,4 @@
-const APP_VERSION = '0.7.3'; // EngCoder product version.
+const APP_VERSION = '0.7.4'; // EngCoder product version.
 const $ = id => document.getElementById(id);
 
 const chatEl = $('chat');

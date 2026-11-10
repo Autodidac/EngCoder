@@ -48,21 +48,28 @@ std::expected<std::string, core::Error> Workspace::read_text(std::string_view re
     std::ostringstream ss; ss << in.rdbuf(); return ss.str();
 }
 
-std::expected<void, core::Error> Workspace::write_text(std::string_view relative, std::string_view content) const {
+std::expected<void, core::Error> Workspace::write_text(
+    std::string_view relative, std::string_view content, bool replace_existing) const {
     auto path = resolve(relative, false); if (!path) return std::unexpected(path.error());
     std::error_code ec; std::filesystem::create_directories(path->parent_path(), ec);
     if (ec) return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), ec.message()});
     const auto temp = path->parent_path() / (path->filename().string() + ".engcoder." + core::make_id("tmp"));
     { std::ofstream out(temp, std::ios::binary | std::ios::trunc); if (!out) return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), "unable to open temporary file"}); out.write(content.data(), static_cast<std::streamsize>(content.size())); out.flush(); if (!out) { std::filesystem::remove(temp, ec); return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), "write failed"}); } }
 #ifdef _WIN32
-    if (!MoveFileExW(temp.c_str(), path->c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace_existing ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (!MoveFileExW(temp.c_str(), path->c_str(), flags)) {
         const auto code = GetLastError();
         std::filesystem::remove(temp, ec);
         return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), "MoveFileExW failed: " + std::to_string(code)});
     }
 #else
-    std::filesystem::rename(temp, *path, ec);
-    if (ec) { std::filesystem::remove(temp); return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), ec.message()}); }
+    if (replace_existing) std::filesystem::rename(temp, *path, ec);
+    else std::filesystem::create_hard_link(temp, *path, ec);
+    if (!replace_existing || ec) {
+        std::error_code cleanup;
+        std::filesystem::remove(temp, cleanup);
+    }
+    if (ec) return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), ec.message()});
 #endif
     return {};
 }

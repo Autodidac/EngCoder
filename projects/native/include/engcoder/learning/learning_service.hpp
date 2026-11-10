@@ -24,6 +24,7 @@ struct EvidenceRecord {
     std::string source;
     double confidence{1.0};
     bool verified{true};
+    bool memory_only{false};
 };
 
 class LearningService {

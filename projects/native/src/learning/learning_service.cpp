@@ -146,7 +146,7 @@ bool LearningService::record(EvidenceRecord record) {
     const bool human_accepted = contains_any(source, {"user", "human", "accepted"});
     const bool deterministic_verified = contains_any(source, {"compiler", "test", "build", "deterministic"});
     const bool reference_verified = contains_any(source, {"reference", "docs", "spec"});
-    const bool eligible = record.confidence >= 0.80 &&
+    const bool eligible = !record.memory_only && record.confidence >= 0.80 &&
         (human_accepted || deterministic_verified || reference_verified);
 
     memory::Episode episode{

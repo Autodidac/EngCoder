@@ -1342,7 +1342,9 @@ function renderLearningStatus(status, recent, bans) {
       const row = document.createElement('div');
       row.className = 'memory-row';
       const title = document.createElement('strong');
-      title.textContent = `${episode.skill || 'keymaker-foundation'} · ${episode.source || 'verified'}`;
+      title.textContent = episode.source === 'compiler-and-tests:candidate-boundary'
+        ? 'C++ boundary repair · compiler and tests · memory only'
+        : `${episode.skill || 'keymaker-foundation'} · ${episode.source || 'verified'}`;
       const prompt = document.createElement('small');
       prompt.textContent = String(episode.prompt || '');
       const response = document.createElement('small');

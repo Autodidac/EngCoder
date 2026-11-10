@@ -218,6 +218,9 @@ Config Config::from_environment() {
         (config.workspace / "projects" / "web").string());
     config.iteration_candidate = product_environment_value("ITERATION_CANDIDATE");
     config.iteration_build_dir = product_environment_value("ITERATION_BUILD_DIR");
+    config.iteration_escalation_model = product_environment_value("ITERATION_ESCALATION_MODEL");
+    config.iteration_boundary_source = product_environment_value("ITERATION_BOUNDARY_SOURCE");
+    config.iteration_boundary_rule = product_environment_value("ITERATION_BOUNDARY_RULE");
     config.lm_studio_url = product_environment_value(
         "MODEL_SERVER_URL",
         product_environment_value("LMSTUDIO_URL", config.lm_studio_url));

@@ -1150,7 +1150,7 @@ def _generate(state: ServerState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "EngCoder/0.7.3"
+    server_version = "EngCoder/0.7.4"
 
     @property
     def state(self) -> ServerState:
@@ -2555,7 +2555,7 @@ def mcp_stdio(arguments: argparse.Namespace) -> int:
                 "params": {
                     "protocolVersion": "2025-11-25",
                     "capabilities": {},
-                    "clientInfo": {"name": "EngCoder", "version": "0.7.3"},
+                    "clientInfo": {"name": "EngCoder", "version": "0.7.4"},
                 },
             },
         )

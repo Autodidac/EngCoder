@@ -29,6 +29,9 @@ struct Config {
     std::filesystem::path web_root;
     std::filesystem::path iteration_candidate;
     std::string iteration_build_dir;
+    std::string iteration_escalation_model;
+    std::string iteration_boundary_source;
+    std::string iteration_boundary_rule;
     std::string lm_studio_url = "http://127.0.0.1:1234";
     std::string model = "auto"; // KeyMaker Foundation model / fallback provider model.
     std::string controller_model; // Optional external provider model for Architect decisions.

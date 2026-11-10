@@ -6,6 +6,19 @@
 TEST_CASE("workspace blocks parent escape") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE_FALSE(w.resolve("../escape.txt").has_value());std::filesystem::remove_all(root);}
 TEST_CASE("workspace round trip") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace2";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE(w.write_text("a/b.txt","hello").has_value());auto x=w.read_text("a/b.txt");REQUIRE(x);REQUIRE(*x=="hello");std::filesystem::remove_all(root);}
 
+TEST_CASE("create-only workspace writes never replace an existing file") {
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-test-create-only";
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    engcoder::workspace::Workspace workspace(root);
+    REQUIRE(workspace.write_text("new.txt", "original", false));
+    REQUIRE_FALSE(workspace.write_text("new.txt", "replacement", false));
+    CHECK(workspace.read_text("new.txt").value_or("") == "original");
+}
+
 TEST_CASE("checkpoint restore rejects traversal and preserves a normal capture") {
     const auto root = std::filesystem::temp_directory_path() / "engcoder-checkpoint-boundary-test";
     std::filesystem::remove_all(root);

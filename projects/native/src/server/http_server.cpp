@@ -633,6 +633,11 @@ bool HttpServer::listen() {
         try {
             const auto body = request.body.empty() ? json::object() : json::parse(request.body);
             const bool enable_remote = body.value("remote_enabled", false);
+            if (enable_remote && !config_.iteration_candidate.empty()) {
+                response.status = 409;
+                response.set_content(json{{"error", "Candidate self-iteration uses a loopback-only server."}}.dump(), "application/json");
+                return;
+            }
             if (enable_remote && remote_api_token().size() < 32) {
                 response.status = 409;
                 response.set_content(json{{"error", "Set ENGCODER_REMOTE_API_TOKEN (32+ characters) and restart before enabling remote serving"}}.dump(), "application/json");
@@ -1826,7 +1831,8 @@ bool HttpServer::listen() {
         response.set_content(json{{"ok", true}, {"session_id", session_id}}.dump(), "application/json");
     });
 
-    if (!http.bind_to_port("0.0.0.0", config_.server_port)) {
+    const char* bind_address = config_.iteration_candidate.empty() ? "0.0.0.0" : "127.0.0.1";
+    if (!http.bind_to_port(bind_address, config_.server_port)) {
         active_.store(nullptr, std::memory_order_release);
         running_.store(false, std::memory_order_release);
         return false;

@@ -1,3 +1,9 @@
+## 0.7.4 Windows release (2026-11-10)
+
+- Windows x64 desktop, server, and CLI built in Debug and Release. CTest passed 65/65 in each configuration, including stale approval, create-only writes, repair escalation, and learning recall. All 16 Web smoke tests and 10 application JavaScript syntax checks passed.
+- The served desktop interface ran a staged, fresh unsigned reservation repair against independent MSVC and CTest checks. The Qwen 3.5 9B model wrote the initial edit. CTest identified a remaining boundary failure and the native runtime handed the unchanged candidate and diagnostics to Qwen 3.8 27B. The stronger model's first revision still failed. Its next approved revision passed all three cases.
+- The visible Edge preview showed the model handoff in Run info and one compiler-and-tests memory in EngCoder Lab. The tests and CMake inputs stayed byte-identical. The two local models used one provider slot sequentially. The run stored a scoped capacity rule as retrieval memory, with no weight update or source ingestion.
+
 ## C++ boundary lab (2026-11-10)
 
 - Windows Debug and Release CLI and test builds passed, with 64/64 CTest cases in both configurations. The CLI ran the live reference lookup, C++23 compilation, repair verification, deduplicated training, and serialized inference.

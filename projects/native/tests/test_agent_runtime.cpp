@@ -26,18 +26,31 @@ namespace {
 class IterationModel final : public engcoder::model::IModelProvider {
 public:
     unsigned turns{};
+    bool boundary{};
+    bool expect_memory{};
+    bool stronger_available{true};
+    std::vector<std::string> models;
     std::expected<engcoder::model::ModelResponse, engcoder::core::Error> complete(
         const engcoder::model::ModelRequest& request) override {
         for (const auto& tool : request.tools) {
             CHECK(tool.at("function").at("name") != "process.run");
         }
         const auto turn = turns++;
+        models.push_back(request.model);
+        if (turn == 0 && boundary) {
+            CHECK((request.messages.front().content.find("Previously verified C++ boundary lesson") != std::string::npos)
+                == expect_memory);
+        }
         if (turn == 2) {
-            CHECK(request.messages.back().content.find("missing fixture symbol") != std::string::npos);
+            CHECK(request.messages.back().content.find(boundary ? "remaining capacity" : "missing fixture symbol") != std::string::npos);
         }
         if (turn % 2 == 0) {
             return engcoder::model::ModelResponse{.tool_calls = {
                 {"unexpected-" + std::to_string(turn), "process.run", {{"executable", "ctest"}}},
+                {"protected-" + std::to_string(turn), "workspace.patch",
+                    {{"path", boundary ? "tests.cpp" : "build/test.cpp"}, {"expected", "old"}, {"replacement", "new"}}},
+                {"overwrite-" + std::to_string(turn), "workspace.write",
+                    {{"path", "fixture.cpp"}, {"content", "unreviewed whole-file overwrite"}}},
                 {"edit-" + std::to_string(turn), "workspace.patch",
                     {{"path", "fixture.cpp"}, {"expected", "old"}, {"replacement", "new"}}},
             }};
@@ -50,7 +63,9 @@ public:
     }
 
     std::expected<engcoder::model::json, engcoder::core::Error> discover() override {
-        return engcoder::model::json{{"reachable", true}};
+        return engcoder::model::json{{"reachable", true}, {"models", engcoder::model::json::array({
+            {{"id", "stronger-fixture"}, {"loaded", stronger_available}}
+        })}};
     }
 };
 
@@ -397,8 +412,20 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     std::ofstream(root / "build" / "CMakeCache.txt") << "CMAKE_HOME_DIRECTORY:INTERNAL=" << source.generic_string() << '\n';
     const bool deny = GENERATE(false, true);
     const bool keep_failing = GENERATE(false, true);
+    const bool boundary = GENERATE(false, true);
+    const bool stronger_available = GENERATE(false, true);
+    const bool changed_while_pending = GENERATE(false, true);
+    std::ofstream(root / "fixture.cpp") << "original";
+    if (boundary) {
+        config.iteration_boundary_source = "fixture.cpp";
+        config.iteration_boundary_rule = "capacity";
+        config.iteration_escalation_model = "stronger-fixture";
+        std::ofstream(root / "tests.cpp") << "unchanged";
+    }
 
     IterationModel model;
+    model.boundary = boundary;
+    model.stronger_available = stronger_available;
     decision::DeterministicDecisionEngine decisions;
     models::ModelRegistry models(config, config.data_root);
     residency::ModelResidencyManager residency;
@@ -410,8 +437,10 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     unsigned edits = 0;
     std::vector<std::string> checks;
     tools.add({{"workspace.patch", "fixture edit", core::json::object()},
-        [&](const core::json&, const tools::Context&) -> std::expected<core::json, core::Error> {
+        [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
             ++edits;
+            CHECK(args.at("path") == "fixture.cpp");
+            if (boundary) std::ofstream(root / "fixture.cpp") << "edited " << edits;
             return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
         }});
     tools.add({{"process.run", "fixture process", core::json::object()},
@@ -419,38 +448,81 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             const auto command = args.at("executable").get<std::string>();
             checks.push_back(command);
             if (command == "ctest") CHECK(args.at("arguments").back() == "--no-tests=error");
+            if (boundary) {
+                const bool fails = command == "ctest" && (checks.size() <= 4 || keep_failing);
+                return core::json{{"exit_code", fails ? 8 : 0}, {"timed_out", false}, {"cancelled", false},
+                    {"stdout", fails ? "Test #1: capacity .... ***Failed\nremaining capacity" : "passed"}};
+            }
             return core::json{{"exit_code", checks.size() == 1 || keep_failing ? 1 : 0},
                 {"timed_out", false}, {"cancelled", false}, {"stderr", "missing fixture symbol"}};
         }});
     persistence::SessionStore store(config.data_root / "iteration.db");
     core::EventBus events;
     agent::AgentRuntime runtime(config, model, addons, controller, models, residency, training, learning, tools, store, events);
+    unsigned recalled = 0;
     const auto subscription = events.subscribe([&](const core::Event& event) {
         if (event.type == "task.awaiting_approval") {
+            CHECK(event.data.at("tool") == "workspace.patch");
+            if (changed_while_pending) std::ofstream(root / "fixture.cpp") << "newer operator content";
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }
+        if (event.type == "iteration.lesson_reused") ++recalled;
     });
     const auto result = runtime.run({.project_id = "candidate", .session_id = "iteration",
         .task_id = "iteration-task", .user_message = "Update the fixture source.",
         .include_history = false, .wait_for_approval = true, .self_iteration = true});
-    events.unsubscribe(subscription);
-
     if (foreign_source || deny) {
         CHECK_FALSE(result);
         CHECK(edits == 0);
-        CHECK(checks.empty());
+        if (boundary && !foreign_source) CHECK(checks == std::vector<std::string>{"cmake", "ctest"});
+        else CHECK(checks.empty());
         CHECK(model.turns == (foreign_source ? 0u : 2u));
+    } else if (changed_while_pending) {
+        REQUIRE_FALSE(result);
+        CHECK(result.error().code == core::make_error_code(core::Errc::workspace_violation));
+        CHECK(result.error().message.find("changed while approval was pending") != std::string::npos);
+        CHECK(edits == 0);
+        std::string content;
+        std::getline(std::ifstream(root / "fixture.cpp"), content);
+        CHECK(content == "newer operator content");
     } else if (keep_failing) {
         REQUIRE_FALSE(result);
         CHECK(result.error().code == core::make_error_code(core::Errc::iteration_limit));
         CHECK(edits == 3);
-        CHECK(checks == std::vector<std::string>{"cmake", "cmake", "cmake"});
+        if (boundary) CHECK(checks.size() == 8);
+        else CHECK(checks == std::vector<std::string>{"cmake", "cmake", "cmake"});
     } else {
         REQUIRE(result);
         CHECK(result->final_text == "Candidate change summary");
         CHECK(edits == 2);
-        CHECK(checks == std::vector<std::string>{"cmake", "cmake", "ctest"});
+        if (boundary) {
+            CHECK(checks == std::vector<std::string>{"cmake", "ctest", "cmake", "ctest", "cmake", "ctest"});
+            const auto recent = learning.recent().at("items");
+            REQUIRE(recent.size() == 1);
+            CHECK(recent[0].at("deterministic_verified") == true);
+            CHECK(recent[0].at("eligible_for_training") == false);
+        } else CHECK(checks == std::vector<std::string>{"cmake", "cmake", "ctest"});
     }
+    if (boundary && !foreign_source && !deny && !changed_while_pending) {
+        REQUIRE(model.models.size() >= 4);
+        CHECK(model.models[0] == "fixture-model");
+        CHECK(model.models[1] == "fixture-model");
+        CHECK(model.models[2] == (stronger_available ? "stronger-fixture" : "fixture-model"));
+    }
+    if (!result) CHECK(learning.recent().at("items").empty());
+    if (result && boundary) {
+        std::ofstream(root / "fixture.cpp") << "original";
+        model.turns = 0;
+        model.expect_memory = true;
+        checks.clear();
+        const auto repeated = runtime.run({.project_id = "candidate", .session_id = "iteration-second",
+            .task_id = "iteration-repeat", .user_message = "Check a second boundary fixture.",
+            .include_history = false, .wait_for_approval = true, .self_iteration = true});
+        REQUIRE(repeated);
+        CHECK(recalled == 1);
+        CHECK(learning.recent().at("items").size() == 1);
+    }
+    events.unsubscribe(subscription);
 }
 
 TEST_CASE("agent runtime emits weighted tool review telemetry before execution") {
