@@ -2,6 +2,28 @@
 
 EngCoder owns the model lifecycle; the included Python/PyTorch worker performs numerical tensor work behind a native C++ scheduling boundary.
 
+## C++ boundary repair lab
+
+Run from an EngCoder checkout with Python 3.8 or later, CMake, and a C++23 compiler. Choose a new output directory for each experiment.
+
+```powershell
+EngCoderCLI --boundary-lab train out/boundary-experiment
+EngCoderCLI --boundary-lab teacher out/boundary-experiment http://127.0.0.1:39463 local-model-id
+EngCoderCLI --boundary-lab route --help
+```
+
+`train` looks up three fixed C++ draft sections, records the URL, retrieval time and response hash, and retains authored notes instead of raw web content. It generates English descriptions and original C++ repair options for inclusive clamp, signed indexing, closed ranges, and unsigned capacity arithmetic. CMake compiles the authored options. The executable tests them against independently calculated boundary expectations, requiring a failing original and exactly one passing replacement in each case. External answers are treated only as A/B/C/D choices.
+
+The optimizer deduplicates equivalent option sets before fitting the ranker. The serialized candidate has 56 single-precision learned weights and a four-byte version header, for 228 bytes. Held-out prompts change code structure and problem wording, and are scored after the artifact reloads. All cases still belong to the four supported families. This benchmark measures repair selection among supplied options.
+
+To score teachers during the same command, append `--teacher http://127.0.0.1:39463 local-model-id` for each available local endpoint. Set `ENGCODER_BOUNDARY_TEACHER_TOKEN` in the invoking environment if the endpoint requires it. Only loopback is accepted. A refused, malformed or unavailable answer is reported separately from a wrong letter.
+
+The separate `teacher --constrained` mode requests llama.cpp's four-letter grammar and disables template thinking. It reports a separate score for selection under a constrained decoder so answer-format and token-limit effects can be examined alongside the plain-prompt score.
+
+`report.json` shows the learned and untrained scores, and the exhaustive verifier ceiling. `training-evidence.json` records the concrete repairs and test receipts. Each teacher has a separate report. `--boundary-lab suggest --help` explains how to try a saved ranker on four supplied C++ bodies. Keep the ranker alongside its `report.json` for checksum verification. It produces a suggestion for verification. The lab keeps the main Foundation and active addons untouched and makes no general English or unrestricted code-generation claim.
+
+`route` replays a named held-out case and compiles fresh probes. Like Epoch's self-iteration routing, it separates a failed verification from a missing model or response, and it keeps verification authoritative across every tier. A passing local repair ends the request before contacting a teacher. If the repair fails, repeat `--fallback LOOPBACK_URL MODEL` with up to two already configured models, smallest capable tier first. The lab calls each listed model at most once, and only if its endpoint advertises it. Teacher output can choose an authored option but cannot supply executable code or override the probes. The result records every attempted lane and either returns a verified repair or reports that no tier produced one.
+
 ## Scratch model profiles
 
 `desktop-16gb` is the intended serious single-GPU profile for this architecture. These are **scratch-model architecture sizes**, not LM Studio model/download sizes. Current measured profiles are:

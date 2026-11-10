@@ -179,6 +179,12 @@ if(ENGCODER_BUILD_TESTS)
         PROPERTIES TIMEOUT 30
     )
     set_target_properties(engcoder_tests PROPERTIES FOLDER "Tests")
+    find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME boundary_lab_routing
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_boundary_lab.py")
+        set_tests_properties(boundary_lab_routing PROPERTIES TIMEOUT 30)
+    endif()
 endif()
 
 set(_engcoder_install_targets engcoder_core engcoder_client engcoder_runtime engcoder_server engcoder_cli)

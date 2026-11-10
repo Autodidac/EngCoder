@@ -1,9 +1,12 @@
 #include "engcoder/core/config.hpp"
 #include "engcoder/model/lm_studio_provider.hpp"
+#include "engcoder/process/process.hpp"
 #include "engcoder/runtime/runtime_host.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -59,6 +62,29 @@ int run_doctor(bool json_output) {
     if (json_output) std::cout << discovery->dump(2) << '\n';
     else print_doctor(config, *discovery);
     return 0;
+}
+
+int run_boundary_lab(int argc, char** argv) {
+    const auto config = engcoder::core::Config::from_environment();
+    const auto worker = std::filesystem::absolute(config.training_backend).parent_path() / "boundary_lab.py";
+    if (!std::filesystem::is_regular_file(worker)) {
+        std::cerr << "C++ boundary lab worker was not found at " << worker.string() << '\n';
+        return 2;
+    }
+    engcoder::process::Request request;
+    request.executable = config.python_executable;
+    request.arguments.push_back(worker.string());
+    for (int i = 2; i < argc; ++i) request.arguments.emplace_back(argv[i]);
+    request.working_directory = std::filesystem::current_path();
+    request.timeout = std::chrono::minutes{20};
+    const auto result = engcoder::process::run(request);
+    if (!result) {
+        std::cerr << result.error().message << '\n';
+        return 2;
+    }
+    std::cout << result->stdout_text;
+    std::cerr << result->stderr_text;
+    return result->timed_out || result->cancelled ? 2 : result->exit_code;
 }
 
 int run_prompt(
@@ -141,6 +167,7 @@ void print_help() {
         << "  EngCoderCLI <prompt...>     Run a one-shot EngCoder task\n"
         << "  EngCoderCLI --doctor        Diagnose Bionic/LM Studio backend\n"
         << "  EngCoderCLI --doctor --json Machine-readable backend discovery\n"
+        << "  EngCoderCLI --boundary-lab --help  C++ repair research, training, and evaluation\n"
         << "  EngCoderCLI --help          Show this help\n\n"
         << "Interactive commands: /new, /doctor, /help, /quit\n";
 }
@@ -189,6 +216,7 @@ int main(int argc, char** argv) {
             const bool json_output = argc > 2 && std::string_view{argv[2]} == "--json";
             return run_doctor(json_output);
         }
+        if (first == "--boundary-lab") return run_boundary_lab(argc, argv);
 
         engcoder::runtime::RuntimeHost runtime;
         auto session_id = engcoder::runtime::make_session_id("cli-oneshot");

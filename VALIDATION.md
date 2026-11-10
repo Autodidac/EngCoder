@@ -1,3 +1,11 @@
+## C++ boundary lab (2026-11-10)
+
+- Windows Debug and Release CLI and test builds passed, with 64/64 CTest cases in both configurations. The CLI ran the live reference lookup, C++23 compilation, repair verification, deduplicated training, and serialized inference.
+- Four verified option sets remained after deduplicating 64 compiler-checked training cases. The 56-weight candidate occupied 228 bytes, below its 256-byte cap. It selected 16/16 correct repairs on the fresh split versus 4/16 for the zero-weight tie-break baseline. Exhaustive verification also passed 16/16. The fresh split changes syntax, values, context nouns and option positions within the four known families.
+- On the identical 16 prompts with an A–D decoder grammar, local Qwen 3.5 9B scored 12/16 and Qwen 3.8 27B scored 16/16. Both returned all 16 choices. With plain prompts, the 27B also scored 16/16 and the 9B scored 10/16 with six responses stopped at the output limit.
+- The CLI selected the strict upper bound for a new zero-based index example and rejected a wrong-size artifact. A verified local clamp choice made no teacher call. The same clamp with zero weights failed two probes, skipped a missing advertised model, then accepted a live 27B choice after independent verification.
+- Scope: four known repair families, authored choices, and three fixed public C++ draft references. No unrestricted code generation, conversational English, or active Foundation or addon weight promotion was exercised.
+
 ## 0.7.3 Candidate self-iteration (2026-11-10)
 
 - Windows VS2022 x64 Debug and Release builds passed. CTest passed 62/62 in each configuration. The new native test covers approved repair, denied edits, an out-of-candidate cache, and exhausting the two-repair limit.
