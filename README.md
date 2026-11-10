@@ -34,6 +34,8 @@ MCP is deliberately not advertised as an inference endpoint. EngCoder can call c
 
 ## Architecture
 
+**Architect** is the System 1 controller. It handles routing, retrieval, capability selection, escalation, and stopping. The native runtime enforces tool policy and verifies results. **KeyMaker** is EngCoder's local model and training family. The Foundation handles English and reasoning, and the addons specialize in tasks such as C++23. A configured external model can fill the Foundation role while keeping its weights separate.
+
 ```text
 User
   |
@@ -65,6 +67,12 @@ NVMe -> system RAM warm cache -> GPU VRAM hot set
 ```
 
 EngCoder now supports both forms without conflating them: internal KeyMaker capability modularity remains lane/component based, while `qwenflash://` foundation profiles can use a true sparse/MoE GGUF runtime with a bounded VRAM expert cache. Architect, tools, memory, verification, addons, and context policy remain above both model implementations.
+
+### Related Epoch terminology
+
+In Epoch's AI design, **DAVID** (Dynamic Agent Verification and Intelligence Development) is the umbrella framework for learning and verification. **Architect 1** handles fast routing and orchestration, the role most directly shared with EngCoder. **ELA** (Experiential Learning Architecture) is a planned predictive component that would help Architect 1 choose actions. **ADAM** (Adaptive Dynamics and Associative Memory) is the neuromorphic research role. One proposed use is to give background characters cheaper behaviors when a scene nears its processing budget, while keeping those characters in the world.
+
+EngCoder is a separate application. Its model training and evaluation work overlaps with Epoch's **KeyMaker Trainer**, the planned small-model trainer for ELA, ADAM, and **NEO** (Neural Evolution Operator). NEO is Epoch's planned English and C++ model role. EngCoder uses KeyMaker more broadly for its Foundation, addons, and training. DAVID, ELA, ADAM, and NEO describe Epoch's design rather than installed EngCoder components.
 
 ## Default local model target
 
@@ -156,15 +164,23 @@ The diagnostic ImGui fallback uses modern Windows UI/font candidates, SDL high-p
 
 Remote serving is **off by default**. Enabling it exposes the same EngCoder runtime and tool surface to other devices on the local network; use it only on a trusted LAN. The Serve remotely switch and provider-credential updates can only be changed from a loopback/local EngCoder page.
 
+### Candidate self-iteration
+
+1. Prepare a separate checkout with a configured CMake build and tests. Launch EngCoder against that checkout using the [candidate setup guide](docs/SELF_ITERATION.md).
+2. In **EngCoder Lab → Runtime**, enable **Use candidate self-iteration for the next send** and give it one specific coding task.
+3. Review the exact before-and-after patch in chat and use **Approve once** for each edit you want applied. If the file changes while approval is pending, review a fresh patch.
+
+EngCoder checkpoints approved edits and runs the build and tests. A failing check can trigger up to two repair attempts, with fresh approval for each edit. **Run info** shows the checks and any switch to a configured stronger model. Review the passing candidate diff before bringing it into your main checkout.
+
 ## Build
 
 Windows:
 
 ```powershell
 .\auto.bat
+```
 
 Root helpers are also available: `build.bat` / `build.sh` (build only), `check.bat` / `check.sh` (build + tests), `run.bat` / `run.sh` (build + run), and `clean.bat` / `clean.sh` (remove generated build output). All delegate to the same canonical build flow.
-```
 
 Linux:
 

@@ -430,8 +430,7 @@ async function resolveTaskApproval(state, approved, container) {
   }
 }
 
-async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole = '') {
-  const candidateIteration = $('candidateIteration');
+async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole = '', candidateRun = false) {
   const addonsEnabled = $('enableAddons')?.checked !== false;
   const addonModels = {};
   const mappings = [
@@ -451,7 +450,7 @@ async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole
     project_id: 'web',
     session_id: sessionId,
     message,
-    self_iteration: candidateIteration?.checked === true,
+    self_iteration: candidateRun,
     foundation_model: $('foundationModel')?.value || '',
     simple_model: $('simpleResponseModel')?.value || '',
     retry_model: retryModel,
@@ -499,7 +498,8 @@ async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.error || `EngCoder task submission failed: HTTP ${response.status}`);
   if (!payload?.task_id || !payload?.session_id) throw new Error('EngCoder task submission returned an invalid response.');
-  if (requestPayload.self_iteration) candidateIteration.checked = false;
+  const candidateControl = $('candidateIteration');
+  if (candidateRun && candidateControl) candidateControl.checked = false;
   return payload;
 }
 
@@ -558,22 +558,8 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
         } else if (event.type === 'tool.requested') {
           setStatus(`Tool: ${event.data?.name || 'request'}`, 'busy');
         } else if (event.type === 'tool.approval_required') {
-          // Render the approval controls as soon as the review event arrives.
-          // task.awaiting_approval follows this event, but using the first event
-          // avoids a dead-looking pause if polling is interrupted between them.
-          assistantState.approvalRequest = {
-            taskId: String(event.task_id || submission.task_id || ''),
-            callId: String(event.data?.id || ''),
-            tool: String(event.data?.name || 'tool'),
-            arguments: event.data?.arguments && typeof event.data.arguments === 'object' ? event.data.arguments : {},
-            reason: String(event.data?.reason || ''),
-            reviewer: String(event.data?.reviewer || ''),
-            pending: false,
-            submitted: false,
-            error: ''
-          };
-          showError('');
-          setStatus('Approval required', 'busy');
+          // The runtime registers the call after this policy event.
+          setStatus('Preparing approval', 'busy');
         } else if (event.type === 'task.awaiting_approval') {
           const priorApproval = assistantState.approvalRequest || {};
           assistantState.approvalRequest = {
@@ -665,6 +651,7 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
 }
 
 function finalizeAssistantState(state, timing, reason, modelName) {
+  state.approvalRequest = null;
   const completedAt = Date.now();
   const totalMs = Math.max(0, completedAt - timing.startedAt);
   const genMs = timing.firstContentAt ? Math.max(0, completedAt - timing.firstContentAt) : 0;
@@ -788,6 +775,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
   if (!chat) return;
 
   const wasEditing = editingMessageIndex >= 0 && editingMessageIndex < chat.messages.length;
+  const candidateRun = !regenerate && $('candidateIteration')?.checked === true;
   const text = String(promptEl.value || '').trim();
   const attachments = pendingAttachments.map(attachment => ({ ...attachment }));
 
@@ -806,10 +794,14 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
     const selectedIndex = Number.isInteger(targetIndex) && targetIndex >= 0 ? targetIndex :
       chat.messages.findLastIndex(message => message?.role === 'assistant');
     if (selectedIndex < 0 || chat.messages[selectedIndex]?.role !== 'assistant') return;
+    const prior = chat.messages[selectedIndex];
+    if (isCandidateReply(prior)) {
+      showError('Start a fresh candidate run from EngCoder Lab to review and approve new edits.');
+      return;
+    }
     if (selectedIndex < chat.messages.length - 1) {
       if (!window.confirm('Retry this response? Messages after it will be discarded.')) return;
     }
-    const prior = chat.messages[selectedIndex];
     retryModel = String(prior.respondingModel || prior.completionModel || '').trim();
     retryRole = prior.respondingRole === 'small-response' ? 'small-response' : 'keymaker-foundation';
     if (retryModel === 'KeyMaker Foundation' || retryModel === 'KeyMaker' || retryModel === 'auto') retryModel = '';
@@ -863,6 +855,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
     taskStartedAtMs: Date.now(),
     thinkingLabel: 'Working',
     completionState: 'Running',
+    candidateIteration: candidateRun,
     sourcePrompt: String(latestUserMessage.content || ''),
     respondingModel: retryModel,
     respondingRole: retryRole,
@@ -895,7 +888,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
   setStatus('Sending', 'busy');
 
   try {
-    const submission = await submitEngCoderTask(runtimeSessionId, taskText, retryModel, retryRole);
+    const submission = await submitEngCoderTask(runtimeSessionId, taskText, retryModel, retryRole, candidateRun);
     activeEngCoderTaskId = submission.task_id;
     activeEngCoderSessionId = submission.session_id;
     assistantState.runtimeTaskId = submission.task_id;
@@ -937,7 +930,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
       updateAssistantMessage(assistantBody, assistantState);
       storeAssistant();
       setStatus('Error', 'error');
-      showError(String(error?.message || error), { retry: true });
+      showError(String(error?.message || error), { retry: !isCandidateReply(assistantState) });
     }
   } finally {
     activeEngCoderTaskId = null;

@@ -826,8 +826,9 @@ function renderAssistantBody(container, message) {
       const feedbackStatus = document.createElement('span');
       feedbackStatus.className = 'assistant-feedback-status';
       feedbackStatus.hidden = !isCandidateReply(message);
-      if (!feedbackStatus.hidden) feedbackStatus.textContent = 'Candidate review · excluded from learning';
-      actions.append(regen, copyBtn);
+      if (!feedbackStatus.hidden) feedbackStatus.textContent = 'Candidate reply · chat feedback unavailable';
+      if (!isCandidateReply(message)) actions.append(regen);
+      actions.append(copyBtn);
       const canLearn = canSaveAssistantForLearning(message);
       if (canLearn) actions.append(verifyBtn);
       if (canLearn && message?.verifiedForLearning === true) {
