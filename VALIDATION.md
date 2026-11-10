@@ -1,3 +1,7 @@
+## Candidate UI follow-up (2026-11-10)
+
+- Web regression tests cover candidate replies with persisted flags or legacy activity provenance, ordinary retries while the candidate switch is armed, approval event ordering, and removal of the approval card at terminal completion. This follow-up changes the shared frontend and documentation only.
+
 ## 0.7.4 Windows release (2026-11-10)
 
 - Windows x64 desktop, server, and CLI built in Debug and Release. CTest passed 65/65 in each configuration, including stale approval, create-only writes, repair escalation, and learning recall. All 16 Web smoke tests and 10 application JavaScript syntax checks passed.

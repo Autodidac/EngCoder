@@ -58,7 +58,7 @@ const selects = {
   thinkingMode:{value:'auto'}, controllerModel:{value:''}, forcedAddon:{value:''},
   autoRouting:{checked:true}, enableAddons:{checked:false}, system:{value:''},
   temperature:{value:0.15}, max_tokens:{value:-1}, includeHistory:{checked:true},
-  maxHistoryTurns:{value:0}
+  maxHistoryTurns:{value:0}, candidateIteration:{checked:true}
 };
 const routing = vm.createContext({
   $:id=>selects[id] ?? null, controller:null, engcoderBase:()=> 'http://localhost:14321',
@@ -68,7 +68,12 @@ vm.runInContext(api.slice(fnStart, fnEnd) + '\nthis.submit=submitEngCoderTask;',
 (async()=>{
   await routing.submit('s','retry large', 'lmstudio://large','keymaker-foundation');
   assert.equal(sent.retry_model,'lmstudio://large');
+  assert.equal(sent.self_iteration,false);
+  assert.equal(selects.candidateIteration.checked,true);
   assert.equal(sent.foundation_model,'lmstudio://large');
+  await routing.submit('s','explicit candidate run', '', '', true);
+  assert.equal(sent.self_iteration,true);
+  assert.equal(selects.candidateIteration.checked,false);
   assert.equal(sent.simple_model,'lmstudio://tiny');
   selects.simpleResponseModel.value='lmstudio://another';
   await routing.submit('s','retry small','lmstudio://tiny','small-response');
