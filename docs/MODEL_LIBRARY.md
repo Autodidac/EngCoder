@@ -162,3 +162,12 @@ A clean machine can instead set `ENGCODER_QWEN_FLASH_SERVER` to a compatible pin
 ## External provider and native model roles
 
 LM Studio weights are managed in LM Studio, not in EngCoder's native Model Library. EngCoder's external endpoint defaults to `http://127.0.0.1:1234` on the **EngCoder host** and can be overridden by `ENGCODER_MODEL_SERVER_URL`. The small responder and middle reviewer are role assignments to two *different* discovered external models. The internal Qwen Foundation is not modified by **Assign small + middle**. The Web UI may be served from a separate computer, but model inference and routing are still performed by the native host. See [SUBAGENTS_QUICKSTART.md](SUBAGENTS_QUICKSTART.md). The Qwen GPU slider is 0–100% of its configured safe *layer* budget. Historical percentage migrations above describe upgrades only; the UI no longer shows those old scales.
+
+## Reusing Qwen Next Flash weights stored in EpochEngine (0.7.1 follow-up)
+
+EngCoder Lab → Models → Qwen Next Flash → **Use existing GGUF…**.
+Use Windows File Explorer’s **Copy as path** on the existing `.gguf` file in EpochEngine (for a split model, any shard is accepted). Paste the absolute path, choose **Link weights**, and then **Load** on the same model card. No weight files are moved, copied, or downloaded. Linking changes only the saved EngCoder model-profile path and source, while preserving all GPU, context, and runtime tuning. If the model is currently running, unload/reload explicitly to apply the linked path.
+
+`POST /api/engcoder/model-library/link-local` with JSON `{ "model": "qwenflash://qwen3.8-flash-next-ud-q2-k-xl", "path": "C:\\...\\model-00001-of-00003.gguf" }` performs the same operation for localhost clients. The native backend validates the file, required split shards, and approximate weight size before persisting the profile; missing, incomplete, or projector-only files are rejected without altering the existing source. External weights cannot be deleted through EngCoder’s cache-clearing or model-weight-deletion actions.
+
+The browser cannot provide the absolute Windows path through an HTML file picker, so the in-card editor uses File Explorer's **Copy as path** rather than a misleading Browse button.

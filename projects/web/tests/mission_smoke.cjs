@@ -34,6 +34,8 @@ for (const script of ['mission_data.js', 'missions.js']) {
 const allCount = Number(els.missionCount.textContent);
 assert.ok(allCount > 15, 'older missions should be carried forward');
 assert.equal(els.missionList.children.length, allCount);
+const register = fs.readFileSync(path.resolve(root, '../../docs/FUTURE_MISSIONS.md'), 'utf8');
+assert.equal(allCount, [...register.matchAll(/^- \[ \] /gm)].length, 'every open mission must reach the viewer');
 els.quickMissions.trigger('click');
 assert.ok(els.missionsDialog.open);
 assert.ok(els.missionSearch.focused);

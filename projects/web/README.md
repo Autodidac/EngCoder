@@ -10,6 +10,10 @@ The frontend deliberately preserves the original BotFace-derived chat experience
 
 JavaScript talks only to the native EngCoder runtime API. It never connects directly to LM Studio or owns a competing supervisor/worker agent loop. `deno/` is optional development hosting only.
 
+## Reuse existing EpochEngine Qwen GGUF weights
+
+In **EngCoder Lab → Models**, find **Qwen3.8 Flash Next**, click **Use existing GGUF…**, paste the absolute model file path copied from Windows File Explorer (**Copy as path**), and press **Link weights**. EngCoder validates the file and the rest of its split shards, then saves the path into this model's profile. Click **Load** to launch it. No model download, copy, or relocation is performed. If the runtime is already loaded, unload and reload to apply the new path.
+
 ## Model Library (0.6+)
 
 EngCoder Lab > Models includes the native Model Library for downloadable/imported runtime models. Qwen Flash profiles expose populated recommended settings rather than blank knobs: model source/quant, total context, slots/effective context, automatic compaction, batching, KV placement/types, MoE cache budgets, mmap/lazy policy, and optional MTP speculation. The browser only calls the native EngCoder model-library API; model downloads and runtime processes are owned by the C++ runtime, never by browser JavaScript.

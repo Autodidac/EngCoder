@@ -568,6 +568,62 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::register_model(co
     }
 }
 
+std::expected<nlohmann::json, core::Error> NativeModelManager::link_local_gguf(
+    std::string_view id_or_uri, const std::filesystem::path& existing_file) {
+    // Validate the path before modifying the saved profile. This never copies,
+    // downloads, renames, or removes the original file(s).
+    auto normalized = normalize_local_gguf_path(existing_file);
+    if (!normalized) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::invalid_argument), normalized.error()});
+    }
+
+    std::scoped_lock lock(mutex_);
+    auto existing = find_locked(id_or_uri);
+    if (!existing) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::model_unavailable),
+            "Unknown native model: " + std::string{id_or_uri}});
+    }
+    if (install_state_.value("state", std::string{"idle"}) == "installing") {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::process_failed),
+            "Wait for the model download to finish before linking local weights"});
+    }
+
+    auto bytes = local_gguf_set_bytes(*normalized);
+    if (!bytes) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::invalid_argument), bytes.error()});
+    }
+    if (existing->estimated_bytes > 0 &&
+        *bytes < existing->estimated_bytes - existing->estimated_bytes / 10U) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::invalid_argument),
+            "Local GGUF is smaller than 90% of the expected model size; "
+            "check that this is the complete matching quantization and all split shards are present"});
+    }
+
+    auto linked = *existing;
+    linked.source = ModelSourceKind::local_gguf;
+    linked.local_path = *normalized;
+    // The active process remains unchanged until an explicit unload/load.
+    const bool active = qwen_flash_.running() && qwen_flash_.active_model_id() == linked.id;
+    try {
+        save_profile(linked);
+        load_profiles_locked();
+    } catch (const std::exception& error) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::process_failed), error.what()});
+    }
+    auto result = to_json(linked);
+    result["linked"] = true;
+    result["verified_bytes"] = *bytes;
+    result["runtime_reload_required"] = active;
+    result["active_runtime_unchanged"] = active;
+    return result;
+}
+
 void NativeModelManager::set_install_state(nlohmann::json state) {
     std::scoped_lock lock(mutex_);
     install_state_ = std::move(state);

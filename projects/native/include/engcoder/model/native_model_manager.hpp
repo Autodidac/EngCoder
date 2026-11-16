@@ -33,6 +33,9 @@ public:
     [[nodiscard]] std::vector<RuntimeModelProfile> models() const;
     [[nodiscard]] std::optional<RuntimeModelProfile> find(std::string_view id_or_uri) const;
     [[nodiscard]] std::expected<nlohmann::json, core::Error> register_model(const nlohmann::json& spec);
+    // Reference existing GGUF weights in place, preserving all runtime tuning.
+    [[nodiscard]] std::expected<nlohmann::json, core::Error> link_local_gguf(
+        std::string_view id_or_uri, const std::filesystem::path& existing_file);
     [[nodiscard]] std::expected<nlohmann::json, core::Error> install(std::string_view id_or_uri);
     [[nodiscard]] std::expected<nlohmann::json, core::Error> provision_runtime();
     [[nodiscard]] std::expected<nlohmann::json, core::Error> remove(std::string_view id_or_uri, bool delete_cache);

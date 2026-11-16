@@ -818,6 +818,36 @@ bool HttpServer::listen() {
         }
     });
 
+    http.Post("/api/engcoder/model-library/link-local", [this](const httplib::Request& request, httplib::Response& response) {
+        if (!is_loopback_client(request.remote_addr)) {
+            response.status = 403;
+            response.set_content(json{{"error", "Linking local model files is local-only."}}.dump(), "application/json");
+            return;
+        }
+        try {
+            const auto body = request.body.empty() ? json::object() : json::parse(request.body);
+            const auto model = body.value("model", std::string{});
+            const auto path = body.value("path", std::string{});
+            if (model.empty() || path.empty()) {
+                response.status = 400;
+                response.set_content(json{{"error", "Select a model and paste the full GGUF file path."}}.dump(), "application/json");
+                return;
+            }
+            auto result = native_models_.link_local_gguf(model, std::filesystem::path{path});
+            if (!result) {
+                response.status = 400;
+                response.set_content(json{{"error", result.error().message}}.dump(), "application/json");
+                return;
+            }
+            models_.refresh();
+            residency_.sync(models_);
+            response.set_content(result->dump(), "application/json");
+        } catch (const std::exception& error) {
+            response.status = 400;
+            response.set_content(json{{"error", error.what()}}.dump(), "application/json");
+        }
+    });
+
     http.Post("/api/engcoder/model-library/runtime/install", [this](const httplib::Request& request, httplib::Response& response) {
         if (!is_loopback_client(request.remote_addr)) {
             response.status = 403;

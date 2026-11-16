@@ -604,3 +604,75 @@ TEST_CASE("broken built-in manifest is preserved instead of being overwritten wi
     REQUIRE(persisted.good());
     CHECK(std::string(std::istreambuf_iterator<char>(persisted), {}) == corrupted);
 }
+
+TEST_CASE("linking existing EpochEngine GGUF preserves tuned profile and never moves weights") {
+    TempTree temp{unique_temp_root("engcoder-epochengine-shared-gguf")};
+    const auto external = temp.root / "EpochEngine" / "models";
+    std::filesystem::create_directories(external);
+    const auto first = external / "Qwen-00001-of-00002.gguf";
+    const auto second = external / "Qwen-00002-of-00002.gguf";
+    {
+        std::ofstream a(first, std::ios::binary);
+        std::ofstream b(second, std::ios::binary);
+        a << "first-shard";
+        b << "second-shard";
+    }
+
+    engcoder::core::Config config;
+    config.workspace = temp.root / "workspace";
+    config.data_root = temp.root / "state";
+    config.model_root = config.data_root / "models";
+    config.model_cache_root = config.data_root / "model-cache";
+    config.qwen_flash_enabled = false;
+
+    {
+        engcoder::model::NativeModelManager manager(config, config.data_root);
+        auto registered = manager.register_model({
+            {"id", "qwen-custom"},
+            {"display_name", "Qwen Custom"},
+            {"source", "hugging-face"},
+            {"repo", "owner/Qwen-custom"},
+            {"quant", "UD-Q2_K_XL"},
+            {"estimated_bytes", 0ULL},
+            {"gpu_offload_percent", 99U},
+            {"context_tokens", 98304U},
+            {"parallel_slots", 1U},
+        });
+        REQUIRE(registered.has_value());
+
+        // A rejected path must not modify the old Hugging Face profile.
+        auto invalid = manager.link_local_gguf("qwen-custom", external / "not-found.gguf");
+        REQUIRE_FALSE(invalid.has_value());
+        auto unchanged = manager.find("qwen-custom");
+        REQUIRE(unchanged.has_value());
+        CHECK(unchanged->source == engcoder::model::ModelSourceKind::hugging_face);
+
+        // Linking shard 2 must normalize to shard 1 without copying any shard.
+        const auto quoted = std::string{"\""} + second.string() + "\"";
+        auto linked = manager.link_local_gguf("qwenflash://qwen-custom", quoted);
+        REQUIRE(linked.has_value());
+        CHECK(linked->value("linked", false));
+        CHECK(linked->value("verified_bytes", 0ULL) > 0ULL);
+        CHECK(std::filesystem::exists(first));
+        CHECK(std::filesystem::exists(second));
+        auto profile = manager.find("qwen-custom");
+        REQUIRE(profile.has_value());
+        CHECK(profile->local_path == std::filesystem::absolute(first).lexically_normal());
+        CHECK(profile->source == engcoder::model::ModelSourceKind::local_gguf);
+        CHECK(profile->gpu_offload_percent == 99U);
+        CHECK(profile->context_tokens == 98304U);
+        CHECK(profile->repo == "owner/Qwen-custom");
+    }
+    // The linked path and previously tuned configuration survive manager restarts.
+    {
+        engcoder::model::NativeModelManager restarted(config, config.data_root);
+        auto profile = restarted.find("qwen-custom");
+        REQUIRE(profile.has_value());
+        CHECK(profile->source == engcoder::model::ModelSourceKind::local_gguf);
+        CHECK(profile->local_path == std::filesystem::absolute(first).lexically_normal());
+        CHECK(profile->gpu_offload_percent == 99U);
+        CHECK(profile->context_tokens == 98304U);
+        CHECK(std::filesystem::exists(first));
+        CHECK(std::filesystem::exists(second));
+    }
+}

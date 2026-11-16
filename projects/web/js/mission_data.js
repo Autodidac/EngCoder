@@ -25,7 +25,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P0-004",
     "priority": "P0",
     "title": "Windows native build, Qwen reload, offload and MTP end-to-end",
-    "details": "Capture compiler/test outputs and confirmed GPU residency. Verify Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, and negative test for incompatible MTP.",
+    "details": "Capture compiler/test outputs and confirmed GPU residency. Verify Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, and negative test for incompatible MTP. On a real split GGUF, verify the model card can link the shards in place, keep the active model running until explicit reload, and use the new path after reload.",
     "status": "open"
   },
   {
@@ -172,6 +172,34 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P2-025",
     "priority": "P2",
     "title": "Document local data retention, sensitive raw event/redaction policy and multi-user separation before remote enablement",
+    "details": "",
+    "status": "open"
+  },
+  {
+    "id": "P1-026",
+    "priority": "P1",
+    "title": "On Windows with LM Studio 9B + 27B and native Qwen loaded, confirm JSON-validated work handoffs and routine C++23 direct routing, including rejection of reasoning-only or token-limit-truncated specialist replies. Confirm automatic small specialist fallback (with no dedicated addon assignment) finishes and the middle reviewer sees its checklist before KeyMaker responds. Confirm no duplicate small-model request on multi-skill refactoring prompts",
+    "details": "",
+    "status": "open"
+  },
+  {
+    "id": "P1-027",
+    "priority": "P1",
+    "title": "Verify math/quantitative and sensitive tasks go directly to KeyMaker, with real provider traces rather than heuristic assumptions",
+    "details": "",
+    "status": "open"
+  },
+  {
+    "id": "P1-028",
+    "priority": "P1",
+    "title": "Verify served-mode authenticated Web client runs the same three model roles and preserves the correct final responder and per-stage success/failure over refresh/retry",
+    "details": "",
+    "status": "open"
+  },
+  {
+    "id": "P1-029",
+    "priority": "P1",
+    "title": "Add per-model observed VRAM/RAM preflight, resource budgets, provider capability probing, concurrent subagent scheduling, and fully isolated tool runtimes before claiming unrestricted multiagent safety",
     "details": "",
     "status": "open"
   }

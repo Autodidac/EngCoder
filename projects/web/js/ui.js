@@ -697,6 +697,21 @@ $('nativeModelLibrary')?.addEventListener('click', event => {
   if (!button) return;
   const action = button.dataset.modelAction || '';
   const uri = button.dataset.modelUri || '';
+  if (action === 'link' || action === 'link-cancel') {
+    const card = button.closest('.model-library-card');
+    const panel = card?.querySelector('.model-local-link');
+    if (panel) {
+      panel.hidden = action === 'link-cancel' ? true : !panel.hidden;
+      if (!panel.hidden) panel.querySelector('input')?.focus();
+    }
+    return;
+  }
+  if (action === 'link-save') {
+    const panel = button.closest('.model-local-link');
+    const path = panel?.querySelector('.model-local-link-input')?.value.trim() || '';
+    void runSettingsAction('Linking existing GGUF', () => linkNativeModel(uri, path, panel));
+    return;
+  }
   if (action === 'configure') {
     const model = (nativeModelLibrary?.models || []).find(item => (item.uri || `qwenflash://${item.id}`) === uri);
     if (model) { populateNativeModelForm(model); $('registerNativeModel')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }

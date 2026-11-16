@@ -1,3 +1,9 @@
+## 0.7.5 development baseline (2026-11-15)
+
+- Windows x64 Debug and Release builds passed all 66 native tests each. All 18 Web smoke tests and all application JavaScript syntax checks passed.
+- Compared the October 14 source export against its October 9 base and carried its existing-GGUF profile linking and per-model load override into the November source. The native tests cover profile persistence, split shards, invalid paths, and preservation of GPU settings. The Web tests cover the link controls, candidate approval behavior, and the 50% default GPU setting. These checks use fixtures rather than a live shared model.
+- The Missions viewer now includes all 29 open entries. Four live routing acceptance checks were previously outside the sections consumed by the generator.
+
 ## Candidate UI follow-up (2026-11-10)
 
 - Web regression tests cover candidate replies with persisted flags or legacy activity provenance, ordinary retries while the candidate switch is armed, approval event ordering, and removal of the approval card at terminal completion. This follow-up changes the shared frontend and documentation only.

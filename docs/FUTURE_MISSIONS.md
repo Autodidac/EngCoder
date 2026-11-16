@@ -1,4 +1,4 @@
-# EngCoder future-information and engineering missions (0.7.1)
+# EngCoder engineering missions
 
 Keep all unresolved missions until acceptance evidence is recorded. Status labels describe **work remaining**, not feature promises.
 
@@ -7,7 +7,7 @@ Keep all unresolved missions until acceptance evidence is recorded. Status label
 - [ ] **True process sandbox.** Workspace path checks do not contain `process.run`. Add isolated low-privilege OS principal/container or explicit safe executable allowlist; Windows restricted token/AppContainer policy, no-follow handle traversal and junction protection. Tests: a tool attempting to access files outside the project must be denied; cancel kills descendants.
 - [ ] **Authenticated remote API — partially implemented (requires penetration/Windows verification).** Prevent remote clients from invoking state-changing `/api/tasks`, model management or tool approvals without authentication; verify CSRF/CORS and TLS/proxy setup. Until then bind loopback only.
 - [ ] **MTP capability certification.** Validate draft GGUF tokenizer/architecture/metadata against the internal main model and actual `llama-server` supported switches before presenting Enable. Test known compatible/incompatible pairing on real Qwen; display a clear diagnostic, preserve active model on failure. Do not use LM Studio as cross-process MTP.
-- [ ] **Windows native build, Qwen reload, offload and MTP end-to-end.** Capture compiler/test outputs and confirmed GPU residency. Verify Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, and negative test for incompatible MTP.
+- [ ] **Windows native build, Qwen reload, offload and MTP end-to-end.** Capture compiler/test outputs and confirmed GPU residency. Verify Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, and negative test for incompatible MTP. On a real split GGUF, verify the model card can link the shards in place, keep the active model running until explicit reload, and use the new path after reload.
 - [ ] **Learning Remove + Ban end-to-end — evidence reader and serialized ingestion implemented; in-flight weight-training cancellation remains.** Existing trainer may consume previously captured verified JSONL evidence without rechecking bans. Deny during every training ingestion, retroactive purge/ban, concurrent ingestion safeguards.
 
 ## P1 — session durability, controller and multiagent quality
@@ -54,7 +54,7 @@ The checked boxes above remain open until their complete acceptance criteria pas
 
 For true independent subagents or more sophisticated speculative MTP, first verify provider capabilities, memory cost, cancellation, and security invariants rather than advertising incompatible options. Do not change existing user GPU offload settings during migration.
 
-## 0.6.9 subagent acceptance still required
+## P1 — Live model routing acceptance
 
 - [ ] On Windows with LM Studio 9B + 27B and native Qwen loaded, confirm JSON-validated work handoffs and routine C++23 direct routing, including rejection of reasoning-only or token-limit-truncated specialist replies. Confirm automatic small specialist fallback (with no dedicated addon assignment) finishes and the middle reviewer sees its checklist before KeyMaker responds. Confirm no duplicate small-model request on multi-skill refactoring prompts.
 - [ ] Verify math/quantitative and sensitive tasks go directly to KeyMaker, with real provider traces rather than heuristic assumptions.

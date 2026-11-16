@@ -1,22 +1,18 @@
-# EngCoder 0.7.4
+# EngCoder
 
-**Async UI 1 maintenance:** The right-side inspector opens without waiting for a model-loading API call or a selected assistant message; its expensive content and layout are deferred. Model output/event bursts update in batches and yield for browser paint. This is a UI responsiveness improvement, **not** a second native inference worker, GPU concurrency guarantee, or a change to Qwen loading and offload.
+EngCoder is a local-first English and C++23 assistant with a shared Windows desktop and browser interface. Architect routes requests and chooses tools. KeyMaker provides language, reasoning, and optional capabilities for C++23, documentation, and planning.
 
-**Qwen Live:** The right-side view keeps the last generation visible after completion and through later requests that have not yet produced text. The next provider fragment replaces it. See `VALIDATION.md` and `CHANGELOG.md` for coverage.
+[Windows downloads](https://epoch.adamrushford.chatgpt.site/projects/engcoder#releases) · [Build from source](#build) · [Model setup](docs/MODEL_LIBRARY.md) · [Mission cache](docs/FUTURE_MISSIONS.md)
 
-**0.7.1 release:** Default Qwen GPU layer-offload setting is now 50% for new profiles and Reset/Default controls. The existing 0–100% scale and cap, manually configured percentages, and Qwen Live 2 behavior are unchanged. CMake, vcpkg, Web UI and training-worker version identifiers are synchronized. See [`docs/DEVELOPMENT_0.7.1.md`](docs/DEVELOPMENT_0.7.1.md).
+This guide covers the 0.7.5 development build. See the downloads page for the latest packaged release.
 
-**Current maintenance:** Strict advisory handoff validation and difficulty-gated small-model delegation prevent broken 9B code/reasoning responses from entering KeyMaker context. Basic C++23 examples go straight to KeyMaker; substantial refactors may use small → middle → KeyMaker. See [Three-model quickstart](docs/SUBAGENTS_QUICKSTART.md).
+## Get started
 
-**Previous maintenance:** Three-model default handoffs now reuse a configured small external model for *bounded specialist checklists* when a skill-specific model is unassigned, pass successful advisory output to an independent middle reviewer, and reserve final coding/math/complex responses for KeyMaker. The runtime shows completed stages separately from attempted/fallback ones. Web/native GPU settings use the current safe layer-budget scale without historical conversion text. The **Assign small + middle** control preserves the KeyMaker selection. See [Three-model quickstart](docs/SUBAGENTS_QUICKSTART.md) for desktop, served, LM Studio setup, model roles and failure behavior.
+1. Extract the Windows download and run `bin/EngCoder.exe`, or [build from source](#build).
+2. In **EngCoder Lab → Models**, choose an existing local model or configure a local inference provider. If the GGUF files are already on disk, use **Use existing GGUF…** on the model card and paste the full path to a file or shard.
+3. Open **Run info** on a reply to see which model answered, which tools ran, and what EngCoder verified.
 
-**0.6.8 layered agents + safety maintenance:** Assign one or more small LM Studio specialists, an optional different middle reviewer, and internal Qwen as KeyMaker Foundation. The middle reviewer critiques bounded specialist evidence before Qwen's final decision on non-simple tasks; it has no tools. The reviewer and model-specific thinking controls live under **EngCoder Lab → Models → Architect + KeyMaker**; defaults preserve the existing single-foundation behavior until another model is selected. Simple-responder failure before the first output fragment retries on Qwen once. New checkpoints are bound to their exact workspace path; saved training evidence is rechecked against bans before weight-training ingestion. Optional remote mode requires `ENGCODER_REMOTE_API_TOKEN` (32+ chars) and bearer authorization, with loopback the recommended default. The generated-text-only panel, footer, and user-tuned Qwen GPU profile are unchanged. See [`docs/DEVELOPMENT_0.6.8.md`](docs/DEVELOPMENT_0.6.8.md).
-
-**0.6.7 routing/UI correction:** Bare greetings (`hi`, `hey`, `hello`, `yo`) are classified as simple. To use an external lightweight responder, select one under **EngCoder Lab → Models → Architect + KeyMaker → Simple response model** and keep **Automatic model + Architect routing** enabled. With no model assigned/discovered, the Foundation Qwen answers by design; this fallback is now explained in the selector. The capability-addon switch is independent of simple-response routing. The empty attachment-count pill is hidden unless attachments exist. A user-selected Qwen GPU offload setting of 99% is retained; no silent defaults reset or GPU scale change was made.
-
-**Limitations:** no unverified GGUF or LM Studio MTP pairing is advertised; user-configured local GGUF draft pairing requires runtime compatibility testing. Token-fragment streams are not tokenizer IDs. The shadow controller is *not* a proven JEPA architecture, and the process tool is *not* an OS sandbox. The Windows source builds and automated suites are validated in `VALIDATION.md`; live RTX 5080 generation, model reload, and large-model interactive responsiveness still require hardware acceptance. See [`docs/DEVELOPMENT_0.6.7.md`](docs/DEVELOPMENT_0.6.7.md) and [`docs/FUTURE_MISSIONS.md`](docs/FUTURE_MISSIONS.md).
-
-EngCoder is a local-first C++23 AI application built around **Architect**, a fast orchestration/controller layer, and **KeyMaker**, the local learned-model and training family. The resident **KeyMaker Foundation** supplies English language/reasoning; C++23, documentation, planning, tool use, reranking, and future skills are modular KeyMaker addons loaded only when needed.
+See the [release history](CHANGELOG.md) for changes by version and [validation](VALIDATION.md) for test results.
 
 ## Engine inference endpoints
 

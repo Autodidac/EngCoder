@@ -1885,6 +1885,16 @@ dialog#labDialog .settings-wrap { max-height:92vh; }
 }
 .model-library-actions > button { min-width:0; min-height:36px; padding:.42rem .58rem; font-size:.72rem; }
 .model-library-actions > button[data-model-action="install"] { grid-column:1 / -1; }
+/* Model weights are linked in place from EpochEngine; browser file inputs
+   cannot expose the host's absolute Windows path, so accept Copy as path. */
+.model-local-link { display:grid; gap:.42rem; min-width:0; padding:.65rem; border:1px solid rgba(91,164,255,.25); border-radius:10px; background:rgba(61,80,119,.12); }
+.model-local-link[hidden] { display:none; }
+.model-local-link label { display:grid; gap:.35rem; font-size:.75rem; color:var(--text); }
+.model-local-link input { width:100%; min-width:0; }
+.model-local-link small { color:var(--muted); font-size:.69rem; line-height:1.45; }
+.model-local-link-actions { display:flex; flex-wrap:wrap; gap:.4rem; }
+.model-local-link-actions button { min-height:34px; font-size:.73rem; }
+.model-library-actions > button[data-model-action="link"] { grid-column:1 / -1; }
 .model-library-install-status { padding:.55rem .65rem; border-radius:10px; background:rgba(255,255,255,.025); color:var(--muted); font-size:.75rem; }
 .model-library-install-status[data-state="busy"] { color:#c6ddff; }
 .model-library-install-status[data-state="error"] { color:#ffb2b2; }

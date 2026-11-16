@@ -1,3 +1,10 @@
+## 0.7.5 — In development
+
+- Corrected retry behavior and the timing of approval controls.
+- Clarified Architect and KeyMaker roles and updated the usage guide.
+- Restored linking to existing GGUF files from model cards and scoped temporary load paths to the selected model.
+- Kept the GGUF path editor open through model-library refreshes and restored four live routing checks to the Missions viewer.
+
 ## 0.7.4 — Windows maintenance release (2026-11-10)
 
 - Updated runtime activity reporting and clarified which verified memories are eligible for training.

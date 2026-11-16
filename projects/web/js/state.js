@@ -523,6 +523,10 @@ function renderNativeModelLibrary(payload) {
     progressDetail.textContent = detail || '';
   };
 
+  const openLinkPanels = new Map(Array.from(host.querySelectorAll('.model-local-link:not([hidden])'),
+    panel => [panel.dataset.linkModelUri, panel]));
+  const activeElement = document.activeElement;
+  const restoreLinkFocus = activeElement?.closest('.model-local-link:not([hidden])');
   host.innerHTML = '';
   facts.innerHTML = '';
 
@@ -733,8 +737,13 @@ function renderNativeModelLibrary(payload) {
       button.disabled = disabled;
       actions.appendChild(button);
     };
-    const installLabel = model.source === 'local-gguf' ? (model.cache?.installed ? 'Local weights ready' : 'Verify local weights') : (model.cache?.installed ? 'Weights downloaded' : 'Download model weights');
-    if (model.cache?.installed !== true) addAction(installLabel, 'install', installState === 'installing');
+    // Local weights are never installed or downloaded: offer an explicit path
+    // picker instead of sending the user to a nonfunctional Install action.
+    if (model.source !== 'local-gguf' && model.cache?.installed !== true) {
+      addAction('Download model weights', 'install', installState === 'installing');
+    }
+    addAction(model.source === 'local-gguf' && !model.cache?.installed
+      ? 'Fix local GGUF path…' : 'Use existing GGUF…', 'link', installState === 'installing');
     // One primary lifecycle action, with destructive/secondary commands under
     // a compact submenu so the model card does not grow a wall of buttons.
     if (model.active) addAction('Reload / Apply settings', 'reload', modelLoading || installState === 'installing');
@@ -764,7 +773,38 @@ function renderNativeModelLibrary(payload) {
     more.appendChild(menu);
     actions.appendChild(more);
 
-    card.append(head, meta, actions);
+    const linkPanel = document.createElement('div');
+    linkPanel.className = 'model-local-link';
+    linkPanel.hidden = true;
+    linkPanel.dataset.linkModelUri = model.uri || `qwenflash://${model.id}`;
+    const linkLabel = document.createElement('label');
+    linkLabel.textContent = 'Existing GGUF file on this PC';
+    const linkInput = document.createElement('input');
+    linkInput.type = 'text';
+    linkInput.className = 'model-local-link-input';
+    linkInput.autocomplete = 'off';
+    linkInput.spellcheck = false;
+    linkInput.placeholder = String.raw`C:\EpochEngine\models\Qwen-00001-of-00003.gguf`;
+    linkInput.value = model.source === 'local-gguf' ? String(model.local_path || '') : '';
+    linkLabel.appendChild(linkInput);
+    const linkHint = document.createElement('small');
+    linkHint.textContent = 'Use Copy as path in File Explorer, then paste the full path to a GGUF file. You can choose any shard of a split model. EngCoder checks the full set and uses the files in place.';
+    const linkActions = document.createElement('div');
+    linkActions.className = 'model-local-link-actions';
+    const saveLink = document.createElement('button');
+    saveLink.type = 'button';
+    saveLink.textContent = 'Link weights';
+    saveLink.dataset.modelAction = 'link-save';
+    saveLink.dataset.modelUri = linkPanel.dataset.linkModelUri;
+    const cancelLink = document.createElement('button');
+    cancelLink.type = 'button';
+    cancelLink.textContent = 'Cancel';
+    cancelLink.dataset.modelAction = 'link-cancel';
+    cancelLink.dataset.modelUri = linkPanel.dataset.linkModelUri;
+    linkActions.append(saveLink, cancelLink);
+    linkPanel.append(linkLabel, linkHint, linkActions);
+
+    card.append(head, meta, actions, openLinkPanels.get(linkPanel.dataset.linkModelUri) || linkPanel);
     host.appendChild(card);
   }
 
@@ -773,6 +813,10 @@ function renderNativeModelLibrary(payload) {
     empty.className = 'model-library-install-status';
     empty.textContent = 'No native model profiles are registered.';
     host.appendChild(empty);
+  }
+
+  if (restoreLinkFocus?.contains(activeElement) && host.contains(activeElement)) {
+    activeElement.focus({ preventScroll: true });
   }
 
   if (nativeModelLibraryPollTimer) {
@@ -1109,6 +1153,24 @@ async function installNativeRuntime() {
   return payload;
 }
 
+async function linkNativeModel(uri, path, panel = null) {
+  const payload = await postEngCoder('/api/engcoder/model-library/link-local', {
+    model: uri, path: String(path || '').trim()
+  });
+  if (panel) panel.hidden = true;
+  await Promise.all([refreshNativeModelLibrary(), probeModels(false)]);
+  const editingId = $('registerNativeModel')?.dataset.editingId || '';
+  if (editingId === payload.id) populateNativeModelForm(payload);
+  const status = $('nativeModelInstallStatus');
+  if (status) {
+    status.textContent = payload.runtime_reload_required
+      ? 'Existing GGUF linked. Unload and reload this model to use the new path. No weights were copied.'
+      : 'Existing GGUF linked. Press Load on its model card. No weights were copied or downloaded.';
+    status.dataset.state = 'ready';
+  }
+  return payload;
+}
+
 async function installNativeModel(uri) {
   const payload = await postEngCoder('/api/engcoder/model-library/install', { model: uri });
   await refreshNativeModelLibrary();
@@ -1119,8 +1181,12 @@ async function loadNativeModel(uri) {
   // "Local GGUF path" is a true load-time override, matching the original
   // QwenFlashRuntime --model behavior. Saving the profile is optional; a
   // non-empty field applies to the next Load immediately.
-  const localPathOverride = $('nativeModelLocalPath')?.value.trim() || '';
   const model = (nativeModelLibrary?.models || []).find(item => (item.uri || `qwenflash://${item.id}`) === uri);
+  // An unsaved path in the profile editor only applies to *that* model.
+  // Never reuse a path left in the editor when loading a different card.
+  const editingId = $('registerNativeModel')?.dataset.editingId || '';
+  const localPathOverride = model && editingId === model.id
+    ? ($('nativeModelLocalPath')?.value.trim() || '') : '';
   if (!localPathOverride && model?.cache?.installed !== true) {
     throw new Error('Model weights are not complete. Finish the download/copy, or enter a Local GGUF path override and press Load.');
   }
