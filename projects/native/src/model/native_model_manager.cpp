@@ -155,8 +155,13 @@ namespace {
     std::smatch match;
     const auto filename = path.filename().string();
     if (std::regex_match(filename, match, split_pattern) && match.size() == 4) {
+        const auto index = static_cast<unsigned>(std::stoul(match[2].str()));
         const auto total = static_cast<unsigned>(std::stoul(match[3].str()));
-        if (total == 0) return std::unexpected("Invalid split GGUF shard count");
+        if (index == 0 || index > total) return std::unexpected("Invalid split GGUF shard number");
+        std::error_code selected_error;
+        if (!std::filesystem::is_regular_file(path, selected_error) || selected_error) {
+            return std::unexpected("Selected GGUF shard does not exist: " + path.string());
+        }
         char suffix[32]{};
         std::snprintf(suffix, sizeof(suffix), "-%05u-of-%05u.gguf", 1U, total);
         path = path.parent_path() / (match[1].str() + suffix);
@@ -815,7 +820,8 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::provision_runtime
 std::expected<std::string, core::Error> NativeModelManager::prepare(
     std::string_view id_or_uri,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token stop) {
+    std::stop_token stop,
+    bool reload) {
     RuntimeModelProfile profile;
     {
         std::scoped_lock lock(mutex_);
@@ -841,14 +847,15 @@ std::expected<std::string, core::Error> NativeModelManager::prepare(
             });
         }
     }
-    return qwen_flash_.ensure_started(profile, deadline, stop);
+    return qwen_flash_.ensure_started(profile, deadline, stop, reload);
 }
 
 std::expected<std::string, core::Error> NativeModelManager::prepare_with_local_override(
     std::string_view id_or_uri,
     const std::filesystem::path& local_path_override,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token stop) {
+    std::stop_token stop,
+    bool reload) {
     auto normalized_local = normalize_local_gguf_path(local_path_override);
     if (!normalized_local) {
         return std::unexpected(core::Error{
@@ -907,7 +914,7 @@ std::expected<std::string, core::Error> NativeModelManager::prepare_with_local_o
     profile.local_path = *normalized_local;
     // A direct load override must never fall back to -hf or another cache.
     // Keeping repo/quant is useful only as profile metadata.
-    return qwen_flash_.ensure_started(profile, deadline, stop);
+    return qwen_flash_.ensure_started(profile, deadline, stop, reload);
 }
 
 std::optional<std::string> NativeModelManager::active_model_uri() const {

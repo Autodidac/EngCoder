@@ -895,9 +895,11 @@ bool HttpServer::listen() {
             const auto body = request.body.empty() ? json::object() : json::parse(request.body);
             const auto model = body.value("model", body.value("id", std::string{}));
             const auto local_override = body.value("local_path_override", std::string{});
+            const auto reload = body.value("reload", false);
+            const auto deadline = std::chrono::steady_clock::time_point::max();
             auto endpoint = local_override.empty()
-                ? native_models_.prepare(model)
-                : native_models_.prepare_with_local_override(model, std::filesystem::path{local_override});
+                ? native_models_.prepare(model, deadline, {}, reload)
+                : native_models_.prepare_with_local_override(model, std::filesystem::path{local_override}, deadline, {}, reload);
             if (!endpoint) {
                 response.status = 409;
                 response.set_content(json{{"error", endpoint.error().message}}.dump(), "application/json");

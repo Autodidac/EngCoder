@@ -166,7 +166,7 @@ LM Studio weights are managed in LM Studio, not in EngCoder's native Model Libra
 ## Reusing Qwen Next Flash weights stored in EpochEngine (0.7.1 follow-up)
 
 EngCoder Lab → Models → Qwen Next Flash → **Use existing GGUF…**.
-Use Windows File Explorer’s **Copy as path** on the existing `.gguf` file in EpochEngine (for a split model, any shard is accepted). Paste the absolute path, choose **Link weights**, and then **Load** on the same model card. No weight files are moved, copied, or downloaded. Linking changes only the saved EngCoder model-profile path and source, while preserving all GPU, context, and runtime tuning. If the model is currently running, unload/reload explicitly to apply the linked path.
+Use Windows File Explorer’s **Copy as path** on an existing `.gguf` file. For a split model, choose any existing shard. Paste the absolute path, choose **Link weights**, and then **Load** on the same model card. EngCoder references the files in place and preserves the profile’s GPU, context, and runtime tuning. For an active model, use **Reload / Apply settings**. EngCoder checks the replacement path and available backend before stopping the active model.
 
 `POST /api/engcoder/model-library/link-local` with JSON `{ "model": "qwenflash://qwen3.8-flash-next-ud-q2-k-xl", "path": "C:\\...\\model-00001-of-00003.gguf" }` performs the same operation for localhost clients. The native backend validates the file, required split shards, and approximate weight size before persisting the profile; missing, incomplete, or projector-only files are rejected without altering the existing source. External weights cannot be deleted through EngCoder’s cache-clearing or model-weight-deletion actions.
 

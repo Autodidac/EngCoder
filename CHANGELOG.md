@@ -4,6 +4,7 @@
 - Clarified Architect and KeyMaker roles and updated the usage guide.
 - Restored linking to existing GGUF files from model cards and scoped temporary load paths to the selected model.
 - Kept the GGUF path editor open through model-library refreshes and restored four live routing checks to the Missions viewer.
+- Checked model files and backend availability before stopping the current model during reload. Rejected invalid split GGUF shard numbers and refreshed the model card after a failed load.
 
 ## 0.7.4 — Windows maintenance release (2026-11-10)
 

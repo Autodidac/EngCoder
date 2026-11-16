@@ -1177,7 +1177,7 @@ async function installNativeModel(uri) {
   return payload;
 }
 
-async function loadNativeModel(uri) {
+async function loadNativeModel(uri, { reload = false } = {}) {
   // "Local GGUF path" is a true load-time override, matching the original
   // QwenFlashRuntime --model behavior. Saving the profile is optional; a
   // non-empty field applies to the next Load immediately.
@@ -1190,11 +1190,19 @@ async function loadNativeModel(uri) {
   if (!localPathOverride && model?.cache?.installed !== true) {
     throw new Error('Model weights are not complete. Finish the download/copy, or enter a Local GGUF path override and press Load.');
   }
-  const payload = await postEngCoder('/api/engcoder/model-library/load', {
-    model: uri,
-    local_path_override: localPathOverride || undefined
-  });
-  renderNativeModelLibrary(payload?.library || await refreshNativeModelLibrary());
+  let payload;
+  try {
+    payload = await postEngCoder('/api/engcoder/model-library/load', {
+      model: uri,
+      local_path_override: localPathOverride || undefined,
+      reload: reload || undefined
+    });
+  } catch (error) {
+    await refreshNativeModelLibrary().catch(() => {});
+    throw error;
+  }
+  if (payload?.library) renderNativeModelLibrary(payload.library);
+  else await refreshNativeModelLibrary();
   // Loading a native model makes it the preferred candidate for Runtime Default
   // without pinning it as the persisted KeyMaker. Refresh both selectors and
   // architecture so the UI reflects the model EngCoder will actually use.
@@ -1233,8 +1241,7 @@ async function reloadNativeModel(uri) {
   if (($('registerNativeModel')?.dataset.editingId || '') === model.id) {
     await registerNativeModel({ refresh: false, runtimeOnly: true });
   }
-  await unloadNativeModel();
-  return loadNativeModel(uri);
+  return loadNativeModel(uri, { reload: true });
 }
 
 function renderResidency(payload) {

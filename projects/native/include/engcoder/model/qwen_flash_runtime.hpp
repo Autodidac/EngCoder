@@ -34,7 +34,9 @@ public:
     QwenFlashRuntime(const QwenFlashRuntime&) = delete;
     QwenFlashRuntime& operator=(const QwenFlashRuntime&) = delete;
 
-    [[nodiscard]] std::expected<std::string, core::Error> ensure_started(const RuntimeModelProfile& profile, std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(), std::stop_token stop = {});
+    [[nodiscard]] std::expected<std::string, core::Error> ensure_started(const RuntimeModelProfile& profile,
+        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+        std::stop_token stop = {}, bool reload = false);
     void stop();
 
     [[nodiscard]] bool running() const noexcept { return running_.load(std::memory_order_acquire); }

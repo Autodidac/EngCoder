@@ -27,23 +27,33 @@ assert.match(cpp, /normalize_local_gguf_path\(existing_file\)/);
 const begin = state.indexOf('async function linkNativeModel(');
 const end = state.indexOf('\nasync function installNativeModel', begin);
 assert.ok(begin >= 0 && end > begin);
+const load = state.slice(state.indexOf('async function loadNativeModel('), state.indexOf('async function unloadNativeModel('));
+const reload = state.slice(state.indexOf('async function reloadNativeModel('));
 let call = null;
 let form = 0;
+let refreshes = 0;
 let status = { textContent: '', dataset: {} };
 let rejectLink = false;
 const ctx = vm.createContext({
+  nativeModelLibrary: {models: [{id: 'qwen', cache: {installed: true}}]},
   postEngCoder: async (endpoint, body) => {
     call = { endpoint, body };
     if (rejectLink) throw new Error('invalid fixture path');
     return { id: 'qwen', runtime_reload_required: false, verified_bytes: 100 };
   },
-  refreshNativeModelLibrary: async () => ({}),
+  refreshNativeModelLibrary: async () => { refreshes++; },
   probeModels: async () => ({}),
   populateNativeModelForm: () => { form++; },
+  registerNativeModel: async () => ({}),
+  renderNativeModelLibrary: () => {},
+  unloadNativeModel: () => assert.fail('Reload must allow native validation before stopping the worker'),
   $: id => id === 'registerNativeModel' ? { dataset: { editingId: 'qwen' } } :
      id === 'nativeModelInstallStatus' ? status : null,
 });
 vm.runInContext(state.slice(begin, end) + '\nthis.link = linkNativeModel;', ctx);
+const reloadEnd = reload.indexOf('function renderResidency(');
+assert.ok(reloadEnd > 0);
+vm.runInContext(load + reload.slice(0, reloadEnd) + '\nthis.reload = reloadNativeModel; this.load = loadNativeModel;', ctx);
 (async () => {
   const raw = String.raw`"C:\EpochEngine\models\Qwen-00002-of-00003.gguf"`;
   const panel = { hidden: false };
@@ -59,5 +69,13 @@ vm.runInContext(state.slice(begin, end) + '\nthis.link = linkNativeModel;', ctx)
   rejectLink = true;
   await assert.rejects(ctx.link('qwenflash://qwen', raw, panel), /invalid fixture path/);
   assert.equal(panel.hidden, false, 'a rejected link leaves the editor available for correction');
-  console.log('PASS: existing GGUF link control, endpoint wiring, path handling, no cross-model override');
+  const beforeReload = refreshes;
+  await assert.rejects(ctx.reload('qwenflash://qwen'), /invalid fixture path/);
+  assert.equal(call.endpoint, '/api/engcoder/model-library/load');
+  assert.equal(call.body.reload, true);
+  assert.equal(refreshes, beforeReload + 1, 'refresh the card after a rejected load');
+  rejectLink = false;
+  await ctx.load('qwenflash://qwen');
+  assert.equal(call.body.reload, undefined, 'routine loads must reuse the existing worker');
+  console.log('PASS: GGUF linking, per-model paths, and native preflight before reload');
 })().catch(e => { console.error(e); process.exitCode = 1; });

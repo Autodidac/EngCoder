@@ -905,7 +905,8 @@ std::expected<void, core::Error> QwenFlashRuntime::wait_until_ready(
 std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
     const RuntimeModelProfile& profile,
     std::chrono::steady_clock::time_point deadline,
-    std::stop_token stop) {
+    std::stop_token stop,
+    bool reload) {
     std::unique_lock lock(mutex_);
     if (stop.stop_requested()) {
         return std::unexpected(core::Error{core::make_error_code(core::Errc::cancelled), "Qwen Flash model load was cancelled"});
@@ -939,8 +940,8 @@ std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
         startup_cv_.wait_for(lock, std::chrono::milliseconds{100});
     }
 
-    if (running() && active_model_id_ == profile.id) return url();
-    if (waited_for_startup && last_startup_model_id_ == profile.id && last_startup_error_.has_value()) {
+    if (!reload && running() && active_model_id_ == profile.id) return url();
+    if (!reload && waited_for_startup && last_startup_model_id_ == profile.id && last_startup_error_.has_value()) {
         return std::unexpected(*last_startup_error_);
     }
 
@@ -1018,11 +1019,6 @@ std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
         }
     }
 
-    if (worker_.joinable()) {
-        worker_.request_stop();
-        worker_.join();
-    }
-
     if (profile.source == ModelSourceKind::hugging_face) {
         const auto cache = cache_status(profile);
         const auto matching_files = cache.value("matching_gguf_files", std::size_t{});
@@ -1067,6 +1063,17 @@ std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
                     " GiB expected for " + profile.display_name,
             });
         }
+    }
+
+    if (stop.stop_requested()) {
+        return fail_startup({core::make_error_code(core::Errc::cancelled), "Qwen Flash model load was cancelled"});
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+        return fail_startup({core::make_error_code(core::Errc::model_timeout), "Qwen Flash model loading exceeded the inference deadline"});
+    }
+    if (worker_.joinable()) {
+        worker_.request_stop();
+        worker_.join();
     }
 
     // Never silently attach to an unrelated process. EngCoder owns the native

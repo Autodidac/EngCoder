@@ -643,6 +643,11 @@ TEST_CASE("linking existing EpochEngine GGUF preserves tuned profile and never m
         // A rejected path must not modify the old Hugging Face profile.
         auto invalid = manager.link_local_gguf("qwen-custom", external / "not-found.gguf");
         REQUIRE_FALSE(invalid.has_value());
+        for (const auto* name : {"Qwen-00000-of-00002.gguf", "Qwen-00003-of-00002.gguf"}) {
+            auto invalid_shard = manager.link_local_gguf("qwen-custom", external / name);
+            REQUIRE_FALSE(invalid_shard.has_value());
+            CHECK(invalid_shard.error().message.find("Invalid split GGUF shard number") != std::string::npos);
+        }
         auto unchanged = manager.find("qwen-custom");
         REQUIRE(unchanged.has_value());
         CHECK(unchanged->source == engcoder::model::ModelSourceKind::hugging_face);

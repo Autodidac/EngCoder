@@ -41,12 +41,14 @@ public:
     [[nodiscard]] std::expected<nlohmann::json, core::Error> remove(std::string_view id_or_uri, bool delete_cache);
     [[nodiscard]] std::expected<nlohmann::json, core::Error> clear_transient_cache(std::string_view id_or_uri);
     [[nodiscard]] std::expected<nlohmann::json, core::Error> delete_downloaded_weights(std::string_view id_or_uri);
-    [[nodiscard]] std::expected<std::string, core::Error> prepare(std::string_view id_or_uri, std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(), std::stop_token stop = {});
+    [[nodiscard]] std::expected<std::string, core::Error> prepare(std::string_view id_or_uri,
+        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+        std::stop_token stop = {}, bool reload = false);
     [[nodiscard]] std::expected<std::string, core::Error> prepare_with_local_override(
         std::string_view id_or_uri,
         const std::filesystem::path& local_path_override,
         std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
-        std::stop_token stop = {});
+        std::stop_token stop = {}, bool reload = false);
     [[nodiscard]] std::optional<std::string> active_model_uri() const;
     void stop_active();
 
