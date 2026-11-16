@@ -81,7 +81,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-012",
     "priority": "P1",
     "title": "Reliable small responder fallback — empty-stream retry implemented; live tests remain",
-    "details": "Detect failure midgeneration and retry only when safe with original Foundation model without duplicating partial response; log model switch.",
+    "details": "Detect failure midgeneration and retry only when safe with original Foundation model without duplicating partial response; log model switch. Explicit output limits stop the request. Add a live small-to-Foundation availability check.",
     "status": "open"
   },
   {

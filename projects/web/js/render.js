@@ -646,7 +646,14 @@ async function markAssistantVerified(message, button) {
 }
 
 function renderAssistantBody(container, message) {
-  container.innerHTML = '';
+  const approval = message?.approvalRequest;
+  const approvalState = approval ? JSON.stringify([approval.pending, approval.submitted, approval.decision, approval.error]) : '';
+  const previousCard = container.querySelector(':scope > .approval-card');
+  const retainedCard = approval && previousCard?.__approvalRequest === approval &&
+    previousCard.dataset.approvalState === approvalState ? previousCard : null;
+  for (const child of Array.from(container.childNodes)) {
+    if (child !== retainedCard) child.remove();
+  }
   const thinking = message?.thinking || '';
   const content = cleanAssistantContent(message?.content || '');
   // G4: respect thinking settings (show-even-when-empty + expand-by-default).
@@ -707,12 +714,12 @@ function renderAssistantBody(container, message) {
       if (thinkingDrawer.classList.contains('open')) syncThinkingDrawer();
     });
     controls.appendChild(details);
-    container.appendChild(controls);
+    container.insertBefore(controls, retainedCard);
   }
 
   const contentHost = document.createElement('div');
   contentHost.className = 'assistant-content-host';
-  container.appendChild(contentHost);
+  container.insertBefore(contentHost, retainedCard);
 
   if (content) {
     renderFormattedContent(contentHost, content, { allowCode: true, clear: true });
@@ -724,10 +731,11 @@ function renderAssistantBody(container, message) {
   }
 
 
-  const approval = message?.approvalRequest;
-  if (approval) {
+  if (approval && !retainedCard) {
     const card = document.createElement('section');
     card.className = 'approval-card';
+    card.__approvalRequest = approval;
+    card.dataset.approvalState = approvalState;
     card.setAttribute('aria-live', 'polite');
 
     const title = document.createElement('div');

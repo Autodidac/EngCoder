@@ -973,7 +973,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             }
         };
         auto model_result = model_.complete_stream(model_request, stream_event);
-        if (!model_result && simple_responder && !emitted_fragment && !stop.stop_requested()) {
+        if (!model_result && simple_responder && !emitted_fragment && !stop.stop_requested() &&
+            model_result.error().code != core::make_error_code(core::Errc::model_output_limit)) {
             // Only retry a text-only responder that emitted *nothing*; otherwise
             // replacing the model would duplicate or contradict a partial answer.
             emit(request, "controller.escalated", {

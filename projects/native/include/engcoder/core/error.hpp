@@ -24,7 +24,8 @@ enum class Errc {
     persistence_error,
     cancelled,
     iteration_limit,
-    stalled
+    stalled,
+    model_output_limit
 };
 
 class ErrorCategory final : public std::error_category {

@@ -1,3 +1,9 @@
+## 0.7.5 provider and approval follow-up (2026-11-16)
+
+- Windows x64 Debug and Release builds each passed 67/67 CTest cases. Loopback fixtures cover Chat Completions and Responses output limits, a streamed error forwarded by an OpenAI-compatible endpoint, incomplete streamed tool calls, valid tool-only replies, provider cancellation, and recovery from an evicted-model fixture. Architect's fallback test covers both an unavailable responder and an explicit cutoff.
+- All 18 Web smoke tests and JavaScript syntax checks passed. The approval regression checks node identity through activity updates, replacement for a new approval, and cleanup when finished. Fresh visual QA and GPU-model reload remain open. All 29 open Missions are still present.
+- An isolated Windows Release smoke used the 15M-parameter [TinyStories GGUF](https://huggingface.co/ggml-org/models-moved/blob/main/tinyllamas/stories15M-q4_0.gguf) on CPU. A one-token cutoff reached both the buffered HTTP 422 response and the SSE error event. Longer live prompts also reached their cap, so ordinary successful completion was verified with fixtures. No production model was loaded.
+
 ## 0.7.5 development baseline (2026-11-15)
 
 - Windows x64 Debug and Release builds passed all 66 native tests each. All 18 Web smoke tests and all application JavaScript syntax checks passed.

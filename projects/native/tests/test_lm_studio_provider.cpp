@@ -250,6 +250,84 @@ TEST_CASE("LM Studio provider streams content reasoning and incremental tool arg
     REQUIRE(std::ranges::any_of(events, [](const auto& e) { return e.kind == engcoder::model::StreamEventKind::tool_argument_delta; }));
 }
 
+TEST_CASE("Provider rejects output limits and unconfirmed streamed tool calls") {
+    using nlohmann::json;
+    using engcoder::core::Errc;
+    httplib::Server server;
+    std::atomic_bool confirmed{false};
+    std::atomic_bool report_in_band_error{false};
+    server.Post("/v1/chat/completions", [&](const httplib::Request& request, httplib::Response& response) {
+        const auto body = json::parse(request.body);
+        const json tool{{"id", "call_1"}, {"type", "function"},
+            {"function", {{"name", "inspect"}, {"arguments", "{}"}}}};
+        if (!body.value("stream", false)) {
+            response.set_content(json{{"choices", json::array({{
+                {"message", {{"content", nullptr}, {"tool_calls", json::array({tool})}}},
+                {"finish_reason", confirmed.load() ? "tool_calls" : "length"}
+            }})}}.dump(), "application/json");
+            return;
+        }
+        const auto call = json{{"choices", json::array({{{"delta", {{"tool_calls", json::array({tool})}}}}})}};
+        auto frames = "data: " + call.dump() + "\n\n";
+        if (report_in_band_error.load()) {
+            frames += "data: {\"error\":{\"code\":\"output_token_limit\"}}\n\n"
+                "data: [DONE]\n\n";
+        } else if (!confirmed.load()) {
+            frames += "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"
+                "data: {\"choices\":[],\"usage\":{\"completion_tokens\":8}}\n\n"
+                "data: [DONE]\n\n";
+        }
+        response.set_content(frames, "text/event-stream");
+    });
+    server.Post("/v1/responses", [&](const httplib::Request& request, httplib::Response& response) {
+        const auto body = json::parse(request.body);
+        const json incomplete{{"status", "incomplete"}, {"incomplete_details", {{"reason", "max_output_tokens"}}}};
+        if (body.value("stream", false)) {
+            const auto event = json{{"type", "response.incomplete"}, {"response", incomplete}};
+            response.set_content("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+                "data: " + event.dump() + "\n\n", "text/event-stream");
+        } else {
+            response.set_content(incomplete.dump(), "application/json");
+        }
+    });
+    const int port = server.bind_to_any_port("127.0.0.1");
+    REQUIRE(port > 0);
+    std::jthread server_thread([&] { server.listen_after_bind(); });
+    ServerStopGuard guard{server}; (void)guard;
+
+    engcoder::core::Config config;
+    config.lm_studio_url = "http://127.0.0.1:" + std::to_string(port);
+    config.model_auto_load = false;
+    engcoder::model::ModelRequest req;
+    req.model = "test-model";
+    req.messages.push_back({"user", "go", {}, {}});
+
+    for (const auto api : {engcoder::core::ModelApi::chat_completions, engcoder::core::ModelApi::responses}) {
+        config.model_api = api;
+        engcoder::model::LmStudioProvider provider(config);
+        for (const auto stream : {false, true}) {
+            const auto result = stream ? provider.complete_stream(req, {}) : provider.complete(req);
+            REQUIRE_FALSE(result.has_value());
+            CHECK(result.error().code == engcoder::core::make_error_code(Errc::model_output_limit));
+        }
+    }
+
+    confirmed.store(true);
+    config.model_api = engcoder::core::ModelApi::chat_completions;
+    engcoder::model::LmStudioProvider provider(config);
+    const auto valid = provider.complete(req);
+    REQUIRE(valid.has_value());
+    CHECK(valid->text.empty());
+    CHECK(valid->tool_calls.size() == 1);
+    const auto unconfirmed = provider.complete_stream(req, {});
+    REQUIRE_FALSE(unconfirmed.has_value());
+    CHECK(unconfirmed.error().code == engcoder::core::make_error_code(Errc::model_protocol_error));
+    report_in_band_error.store(true);
+    const auto forwarded_error = provider.complete_stream(req, {});
+    REQUIRE_FALSE(forwarded_error.has_value());
+    CHECK(forwarded_error.error().code == engcoder::core::make_error_code(Errc::model_output_limit));
+}
+
 TEST_CASE("Inference deadline budget supports generation beyond ten minutes without resetting") {
     using namespace std::chrono;
     engcoder::core::Config config;

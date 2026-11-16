@@ -20,6 +20,19 @@ const batches = [
 ];
 const messages = [{role: 'user', content: 'Repair a candidate'}, {role: 'assistant'}, {role: 'user', content: 'Keep this message'}];
 const errors = [];
+class Element {
+  constructor() { this.childNodes = []; this.dataset = {}; }
+  appendChild(child) { this.insertBefore(child, null); }
+  append(...children) { children.forEach(child => this.appendChild(child)); }
+  insertBefore(child, next) {
+    child.parent = this;
+    this.childNodes.splice(next ? this.childNodes.indexOf(next) : this.childNodes.length, 0, child);
+  }
+  remove() { this.parent.childNodes.splice(this.parent.childNodes.indexOf(this), 1); }
+  querySelector() { return this.childNodes.find(child => child.className === 'approval-card') || null; }
+  setAttribute() {}
+  addEventListener() {}
+}
 const context = vm.createContext({
   controller: new AbortController(), currentChat: () => ({messages}), editingMessageIndex: -1,
   promptEl: {value: ''}, pendingAttachments: [], $: () => null, showError: message => errors.push(message),
@@ -29,13 +42,15 @@ const context = vm.createContext({
   eventActivityLine: () => '', recordExecutionEvent: () => {}, captureRawOutput: () => {}, appendActivity: () => {},
   setStatus: () => {}, updateAssistantMessage: () => {}, setTimeout, clearTimeout, DOMException,
   formatCompletionTime: () => '', formatTimestampFull: () => '', ensureExecutionStats: () => ({}), estimateTokenCount: () => 0,
+  document: {createElement: () => new Element()}, cleanAssistantContent: value => value,
 });
 vm.runInContext([
   section(render, 'function isCandidateReply(', 'function canSaveAssistantForLearning('),
   section(api, 'function terminalFromEvent(', 'async function resolveTaskApproval('),
   section(api, 'async function pollEngCoderTask(', 'function assistantMessageSnapshot('),
   section(api, 'async function sendMessage(', 'async function stopStreaming('),
-  'this.test = { sendMessage, pollEngCoderTask, finalizeAssistantState };'
+  section(render, 'function renderAssistantBody(', 'function addTextMessage('),
+  'this.test = { sendMessage, pollEngCoderTask, finalizeAssistantState, renderAssistantBody };'
 ].join('\n'), context);
 
 (async () => {
@@ -49,6 +64,21 @@ vm.runInContext([
   assert.equal(approvals[1], 'edit');
   context.test.finalizeAssistantState(state, timing, 'engcoder-cancelled', 'fixture');
   assert.equal(state.approvalRequest, null, 'terminal runs must clear the approval card');
+
+  const container = new Element();
+  const message = {approvalRequest: {callId: 'one', tool: 'workspace.patch'}};
+  const renderApproval = () => context.test.renderAssistantBody(container, message);
+  renderApproval();
+  const card = container.querySelector();
+  assert.ok(card);
+  renderApproval();
+  assert.equal(container.querySelector(), card, 'an activity refresh must keep the approval controls mounted');
+  message.approvalRequest = {callId: 'two', tool: 'workspace.patch'};
+  renderApproval();
+  assert.notEqual(container.querySelector(), card, 'a new approval needs its own controls');
+  message.approvalRequest = null;
+  renderApproval();
+  assert.equal(container.querySelector(), null);
 
   context.controller = null;
   for (const provenance of cases) {

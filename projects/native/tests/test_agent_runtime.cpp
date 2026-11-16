@@ -1053,12 +1053,13 @@ namespace {
 class FailingSmallResponder final : public engcoder::model::IModelProvider {
 public:
     bool emits_partial = false;
+    engcoder::core::Errc small_failure = engcoder::core::Errc::model_unavailable;
     std::vector<std::string> invoked;
     std::expected<engcoder::model::ModelResponse, engcoder::core::Error> complete(
         const engcoder::model::ModelRequest& request) override {
         if (request.model == "small-test") {
             return std::unexpected(engcoder::core::Error{
-                engcoder::core::make_error_code(engcoder::core::Errc::model_unavailable), "small offline"});
+                engcoder::core::make_error_code(small_failure), "small responder failed"});
         }
         return engcoder::model::ModelResponse{
             .text = "foundation-recovered", .model = request.model};
@@ -1122,6 +1123,15 @@ TEST_CASE("unavailable small responder retries once on foundation only before st
         CHECK_FALSE(refused_retry.has_value());
         REQUIRE(provider.invoked.size() == 1);
         CHECK(provider.invoked[0] == "small-test");
+
+        provider.invoked.clear();
+        provider.emits_partial = false;
+        provider.small_failure = engcoder::core::Errc::model_output_limit;
+        request.task_id = "small-output-limit";
+        const auto capped = runtime.run(request);
+        REQUIRE_FALSE(capped.has_value());
+        CHECK(capped.error().code == engcoder::core::make_error_code(engcoder::core::Errc::model_output_limit));
+        CHECK(provider.invoked == std::vector<std::string>{"small-test"});
     }
     std::filesystem::remove_all(root);
 }

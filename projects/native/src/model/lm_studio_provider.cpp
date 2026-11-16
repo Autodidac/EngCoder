@@ -210,6 +210,32 @@ void announce_tool(StreamedToolCall& call, std::size_t index, const StreamCallba
     }
 }
 
+std::string string_field(const json& object, std::string_view name) {
+    const auto value = object.find(name);
+    return value != object.end() && value->is_string() ? value->get<std::string>() : std::string{};
+}
+
+core::Error output_limit_error() {
+    return {core::make_error_code(core::Errc::model_output_limit),
+        "The model reached its output token limit. Increase the output limit or reduce reasoning before retrying."};
+}
+
+std::optional<core::Error> responses_terminal_error(const json& response, std::string_view status) {
+    if (status == "incomplete") {
+        const auto details = response.find("incomplete_details");
+        if (details != response.end() && string_field(*details, "reason") == "max_output_tokens") {
+            return output_limit_error();
+        }
+        return core::Error{core::make_error_code(core::Errc::model_protocol_error),
+            "The provider returned an incomplete Responses result."};
+    }
+    if (status == "failed") {
+        return core::Error{core::make_error_code(core::Errc::model_generation_error),
+            "The provider reported a failed Responses generation."};
+    }
+    return std::nullopt;
+}
+
 struct ChatStreamState {
     StreamCallback callback;
     std::string pending;
@@ -218,20 +244,39 @@ struct ChatStreamState {
     std::map<std::size_t, StreamedToolCall> calls;
     std::string parser_error;
     json last_chunk;
+    std::optional<core::Error> terminal_error;
+    bool finished = false;
 };
 
 void consume_chat_data(ChatStreamState& state, std::string_view payload) {
+    if (payload == "[DONE]") state.finished = true;
     if (payload.empty() || payload == "[DONE]") {
         return;
     }
 
     const auto chunk = json::parse(payload);
     state.last_chunk = chunk;
+    if (const auto error = chunk.find("error"); error != chunk.end() && !error->is_null()) {
+        if (!state.terminal_error) {
+            state.terminal_error = string_field(*error, "code") == "output_token_limit"
+                ? output_limit_error()
+                : core::Error{core::make_error_code(core::Errc::model_generation_error),
+                    "The provider reported an error during chat generation."};
+        }
+        return;
+    }
     if (!chunk.contains("choices") || chunk["choices"].empty()) {
         return;
     }
 
-    const auto& delta = chunk["choices"][0].value("delta", json::object());
+    const auto& choice = chunk["choices"][0];
+    const auto finish = string_field(choice, "finish_reason");
+    if (finish == "length") {
+        state.terminal_error = output_limit_error();
+        return;
+    }
+    if (finish == "stop" || finish == "tool_calls" || finish == "function_call") state.finished = true;
+    const auto& delta = choice.value("delta", json::object());
     if (delta.contains("content") && delta["content"].is_string()) {
         const auto fragment = delta["content"].get<std::string>();
         state.text += fragment;
@@ -357,6 +402,8 @@ struct ResponsesStreamState {
     std::map<std::string, std::size_t> item_indices;
     std::string parser_error;
     json last_chunk;
+    std::optional<core::Error> terminal_error;
+    bool finished = false;
 };
 
 std::size_t response_call_index(ResponsesStreamState& state, const json& event) {
@@ -373,6 +420,7 @@ std::size_t response_call_index(ResponsesStreamState& state, const json& event) 
 }
 
 void consume_responses_data(ResponsesStreamState& state, std::string_view payload) {
+    if (payload == "[DONE]") state.finished = true;
     if (payload.empty() || payload == "[DONE]") {
         return;
     }
@@ -380,6 +428,13 @@ void consume_responses_data(ResponsesStreamState& state, std::string_view payloa
     const auto event = json::parse(payload);
     state.last_chunk = event;
     const auto type = event.value("type", std::string{});
+    if (type == "response.completed") state.finished = true;
+    if (type == "response.incomplete" || type == "response.failed") {
+        const auto response = event.find("response");
+        state.terminal_error = responses_terminal_error(response == event.end() ? event : *response,
+            type == "response.incomplete" ? "incomplete" : "failed");
+        return;
+    }
 
     if (type == "response.output_text.delta") {
         const auto fragment = event.value("delta", std::string{});
@@ -1092,12 +1147,15 @@ std::expected<ModelResponse, core::Error> LmStudioProvider::complete_chat(const 
     }
 
     try {
-        const auto& message = response->at("choices").at(0).at("message");
+        const auto& choice = response->at("choices").at(0);
+        if (string_field(choice, "finish_reason") == "length") return std::unexpected(output_limit_error());
+        const auto& message = choice.at("message");
         ModelResponse out;
         out.model = *model;
         out.raw = *response;
-        out.text = message.value("content", std::string{});
-        out.reasoning = message.value("reasoning_content", message.value("reasoning", std::string{}));
+        out.text = string_field(message, "content");
+        out.reasoning = string_field(message, "reasoning_content");
+        if (out.reasoning.empty()) out.reasoning = string_field(message, "reasoning");
 
         for (const auto& raw_call : message.value("tool_calls", json::array())) {
             ToolCall call;
@@ -1202,6 +1260,11 @@ std::expected<ModelResponse, core::Error> LmStudioProvider::complete_chat_stream
     if (status < 200 || status >= 300) {
         return std::unexpected(http_failure(status, {}, "chat generation"));
     }
+    if (state.terminal_error) return std::unexpected(std::move(*state.terminal_error));
+    if (!state.finished && !state.calls.empty()) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::model_protocol_error),
+            "The Chat Completions stream ended before confirming its tool calls."});
+    }
 
     ModelResponse out;
     out.model = *model;
@@ -1251,6 +1314,9 @@ std::expected<ModelResponse, core::Error> LmStudioProvider::complete_responses(c
     }
 
     try {
+        if (auto error = responses_terminal_error(*response, string_field(*response, "status"))) {
+            return std::unexpected(std::move(*error));
+        }
         ModelResponse out;
         out.model = *model;
         out.raw = *response;
@@ -1368,6 +1434,11 @@ std::expected<ModelResponse, core::Error> LmStudioProvider::complete_responses_s
     }
     if (status < 200 || status >= 300) {
         return std::unexpected(http_failure(status, {}, "responses generation"));
+    }
+    if (state.terminal_error) return std::unexpected(std::move(*state.terminal_error));
+    if (!state.finished && !state.calls.empty()) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::model_protocol_error),
+            "The Responses stream ended before confirming its tool calls."});
     }
 
     ModelResponse out;

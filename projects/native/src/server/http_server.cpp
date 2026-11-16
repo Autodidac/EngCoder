@@ -283,6 +283,9 @@ struct FailureInfo {
     if (error.code == core::make_error_code(Errc::model_context_overflow)) {
         return {400, "invalid_request_error", "context_overflow", false, false};
     }
+    if (error.code == core::make_error_code(Errc::model_output_limit)) {
+        return {422, "invalid_request_error", "output_token_limit", false, false};
+    }
     if (error.code == core::make_error_code(Errc::model_timeout)) {
         return {504, "server_error", "upstream_timeout", false, true};
     }

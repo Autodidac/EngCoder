@@ -23,6 +23,7 @@ std::string ErrorCategory::message(int value) const {
         case Errc::cancelled: return "cancelled";
         case Errc::iteration_limit: return "iteration limit reached";
         case Errc::stalled: return "agent stalled";
+        case Errc::model_output_limit: return "model output limit reached";
     }
     return "unknown";
 }
