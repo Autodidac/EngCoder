@@ -3,7 +3,6 @@ const appVersion = document.getElementById('appVersion');
 if (appVersion) appVersion.textContent = `v${APP_VERSION}`;
 
 loadAll();
-void resumeSavedEngCoderTask();
 syncComposerControls();
 syncComposerQuickBar();
 applyAppearance();
@@ -21,6 +20,7 @@ setBusy(false);
 updateVoiceButtons();
 showFileOriginMicNotice();
 setStatus(currentChat()?.messages.length ? 'Ready' : 'Idle', 'idle');
+void resumeSavedEngCoderTask();
 
 // Populate the runtime-owned EngCoder architecture without blocking first paint.
 probeModels(false);

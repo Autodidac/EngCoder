@@ -393,7 +393,7 @@ function terminalFromEvent(event) {
 
 async function resolveTaskApproval(state, approved, container) {
   const approval = state?.approvalRequest;
-  if (!approval || approval.pending) return;
+  if (!approval || approval.pending || approval.submitted) return;
 
   const taskId = String(approval.taskId || '').trim();
   const callId = String(approval.callId || '').trim();
@@ -416,6 +416,7 @@ async function resolveTaskApproval(state, approved, container) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error || `Approval request failed: HTTP ${response.status}`);
+    if (state.approvalRequest !== approval) return;
 
     approval.pending = false;
     approval.submitted = true;
@@ -423,9 +424,9 @@ async function resolveTaskApproval(state, approved, container) {
     setStatus(approved ? 'Resuming' : 'Continuing', 'busy');
     updateAssistantMessage(container, state);
   } catch (error) {
-    if (error?.name === 'AbortError') return;
+    if (state.approvalRequest !== approval) return;
     approval.pending = false;
-    approval.error = String(error?.message || error);
+    if (error?.name !== 'AbortError') approval.error = String(error?.message || error);
     updateAssistantMessage(container, state);
   }
 }
@@ -517,12 +518,12 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
       );
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error || `Event polling failed: HTTP ${response.status}`);
-      pollFailures = 0;
+      if (!Array.isArray(payload?.events)) throw new Error('EngCoder returned an invalid event response.');
 
       let renderPending = false;
       let progressPending = false;
       let processedEvents = 0;
-      for (const event of payload?.events || []) {
+      for (const event of payload.events) {
         after = Math.max(after, Number(event?.sequence) || 0);
         if (event?.task_id !== submission.task_id) continue;
         sawTaskEvent = true;
@@ -620,6 +621,7 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
       }
       if (renderPending) updateAssistantMessage(assistantBody, assistantState);
       if (progressPending) persistProgress();
+      pollFailures = 0;
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       pollFailures += 1;
@@ -730,12 +732,15 @@ async function resumeSavedEngCoderTask() {
   if (!container) return;
   const state = container.closest('.msg')?.__assistantState;
   if (!state) return;
-  Object.assign(state, last, { thinkingLive: true });
-  state.runtimeSessionId = last.runtimeSessionId || chat.runtimeSessionId;
+  const sessionId = last.runtimeSessionId || chat.runtimeSessionId;
+  if (!sessionId) return;
+  const approvalRequest = last.approvalRequest ? { ...last.approvalRequest, pending: false } : null;
+  Object.assign(state, last, { thinkingLive: true, runtimeSessionId: sessionId, approvalRequest });
   updateAssistantMessage(container, state);
   controller = new AbortController();
+  stopRequested = false;
   activeEngCoderTaskId = last.runtimeTaskId;
-  activeEngCoderSessionId = chat.runtimeSessionId;
+  activeEngCoderSessionId = sessionId;
   setBusy(true);
   setStatus('Resuming task', 'busy');
   const persist = () => { Object.assign(last, assistantMessageSnapshot(state, state.sourcePrompt)); scheduleChatSave(); };
@@ -747,16 +752,22 @@ async function resumeSavedEngCoderTask() {
   };
   try {
     const result = await pollEngCoderTask(
-      { task_id: last.runtimeTaskId, session_id: chat.runtimeSessionId }, container, state, timing, persist);
+      { task_id: last.runtimeTaskId, session_id: sessionId }, container, state, timing, persist);
     if (result.kind === 'completed' && !state.content && result.result) state.content = cleanAssistantContent(result.result);
     finalizeAssistantState(state, timing,
       result.kind === 'completed' ? 'engcoder-task' : result.kind === 'cancelled' ? 'engcoder-cancelled' : 'engcoder-error',
       state.completionModel || 'KeyMaker');
-    if (result.kind === 'failed') appendActivity(state, `Task failed · ${conciseRuntimeError(result.error)}`);
+    if (result.kind === 'failed') {
+      setStatus('Error', 'error');
+      showError(result.error, { retry: !isCandidateReply(state) });
+    } else {
+      setStatus(result.kind === 'cancelled' ? 'Stopped' : 'Ready', 'idle');
+    }
   } catch (error) {
     if (error?.name !== 'AbortError') {
       // Leave the task resumable if the server is unreachable; never duplicate it.
       appendActivity(state, `Reconnect pending · ${conciseRuntimeError(error?.message || error)}`);
+      setStatus('Disconnected', 'error');
     }
   } finally {
     updateAssistantMessage(container, state);
@@ -883,6 +894,7 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
   };
 
   const timing = { startedAt: assistantState.taskStartedAtMs, firstContentAt: 0 };
+  let awaitingEvents = false;
   controller = new AbortController();
   setBusy(true);
   setStatus('Sending', 'busy');
@@ -893,11 +905,15 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
     activeEngCoderSessionId = submission.session_id;
     assistantState.runtimeTaskId = submission.task_id;
     assistantState.runtimeSessionId = submission.session_id;
-    storeAssistant(); // task id must survive a page refresh
+    storeAssistant();
+    saveChats(); // Persist the assigned task id before starting the polling loop.
     appendActivity(assistantState, 'Queued in EngCoder runtime');
     updateAssistantMessage(assistantBody, assistantState);
+    if (stopRequested) void cancelEngCoderTask(submission.task_id, controller);
 
+    awaitingEvents = true;
     const terminal = await pollEngCoderTask(submission, assistantBody, assistantState, timing, storeAssistant);
+    awaitingEvents = false;
     const modelName = $('foundationModel')?.value || 'KeyMaker';
 
     if (terminal.kind === 'completed') {
@@ -918,12 +934,18 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
       throw new Error(terminal.error || 'EngCoder task failed.');
     }
   } catch (error) {
-    if (error?.name === 'AbortError' || stopRequested) {
+    if (error?.name === 'AbortError') {
       finalizeAssistantState(assistantState, timing, 'engcoder-cancelled', $('foundationModel')?.value || 'KeyMaker');
       appendActivity(assistantState, 'Stopped');
       updateAssistantMessage(assistantBody, assistantState);
       storeAssistant();
       setStatus('Stopped', 'idle');
+    } else if (awaitingEvents) {
+      appendActivity(assistantState, `Reconnect pending · ${conciseRuntimeError(error?.message || error)}`);
+      updateAssistantMessage(assistantBody, assistantState);
+      storeAssistant();
+      setStatus('Disconnected', 'error');
+      showError('Connection lost. Refresh to reconnect to this task.');
     } else {
       finalizeAssistantState(assistantState, timing, 'engcoder-error', $('foundationModel')?.value || 'KeyMaker');
       if (!String(assistantState.thinking || '').includes('Failed ·')) appendActivity(assistantState, `Client error · ${conciseRuntimeError(error?.message || error)}`);
@@ -943,21 +965,27 @@ async function sendMessage({ regenerate = false, targetIndex = -1 } = {}) {
   }
 }
 
-async function stopStreaming() {
-  stopRequested = true;
-  const taskId = activeEngCoderTaskId;
-  if (taskId) {
-    try {
-      await fetch(`${engcoderBase()}/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-    } catch {}
+async function cancelEngCoderTask(taskId, runController) {
+  try {
+    const response = await fetch(`${engcoderBase()}/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000)
+    });
+    // A task can finish between pressing Stop and awaiting the POST. Its
+    // terminal event still decides what appears in the transcript.
+    if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    if (controller !== runController) return;
+    stopRequested = false;
+    setStatus(`Stop not confirmed · ${conciseRuntimeError(error?.message || error)} · Try again`, 'busy');
   }
+}
 
-  const activeController = controller;
-  if (activeController) activeController.abort();
-  setStatus('Stopped', 'idle');
+async function stopStreaming() {
+  if (!controller || stopRequested) return;
+  stopRequested = true;
+  setStatus('Stopping', 'busy');
+  if (activeEngCoderTaskId) await cancelEngCoderTask(activeEngCoderTaskId, controller);
 }
 
 // Host-wide Qwen output observer. Requests through /api/tasks and through the

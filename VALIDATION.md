@@ -1,3 +1,8 @@
+## 0.7.5 chat lifecycle follow-up (2026-11-16)
+
+- Windows x64 Debug and Release builds each passed 67/67 CTest cases. All 19 Web smoke tests and JavaScript syntax checks passed.
+- The chat lifecycle fixture covers a Stop click before task registration, a reply completing before Stop arrives, retry after a failed cancel request, keeping the task ID after disconnection, malformed event polling, and refreshed approvals that receive stale acknowledgments. Real-window verification and task recovery after a native runtime restart remain open.
+
 ## 0.7.5 provider and approval follow-up (2026-11-16)
 
 - Windows x64 Debug and Release builds each passed 67/67 CTest cases. Loopback fixtures cover Chat Completions and Responses output limits, a streamed error forwarded by an OpenAI-compatible endpoint, incomplete streamed tool calls, valid tool-only replies, provider cancellation, and recovery from an evicted-model fixture. Architect's fallback test covers both an unavailable responder and an explicit cutoff.

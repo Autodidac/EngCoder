@@ -88,7 +88,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh correctly but never execute without consent; no orphaned tasks on backend restart.",
+    "details": "Pending approvals must survive refresh correctly but never execute without consent; no orphaned tasks on backend restart. Web fixtures cover Stop during submission, temporary disconnects, and approval refresh. Verify these in the desktop window and cover tasks that lose their terminal event on runtime restart.",
     "status": "open"
   },
   {

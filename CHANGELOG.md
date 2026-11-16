@@ -6,6 +6,7 @@
 - Kept the GGUF path editor open through model-library refreshes and restored four live routing checks to the Missions viewer.
 - Checked model files and backend availability before stopping the current model during reload. Rejected invalid split GGUF shard numbers and refreshed the model card after a failed load.
 - Reported output token limits as failures with retry guidance, and kept pending approval controls mounted during live updates.
+- Kept Stop tied to the runtime's final result, restored approvals after refresh, and kept interrupted tasks available for reconnect.
 
 ## 0.7.4 — Windows maintenance release (2026-11-10)
 
