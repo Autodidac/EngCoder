@@ -15,6 +15,7 @@ const labDialog = $('labDialog');
 const drawer = $('drawer');
 const thinkingDrawer = $('thinkingDrawer');
 const thinkingDrawerBody = $('thinkingDrawerBody');
+const activityResize = $('activityResize');
 const thinkingStateEl = $('thinkingState');
 const generatedOutputTab = $('generatedOutputTab');
 const qwenLiveTab = $('qwenLiveTab');
@@ -51,6 +52,7 @@ const speechRecognitionSupported = !!SpeechRecognitionCtor;
 const speechSynthesisSupported = 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance === 'function';
 
 const STORAGE_KEYS = {
+  activityPanelWidth: 'engcoder_activity_panel_width',
   endpoint: 'mylms_oa_endpoint',
   model: 'mylms_oa_model',
   apiKey: 'mylms_oa_api_key',

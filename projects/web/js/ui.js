@@ -74,7 +74,69 @@ closeThinkingDrawerBtn?.addEventListener('click', event => {
   closeThinkingDrawer();
 });
 newChatBtn.addEventListener('click', newChat);
-window.addEventListener('resize', () => applyResponsiveShell({ resized: true }));
+window.addEventListener('resize', () => {
+  finishActivityResize(false);
+  applyResponsiveShell({ resized: true });
+});
+
+let activityDrag = null;
+let activityResizeFrame = 0;
+
+function finishActivityResize(commit) {
+  if (!activityDrag) return;
+  const drag = activityDrag;
+  activityDrag = null;
+  cancelAnimationFrame(activityResizeFrame);
+  activityResizeFrame = 0;
+  document.body.classList.remove('resizing-activity');
+  if (activityResize.hasPointerCapture(drag.id)) activityResize.releasePointerCapture(drag.id);
+  setActivityWidth(commit ? drag.width : drag.original, commit);
+}
+
+activityResize?.addEventListener('pointerdown', event => {
+  if (event.button !== 0 || activityDrag || activityResize.hidden) return;
+  const width = thinkingDrawer.getBoundingClientRect().width;
+  activityResize.setPointerCapture(event.pointerId);
+  activityDrag = { id: event.pointerId, x: event.clientX, startWidth: width, width, original: preferredActivityWidth };
+  document.body.classList.add('resizing-activity');
+});
+activityResize?.addEventListener('pointermove', event => {
+  if (activityDrag?.id !== event.pointerId) return;
+  if (!(event.buttons & 1) || !activityResize.hasPointerCapture(event.pointerId)) {
+    finishActivityResize(false);
+    return;
+  }
+  activityDrag.width = clampActivityWidth(activityDrag.startWidth + activityDrag.x - event.clientX);
+  if (!activityResizeFrame) {
+    activityResizeFrame = requestAnimationFrame(() => {
+      activityResizeFrame = 0;
+      if (activityDrag) setActivityWidth(activityDrag.width);
+    });
+  }
+});
+activityResize?.addEventListener('pointerup', event => {
+  if (activityDrag?.id === event.pointerId) finishActivityResize(activityResize.hasPointerCapture(event.pointerId));
+});
+for (const type of ['pointercancel', 'lostpointercapture']) {
+  activityResize?.addEventListener(type, event => {
+    if (activityDrag?.id === event.pointerId) finishActivityResize(false);
+  });
+}
+activityResize?.addEventListener('keydown', event => {
+  const width = thinkingDrawer.getBoundingClientRect().width;
+  const step = event.shiftKey ? 80 : 24;
+  if (event.key === 'Escape' && activityDrag) {
+    finishActivityResize(false);
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    setActivityWidth(clampActivityWidth(width + (event.key === 'ArrowLeft' ? step : -step)), true);
+  } else if (event.key === 'Home' || event.key === 'End') {
+    setActivityWidth(event.key === 'Home' ? activityWidthMin : activityWidthMax(), true);
+  } else {
+    return;
+  }
+  event.preventDefault();
+});
+activityResize?.addEventListener('dblclick', () => setActivityWidth(0, true));
 document.addEventListener('click', event => {
   if (ctxMenu.style.display === 'block' && !ctxMenu.contains(event.target)) ctxMenu.style.display = 'none';
   const clickedChatControl = event.target.closest('#toggleDrawer');
@@ -86,6 +148,7 @@ document.addEventListener('click', event => {
   // The explicit close button and the panel toggle still close it.
   if (thinkingDrawer.classList.contains('open')
       && rightPanelView !== 'qwen'
+      && !document.body.classList.contains('activity-docked')
       && !thinkingDrawer.contains(event.target)
       && !clickedActivityControl
       && !clickedChatControl) {

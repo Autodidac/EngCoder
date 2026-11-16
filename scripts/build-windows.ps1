@@ -19,8 +19,8 @@ $NativeRoot = Join-Path $Root "projects\native"
 $WebRoot = Join-Path $Root "projects\web"
 Set-Location $Root
 
-$VcpkgTag = "2026.07.29"
-$VcpkgBaseline = "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+$VcpkgTag = "2026.10.16"
+$VcpkgBaseline = (Get-Content -LiteralPath (Join-Path $NativeRoot "vcpkg.json") -Raw | ConvertFrom-Json).'builtin-baseline'
 
 function Require-Command([string]$Name) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
@@ -160,11 +160,6 @@ function Initialize-PinnedVcpkg {
     $Path = Join-Path $Root ".deps\vcpkg"
     $Deps = Split-Path $Path
 
-    if ((Test-Path $Path) -and -not (Test-VcpkgBaseline $Path)) {
-        Write-Host "Repairing invalid project-local vcpkg checkout: $Path" -ForegroundColor Yellow
-        Remove-Item -LiteralPath $Path -Recurse -Force
-    }
-
     if (-not (Test-Path (Join-Path $Path ".git"))) {
         New-Item -ItemType Directory -Force -Path $Deps | Out-Null
         Invoke-NativeChecked -Description "vcpkg repository init" -FilePath "git" -ArgumentList @(
@@ -176,9 +171,9 @@ function Initialize-PinnedVcpkg {
     if (-not (Test-VcpkgBaseline $Path)) {
         Invoke-NativeChecked -Description "vcpkg baseline fetch" -FilePath "git" -ArgumentList @(
             "-C", $Path, "fetch", "--force", "--depth", "1", "origin", $VcpkgBaseline)
-        Invoke-NativeChecked -Description "vcpkg baseline checkout" -FilePath "git" -ArgumentList @(
-            "-C", $Path, "checkout", "--quiet", "--detach", $VcpkgBaseline)
     }
+    Invoke-NativeChecked -Description "vcpkg baseline checkout" -FilePath "git" -ArgumentList @(
+        "-C", $Path, "checkout", "--quiet", "--detach", $VcpkgBaseline)
 
     if (-not (Test-VcpkgBaseline $Path)) {
         throw "Pinned vcpkg checkout does not contain versions/baseline.json at $VcpkgBaseline."

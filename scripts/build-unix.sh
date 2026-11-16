@@ -45,8 +45,7 @@ done
 case "$CONFIG" in Debug|Release) ;; *) echo "configuration must be Debug or Release" >&2; exit 2 ;; esac
 case "$CLIENT" in gui|cli|web|server|none) ;; *) echo "client must be gui, cli, web, server, or none" >&2; exit 2 ;; esac
 
-VCPKG_TAG="2026.07.29"
-VCPKG_BASELINE="9e593bb18ea69cc5095e012465dcd675a822ed0d"
+VCPKG_TAG="2026.10.16"
 
 require_command() { command -v "$1" >/dev/null 2>&1 || { echo "$1 is required but was not found on PATH." >&2; exit 1; }; }
 require_command cmake
@@ -54,6 +53,7 @@ require_command ctest
 require_command git
 require_command python3
 require_command ninja
+VCPKG_BASELINE="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["builtin-baseline"])' < "$NATIVE_ROOT/vcpkg.json")"
 
 if [[ "$(uname -s)" == "Linux" ]]; then
   require_command pkg-config
@@ -96,10 +96,6 @@ if [[ "$USE_EXTERNAL_VCPKG" == "1" || "${ENGCODER_USE_EXTERNAL_VCPKG:-0}" == "1"
   validate_vcpkg "$VCPKG_ROOT" || { echo "External VCPKG_ROOT cannot resolve pinned baseline." >&2; exit 1; }
 else
   VCPKG_ROOT="$ROOT/.deps/vcpkg"
-  if [[ -e "$VCPKG_ROOT" ]] && ! validate_vcpkg "$VCPKG_ROOT"; then
-    echo "Repairing invalid project-local vcpkg checkout: $VCPKG_ROOT"
-    rm -rf "$VCPKG_ROOT"
-  fi
   if [[ ! -d "$VCPKG_ROOT/.git" ]]; then
     mkdir -p "$ROOT/.deps" "$VCPKG_ROOT"
     git -C "$VCPKG_ROOT" init --quiet
@@ -107,8 +103,8 @@ else
   fi
   if ! validate_vcpkg "$VCPKG_ROOT"; then
     git -C "$VCPKG_ROOT" fetch --force --depth 1 origin "$VCPKG_BASELINE"
-    git -C "$VCPKG_ROOT" checkout --quiet --detach "$VCPKG_BASELINE"
   fi
+  git -C "$VCPKG_ROOT" checkout --quiet --detach "$VCPKG_BASELINE"
   validate_vcpkg "$VCPKG_ROOT" || { echo "Pinned vcpkg checkout is invalid." >&2; exit 1; }
   "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 fi

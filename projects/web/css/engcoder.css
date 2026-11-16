@@ -62,7 +62,8 @@
     padding: 0 1rem;
     height: 100%;
     min-height: 100%;
-    transition: width .2s ease, max-width .2s ease;
+    position: relative;
+    left: var(--app-offset, 0px);
   }
 
   header {
@@ -771,6 +772,16 @@
     display:flex; flex-direction:column;
   }
   .thinking-drawer.open { transform: translateX(0); }
+  .activity-resize {
+    position: absolute; z-index: 1; inset: 12px auto 12px 0; width: 10px;
+    cursor: col-resize; touch-action: none;
+  }
+  .activity-resize::after {
+    content: ""; position: absolute; inset: 35% auto 35% 3px;
+    width: 2px; border-radius: 2px; background: var(--ring);
+  }
+  .activity-resize:hover::after, .activity-resize:focus-visible::after { background: var(--accent); }
+  body.resizing-activity { cursor: col-resize; user-select: none; }
   body.activity-open .thinking-drawer { box-shadow: 0 28px 64px -40px rgba(0,0,0,.9), 0 0 0 1px rgba(74,118,156,.12); }
   .thinking-drawer-body {
     flex:1 1 auto;

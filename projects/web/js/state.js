@@ -27,13 +27,38 @@ function maybeScroll(_final = false, force = false) {
 
 let previousShellWidth = window.innerWidth;
 
+const activityWidthMin = 320;
+const activityResizeBreakpoint = 1000;
+const shellEdgeGap = 14;
+const shellPadding = 32;
+let preferredActivityWidth = 0;
+try { preferredActivityWidth = Number(localStorage.getItem(STORAGE_KEYS.activityPanelWidth)) || 0; } catch {}
+
+function activityWidthMax(viewportWidth = window.innerWidth) {
+  return Math.min(900, viewportWidth - MIN_APP_WIDTH - shellEdgeGap - shellPadding);
+}
+
+function clampActivityWidth(width) {
+  return Math.round(Math.max(activityWidthMin, Math.min(activityWidthMax(), width)));
+}
+
+function setActivityWidth(width, remember = false) {
+  preferredActivityWidth = width;
+  applyResponsiveShell();
+  if (remember) {
+    try { localStorage.setItem(STORAGE_KEYS.activityPanelWidth, String(preferredActivityWidth)); } catch {}
+  }
+}
+
 function syncShellLayout() {
   const chatsOpen = drawer.classList.contains('open');
+  const activityOpen = thinkingDrawer.classList.contains('open');
   document.body.classList.toggle('chats-open', chatsOpen);
-  document.body.classList.toggle('activity-open', thinkingDrawer.classList.contains('open'));
+  document.body.classList.toggle('activity-open', activityOpen);
   toggleDrawerBtn.classList.toggle('active', chatsOpen);
   toggleDrawerBtn.setAttribute('aria-expanded', String(chatsOpen));
-  toggleThinkingDrawerBtn.classList.toggle('active', thinkingDrawer.classList.contains('open'));
+  toggleThinkingDrawerBtn.classList.toggle('active', activityOpen);
+  toggleThinkingDrawerBtn.setAttribute('aria-expanded', String(activityOpen));
 }
 
 // Only an actual narrowing of the viewport may auto-close Chats. Calling this
@@ -46,17 +71,37 @@ function applyResponsiveShell({ resized = false } = {}) {
   }
   previousShellWidth = viewportWidth;
 
-  const edgeGap = 14;
-  const shellPadding = 32;
-  const rightOccupied = thinkingDrawer.classList.contains('open') ? thinkingDrawer.getBoundingClientRect().width + edgeGap : 0;
-  const desiredLeftWidth = drawer.classList.contains('open') ? drawer.getBoundingClientRect().width + edgeGap : 0;
+  const rootStyle = document.documentElement.style;
+  const wide = viewportWidth >= activityResizeBreakpoint;
+  const activityOpen = thinkingDrawer.classList.contains('open');
+  if (wide && preferredActivityWidth) {
+    rootStyle.setProperty('--activity-w', `${clampActivityWidth(preferredActivityWidth)}px`);
+  } else {
+    rootStyle.removeProperty('--activity-w');
+  }
+  const activityWidth = activityOpen ? thinkingDrawer.getBoundingClientRect().width : 0;
+  thinkingDrawer.inert = !activityOpen;
+  const desiredRightWidth = activityWidth ? activityWidth + shellEdgeGap : 0;
+  const rightOccupied = viewportWidth - desiredRightWidth - shellPadding >= MIN_APP_WIDTH ? desiredRightWidth : 0;
+  document.body.classList.toggle('activity-docked', rightOccupied > 0);
+  const desiredLeftWidth = drawer.classList.contains('open') ? drawer.getBoundingClientRect().width + shellEdgeGap : 0;
   // Compact viewports use the existing overlay drawer. Never crush the chat
   // below its minimum width merely to make room for the drawer beside it.
   const leftOccupied = viewportWidth - desiredLeftWidth - rightOccupied - shellPadding >= MIN_APP_WIDTH
     ? desiredLeftWidth : 0;
   const available = viewportWidth - leftOccupied - rightOccupied - shellPadding;
   const target = Math.min(1240, Math.max(Math.min(MIN_APP_WIDTH, viewportWidth - shellPadding), Math.floor(available)));
-  document.documentElement.style.setProperty('--app-width', `${target}px`);
+  rootStyle.setProperty('--app-width', `${target}px`);
+  rootStyle.setProperty('--app-offset', `${(leftOccupied - rightOccupied) / 2}px`);
+  if (activityResize) {
+    activityResize.hidden = !wide || !activityOpen;
+    if (!activityResize.hidden) {
+      activityResize.setAttribute('aria-valuemin', String(activityWidthMin));
+      activityResize.setAttribute('aria-valuemax', String(activityWidthMax()));
+      activityResize.setAttribute('aria-valuenow', String(Math.round(activityWidth)));
+      activityResize.setAttribute('aria-valuetext', `${Math.round(activityWidth)} pixels`);
+    }
+  }
 
   syncShellLayout();
   // Shell width changed → re-evaluate composer wrap in the new geometry.

@@ -20,7 +20,7 @@
       <button id="toggleDrawer" type="button" class="icon-btn" title="Chats" aria-label="Chats" aria-controls="drawer" aria-expanded="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16"></path><path d="M4 12h16"></path><path d="M4 16.5h16"></path></svg>
       </button>
-      <button id="toggleThinkingDrawer" type="button" class="icon-btn" title="Generated output" aria-label="Generated output">
+      <button id="toggleThinkingDrawer" type="button" class="icon-btn" title="Generated output" aria-label="Generated output" aria-controls="thinkingDrawer" aria-expanded="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"></rect><path d="M11.5 4v16"></path></svg>
       </button>
       <button id="labBtn" type="button" class="toolbar-text-btn">EngCoder Lab</button>
@@ -95,7 +95,9 @@
   <ul id="chatList" class="chat-list"></ul>
 </aside>
 
-<aside id="thinkingDrawer" class="thinking-drawer" aria-label="Generated output">
+<aside id="thinkingDrawer" class="thinking-drawer" aria-label="Generated output" inert>
+  <div id="activityResize" class="activity-resize" role="separator" aria-label="Output panel width"
+       aria-controls="thinkingDrawerBody" aria-orientation="vertical" tabindex="0" hidden></div>
   <div class="drawer-header">
     <h3>Generated output</h3><span class="small" id="thinkingState">Idle</span>
     <button id="closeThinkingDrawer" type="button" class="icon-btn drawer-close" title="Close generated output" aria-label="Close generated output">×</button>

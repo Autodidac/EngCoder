@@ -1,3 +1,9 @@
+## 0.7.5 dependency and output layout follow-up (2026-11-16)
+
+- Clean Windows x64 builds against vcpkg 2026.10.16 passed 67/67 CTest cases in Debug and Release. The registry resolved curl 8.23.0, cpp-httplib 0.59.0, SDL 3.4.18, ImGui 1.92.9, and Catch2 3.16.0. Linux and macOS builds were not run.
+- All 19 Web checks passed. The responsive fixture covers lost pointer ownership and capture, keyboard resize, and compact fallback. A browser smoke against the isolated Release server verified the divider at 1,440 × 900, keyboard resizing from 380 to 404 CSS pixels, width persistence after reload, and the overlay at 620 × 800.
+- Reviewed [EpochGui 0.90.3](https://github.com/Autodidac/EpochGui/tree/336d3791bc4a4325e8160352c7279d4d0fd605bb). The shared EngCoder frontend applies its bounded splitter and cancelled-pointer behavior with native browser controls.
+
 ## 0.7.5 chat lifecycle follow-up (2026-11-16)
 
 - Windows x64 Debug and Release builds each passed 67/67 CTest cases. All 19 Web smoke tests and JavaScript syntax checks passed.

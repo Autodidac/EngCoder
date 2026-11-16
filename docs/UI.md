@@ -22,6 +22,8 @@ Worked for 18s  >
 
 Run info summarizes Architect routing/model time, KeyMaker inference, addons, tool calls, memory retrieval, and task timing. The optional runtime timeline collapses by default unless the user chooses otherwise. It reports observable runtime events; it never exposes or fabricates hidden chain-of-thought. The report is stored with its chat message and deleted with the chat/native runtime session.
 
+The Generated output panel stays beside the conversation when there is room and uses an overlay in narrow windows. Drag its left edge to resize it, or focus the divider and use the arrow keys. Shift moves it farther, Home and End select the limits, and double-click restores the default. EngCoder remembers the last committed width.
+
 ## Session Settings
 
 Session Settings stays compact and conversation-oriented:

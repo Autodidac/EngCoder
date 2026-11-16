@@ -1,4 +1,5 @@
 function closeThinkingDrawer() {
+  finishActivityResize(false);
   thinkingDrawer.classList.remove('open');
   applyResponsiveShell();
 }

@@ -25,6 +25,8 @@ Run `EngCoder.exe --native-ui` only for the diagnostic ImGui fallback.
 
 The C++ project is `projects/native/`; generated Visual Studio files remain under repository-level `out/build/`. `auto.bat` stops previously recorded standalone EngCoder server processes before GUI/CLI launch and refuses to launch when CTest fails.
 
+The app build uses the pinned [vcpkg 2026.10.16 registry](https://github.com/microsoft/vcpkg/releases/tag/2026.10.16). The Windows and Unix build scripts read the exact registry commit from the native manifest. Updating the project-local checkout preserves its download cache when using `-KeepDependencies`.
+
 ## DPI and multi-monitor behavior
 
 The shared frontend uses browser DPI handling. The diagnostic ImGui fallback explicitly enables Windows Per-Monitor V2 awareness, SDL high-pixel-density rendering, and live rescaling when moved across displays with different DPI/4K scaling.
