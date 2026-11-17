@@ -46,6 +46,8 @@ add_library(engcoder_core STATIC
     src/core/ids.cpp
     src/core/file_replace_windows.cpp
     src/core/file_replace_posix.cpp
+    src/core/learning_policy_lock_windows.cpp
+    src/core/learning_policy_lock_posix.cpp
     src/model/lm_studio_provider.cpp
     src/model/runtime_model.cpp
     src/model/qwen_flash_runtime.cpp
@@ -182,6 +184,13 @@ if(ENGCODER_BUILD_TESTS)
     set_target_properties(engcoder_tests PROPERTIES FOLDER "Tests")
     find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_executable(engcoder_policy_lock_probe tests/policy_lock_probe.cpp)
+        target_link_libraries(engcoder_policy_lock_probe PRIVATE engcoder::core)
+        add_test(NAME learning_policy_lock
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_learning_policy_lock.py")
+        add_test(NAME learning_policy_lock_interop
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_policy_lock_interop.py" "$<TARGET_FILE:engcoder_policy_lock_probe>")
+        set_tests_properties(learning_policy_lock learning_policy_lock_interop PROPERTIES TIMEOUT 30)
         add_test(NAME boundary_lab_routing
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_boundary_lab.py")
         set_tests_properties(boundary_lab_routing PROPERTIES TIMEOUT 30)

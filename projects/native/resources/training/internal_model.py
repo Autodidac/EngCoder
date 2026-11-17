@@ -10,9 +10,11 @@ from __future__ import annotations
 try:
     from . import curriculum_guard as _threadspire_curriculum_guard
     from . import curriculum_compiler as _curriculum_compiler
+    from .learning_policy import policy_lock as _learning_policy_lock
 except ImportError:
     import curriculum_guard as _threadspire_curriculum_guard
     import curriculum_compiler as _curriculum_compiler
+    from learning_policy import policy_lock as _learning_policy_lock
 _threadspire_curriculum_guard.install()
 
 
@@ -1261,6 +1263,22 @@ def bounded_bootstrap_learning_rate(
     return min(scheduled, previous_ceiling)
 
 
+def learning_policy_snapshot(state_root: Path) -> dict[str, Any]:
+    """Read under policy_lock when paired with an activation or mutation."""
+    digest = _curriculum_compiler._admission_denylist(
+        Path(state_root) / "learning" / "denylist.json"
+    )[2]
+    return {"schema": 1, "denylist_sha256": digest}
+
+
+def require_learning_policy(manifest: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    # Random initialization has no learned evidence to revoke.
+    if manifest.get("status") == "initialized-untrained" and manifest.get("steps") == 0:
+        return
+    if manifest.get("learning_policy") != snapshot:
+        raise RuntimeError("generation learning policy is stale or unrecorded; rebuild from an eligible parent")
+
+
 def save_generation(
     state_root: Path,
     model: EngCoderModel,
@@ -1280,6 +1298,7 @@ def save_generation(
     full_backbone_trained: bool = False,
     generation_ready: bool = False,
     bootstrap_policy: str = BOOTSTRAP_POLICY,
+    learning_policy: dict[str, Any] | None = None,
 ) -> Path:
     if promote and parent is not None:
         if status != "trained":
@@ -1387,6 +1406,7 @@ def save_generation(
         ),
         "bootstrap_policy": bootstrap_policy,
         "skills": config.skills,
+        "learning_policy": learning_policy,
         "external_base_weights": False,
     }
     atomic_write_text(temporary / "manifest.json", json.dumps(manifest, indent=2) + "\n")
@@ -1394,7 +1414,8 @@ def save_generation(
         shutil.rmtree(destination)
     os.replace(temporary, destination)
     if promote:
-        with _promotion_lock(state_root):
+        with _promotion_lock(state_root), _learning_policy_lock(state_root):
+            require_learning_policy(manifest, learning_policy_snapshot(state_root))
             _publish_active_pointer_locked(state_root, generation, parent)
     return destination
 
@@ -2804,17 +2825,30 @@ def load_evaluation_sequences(paths: Iterable[Path | str], maximum_tokens: int,
 
 
 def preflight_compiled_training(data_paths: Sequence[Path], manifest_path: Path,
-                                maximum_tokens: int, scope: str | None) -> dict[str, int]:
+                                maximum_tokens: int, scope: str | None) -> dict[str, Any]:
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     expected = manifest.get("counts", {}).get("selected_records")
     if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
         raise RuntimeError("compiled curriculum has no valid selected-record count")
     if len(data_paths) != 1 or sha256_file(Path(data_paths[0])) != manifest.get("hashes", {}).get("output_sha256"):
         raise RuntimeError("compiled curriculum does not match its manifest")
+    def check_policy_snapshot() -> None:
+        policy = manifest.get("learning_denylist")
+        if not isinstance(policy, dict) or "path" not in policy or "sha256" not in policy:
+            raise RuntimeError("compiled curriculum lacks its learning-policy snapshot")
+        path, expected_hash = policy["path"], policy["sha256"]
+        if path is not None and (not isinstance(path, str) or not path):
+            raise RuntimeError("compiled curriculum has an invalid learning-policy path")
+        current_hash = _curriculum_compiler._admission_denylist(Path(path) if path else None)[2]
+        if current_hash != expected_hash:
+            raise RuntimeError("learning policy changed after curriculum compilation; recompile before training")
+    check_policy_snapshot()
     loaded = len(load_training_sequences(data_paths, maximum_tokens, scope))
+    check_policy_snapshot()
     if loaded != expected:
         raise RuntimeError(f"training admission mismatch: compiler selected {expected}, tensor loader admitted {loaded}; review eligibility, scope and duplicate dialogue before training")
-    return {"compiled_records": expected, "loaded_training_sequences": loaded}
+    return {"compiled_records": expected, "loaded_training_sequences": loaded,
+            "learning_policy": {"schema": 1, "denylist_sha256": manifest["learning_denylist"]["sha256"]}}
 
 
 def training_sequences_fingerprint(sequences: Sequence[TrainingSequence]) -> str:
@@ -3096,7 +3130,12 @@ def train_candidate(
     progress_file: Path | None = None,
     bootstrap_target_steps: int = 0,
     honor_inference_priority: bool = True,
+    expected_learning_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    with _learning_policy_lock(state_root):
+        policy_snapshot = learning_policy_snapshot(state_root)
+        if expected_learning_policy is not None and expected_learning_policy != policy_snapshot:
+            raise RuntimeError("learning policy changed after admission; recompile before training")
     write_progress(
         progress_file,
         phase="starting",
@@ -3122,6 +3161,7 @@ def train_candidate(
         bootstrap_target_steps=max(0, int(bootstrap_target_steps)),
     )
     loaded = load_active_model(state_root, device=device, dtype=torch.float32)
+    require_learning_policy(loaded.manifest, policy_snapshot)
     active_generation = loaded.generation
     if (
         training_data_scope == "keymaker-foundation"
@@ -3135,6 +3175,11 @@ def train_candidate(
             state_root,
             active_generation,
         )
+        if repair_generation is not None:
+            repair_manifest = generation_manifest(internal_root(state_root) / "generations" / repair_generation)
+            if repair_manifest.get("learning_policy") != policy_snapshot:
+                print(json.dumps({"event": "bootstrap-repair-policy-rejected", "generation": repair_generation}), flush=True)
+                repair_generation = None
         if repair_generation is not None:
             loaded = load_generation_model(
                 state_root,
@@ -3198,6 +3243,8 @@ def train_candidate(
     if not sequences:
         raise RuntimeError("no verified internal-model training examples were available")
     training_data_fingerprint = training_sequences_fingerprint(sequences)
+    training_data_fingerprint = hashlib.sha256((training_data_fingerprint + json.dumps(
+        policy_snapshot, sort_keys=True)).encode("utf-8")).hexdigest()
     anchor_data_fingerprint = training_sequences_fingerprint(anchors)
     parameters = configure_training_scope(model, optimizer_scope)
     prior_bootstrap_target = int(loaded.manifest.get("bootstrap_target_steps", 0))
@@ -3388,6 +3435,8 @@ def train_candidate(
         atomic_write_text(active_marker, f"pid={os.getpid()}\n")
     try:
         while steps < maximum_steps:
+            if learning_policy_snapshot(state_root) != policy_snapshot:
+                raise RuntimeError("learning policy changed during training; candidate invalidated")
             if control_dir is not None and honor_inference_priority and (
                 (control_dir / "inference.priority").exists()
                 or any(control_dir.glob("inference.*"))
@@ -3726,6 +3775,7 @@ def train_candidate(
         full_backbone_trained=full_backbone_trained,
         generation_ready=generation_ready,
         bootstrap_policy=BOOTSTRAP_POLICY,
+        learning_policy=policy_snapshot,
     )
     checkpoint_path.unlink(missing_ok=True)
     metrics = {
@@ -3900,11 +3950,12 @@ def promote_generation(
         raise ValueError("invalid internal generation identifier")
     root = internal_root(state_root)
     candidate_path = root / "generations" / generation
-    with _promotion_lock(state_root):
+    with _promotion_lock(state_root), _learning_policy_lock(state_root):
         # Candidate directories can be replaced by another process. Read and
         # validate under the same lock that publishes the active pointer so a
         # previously checked manifest cannot be swapped before promotion.
         manifest = generation_manifest(candidate_path)
+        require_learning_policy(manifest, learning_policy_snapshot(state_root))
         if str(manifest.get("generation", "")) != generation:
             raise RuntimeError("candidate manifest does not match its generation directory")
         if str(manifest.get("parent", "")) != expected_parent:
@@ -3970,8 +4021,9 @@ def activate_generation(
     if Path(generation).name != generation or Path(expected_current).name != expected_current:
         raise ValueError("invalid internal generation identifier")
     target_path = internal_root(state_root) / "generations" / generation
-    with _promotion_lock(state_root):
+    with _promotion_lock(state_root), _learning_policy_lock(state_root):
         target = generation_manifest(target_path)
+        require_learning_policy(target, learning_policy_snapshot(state_root))
         if str(target.get("generation", "")) != generation:
             raise RuntimeError("rollback manifest does not match its generation directory")
         if str(target.get("status", "")) != "trained":

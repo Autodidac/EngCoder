@@ -1,3 +1,28 @@
+## Native/worker lock and checkpoint race verification (2026-11-17)
+
+- Added a test-only compiled C++ lock probe and registered OS lock and interoperability tests with CTest. Python-held ownership blocks native acquisition; native-held ownership blocks Python acquisition; both acquire after release. Full Windows Release build and CTest passed 80/80. POSIX remains unexecuted.
+- Six CPU policy-lineage tests passed using real tiny artifacts. The newest test performs one real optimizer step, saves a checkpoint, changes the ban policy, and observes a training error before the next step. A retry with unchanged example data does not restore that stale checkpoint: it yields to a foreground-inference marker at step zero. The active pointer remains byte-identical. No CUDA or user model state was used.
+- Ban-policy serialization and checkpoint invalidation now have direct evidence. Remaining revocation work includes Remove-only policy revisions, recovery UI for corrupt policies, and clear active-weight rollback/rebuild status. Previously learned content is not erased merely by banning it.
+
+## Candidate policy lineage enforcement (2026-11-17)
+
+- Compiled-policy preflight now passes its exact snapshot into training, closing the preflight-to-start gap before model allocation. Training validates inherited weights, ignores repair generations with stale/unrecorded policy, incorporates policy into checkpoint identity, and checks for policy changes between training steps.
+- New generation manifests retain the starting policy. Immediate promotion, deferred promotion and rollback verify it under the shared policy lock before changing the active pointer. Random initialization is exempt because it has no learned evidence; historical trained artifacts without policy metadata are not silently grandfathered in.
+- Five tiny real CPU-artifact tests passed: stale candidate rejection, matching-policy promotion then stale rollback rejection, legacy metadata rejection, post-preflight invalidation before model load, and immediate-promotion rejection. All rejected activation tests preserve active-pointer bytes. Seven compiler/tensor admission tests also pass. Test readiness flags are fixtures, not evidence of learned competence; no user weights or GPU were used.
+- Still required: direct native/Python contention certification and a training/checkpoint race test. A policy mismatch is conservative and requires rebuilding from an eligible ancestor; this does not unlearn previously active weights. Remove without Ban is not yet a policy revision. No new native build is claimed after this Python-only follow-up.
+
+## Shared learning-policy serialization groundwork (2026-11-17)
+
+- Native Ban/Unban and the worker's three generation activation paths now acquire `learning/policy.lock`: exclusive byte zero on Windows, `flock` on POSIX. Locks are OS-owned, bounded to five seconds, released through RAII/finally and never removed from the filesystem. Tensor training does not hold this lock.
+- Windows Release build and 78/78 CTest passed. Two standard-library worker lock tests passed, including real child-process contention/termination and exception cleanup. Seven CPU tensor-admission tests still pass. The POSIX implementation was not built on this Windows host; native/Python contention still needs a direct interoperability test.
+- This is groundwork, not complete revocation: policy fingerprints must still be attached to candidate/checkpoint lineage and checked under this shared lock. No trained weights were activated by this pass.
+
+## Compiled-policy preflight revalidation (2026-11-17)
+
+- Tensor admission now requires the compiler's learning-policy snapshot and checks the current denylist digest both before and after loading sequences. Creating, changing or deleting the policy since compilation rejects the stale compiled dataset; malformed policies remain fail-closed.
+- Seven real compiler/tensor-loader CPU tests passed using the existing optional PyTorch runtime, without loading a model or allocating CUDA. The new regression changes the policy after compilation and during sequence loading. No dependency installation occurred.
+- This is preflight protection, not in-flight revocation: native policy mutation and worker promotion do not yet share a serialization boundary. Candidate/checkpoint lineage invalidation remains required. No new native build or weight promotion is claimed for this Python-only follow-up.
+
 ## Transactional learning-ban persistence (2026-11-17)
 
 - Ban/unban now stage and verify the complete file, then use the existing platform-specific atomic replacement helper. Replacement failure never deletes the prior denylist. In-memory policy changes happen only after persistence succeeds; ban evidence removal follows successful policy persistence.

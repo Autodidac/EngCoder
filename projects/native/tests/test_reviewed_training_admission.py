@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resources" / "training"))
 import curriculum_compiler as compiler
 import internal_model as internal
@@ -17,6 +18,25 @@ def reviewed(row, purpose="training"):
 
 
 class ReviewAdmission(unittest.TestCase):
+    def test_policy_changes_invalidate_preflight(self):
+        self.write([reviewed(self.row)])
+        policy = self.source.parent / "denylist.json"
+        compiler.compile_curriculum(self.source, self.output, self.manifest,
+                                    scope="keymaker-foundation", denylist_path=policy)
+        policy.write_text("[]")
+        with self.assertRaisesRegex(RuntimeError, "policy changed"):
+            internal.preflight_compiled_training([self.output], self.manifest, 256, "keymaker-foundation")
+        compiler.compile_curriculum(self.source, self.output, self.manifest,
+                                    scope="keymaker-foundation", denylist_path=policy)
+        load = internal.load_training_sequences
+        def change_during_load(*args):
+            sequences = load(*args)
+            policy.unlink()
+            return sequences
+        with patch.object(internal, "load_training_sequences", side_effect=change_during_load):
+            with self.assertRaisesRegex(RuntimeError, "policy changed"):
+                internal.preflight_compiled_training([self.output], self.manifest, 256, "keymaker-foundation")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

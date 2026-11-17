@@ -1,5 +1,6 @@
 #include "engcoder/learning/learning_service.hpp"
 #include "engcoder/core/file_replace.hpp"
+#include "engcoder/core/learning_policy_lock.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -97,6 +98,7 @@ bool LearningService::remove(std::string_view content_hash) {
 
 json LearningService::ban(std::string_view prompt, std::string_view response, std::string_view reason) {
     if (prompt.empty() && response.empty()) throw std::invalid_argument("prompt or response is required to ban learning content");
+    const core::LearningPolicyLock policy_lock(root_.parent_path());
     const auto prompt_hash = memory::EpisodeStore::make_content_hash("*", prompt, "");
     const auto response_hash = memory::EpisodeStore::make_content_hash("*", "", response);
     const auto ban_id = memory::EpisodeStore::make_content_hash("ban", prompt_hash, response_hash);
@@ -132,6 +134,7 @@ json LearningService::ban(std::string_view prompt, std::string_view response, st
 
 bool LearningService::unban(std::string_view ban_id) {
     if (ban_id.empty()) return false;
+    const core::LearningPolicyLock policy_lock(root_.parent_path());
     std::scoped_lock lock(mutex_);
     const auto old_size = denylist_.size();
     json next = json::array();

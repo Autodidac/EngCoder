@@ -2803,6 +2803,7 @@ def train_internal(arguments: argparse.Namespace) -> int:
                 progress_file=progress_file,
                 bootstrap_target_steps=max(0, arguments.bootstrap_target_steps),
                 honor_inference_priority=not arguments.foreground_bootstrap,
+                expected_learning_policy=counts["learning_policy"] if selection_manifest is not None else None,
             )
     except Exception as exception:
         checkpoint_root = arguments.state_root / "models" / "internal" / "checkpoints"
