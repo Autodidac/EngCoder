@@ -1,3 +1,9 @@
+## 0.7.5 isolated bounded workspace reads (2026-11-17)
+
+- The workspace tool regression reproduced unbounded candidate reads and ignored line ranges. The isolated candidate now defaults to 40 complete lines and supports one-based `start_line` and `max_lines` with a ceiling of 80 lines and 3,072 source bytes. Pages preserve the original line endings and return `next_line` for continuation. A line larger than the byte ceiling returns a diagnostic with the next line number. Ordinary reads without range arguments keep their existing response.
+- Two live 9B proposals for the argument guard used invalid C++ signatures. The operator left both unapplied and implemented the guard and read paging in the isolated checkout. The Windows x64 Release build and 68/68 CTest cases passed, including the registered-tool paging test.
+- The fresh Release server ran the existing Qwen 3.5 9B with a read-only diagnostic on the 80,288-byte `agent_runtime.cpp`. It returned the exact 1,739 bytes for lines 1–40 and `next_line` 41. The provider accepted the next turn and decoded 96 tokens at 11.21 tokens/s after evaluating 474 prompt tokens in 657 ms following prefix reuse. The run reached the expected “No checkpointed candidate edit was completed” terminal event after 14.3 s. Peak working sets were 5.70 GiB for the provider and 11.26 MiB for EngCoder. Whole-device GPU memory peaked at 13,658 MiB and utilization at 62% with 12 layers offloaded. The working source awaits integration approval.
+
 ## 0.7.5 isolated patch approval preflight (2026-11-17)
 
 - The native candidate fixture reproduced prompts for empty, absent, overlapping, and unchanged patches. The candidate now checks the same matching rules before review and execution. It reports the reason to the model and the Run info timeline. Valid patches still require per-edit approval, and edits to the file while approval is pending still invalidate that approval.
