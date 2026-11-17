@@ -95,7 +95,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-014",
     "priority": "P1",
     "title": "Cache operation lifecycle serialization",
-    "details": "First reserve install admission before releasing the lock so two requests cannot both start the worker. Add an overlap fixture that uses local files. Then coordinate download, load/unload, transient-cache clearing and confirmed weight deletion, and test install versus clear/delete and cancellation.",
+    "details": "The isolated Windows Release candidate reserves install admission and coordinates preparation, profile changes, transient-cache clearing and confirmed weight deletion. A fixture using local files verifies that only one of two competing callers starts installation, that competing mutations return busy, and that a retry succeeds after the installer exits. Live download cancellation, cross-platform checks and working-source integration remain open.",
     "status": "open"
   },
   {
