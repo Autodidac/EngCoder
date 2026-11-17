@@ -11,6 +11,8 @@ $env:ENGCODER_DATA_ROOT = 'D:\work\engcoder-candidate-state'
 
 Use the same frontend as the running EngCoder release. When launching a separate server, point its `--web-root` at that release’s `projects/web` and choose an unused loopback port with `--port`. Open the local UI, select **EngCoder Lab → Runtime → Use candidate self-iteration for the next send**, and send one specific coding objective.
 
+When working in Codex, run `EngCoderServer.exe` with the isolated workspace and data directory and open its loopback URL in the Codex preview. This uses the same shared frontend and keeps the run in view. Keep candidate tests and build configuration outside the edit you are approving.
+
 The candidate setting is consumed on submission. KeyMaker can inspect the checkout and propose edits. Approve each exact edit in chat. Existing files require an exact patch. If the file changes while the approval is pending, EngCoder stops and requests a fresh review. New-file creation cannot replace an existing file. EngCoder checkpoints the files and runs CMake and CTest in order against the configured candidate, using Release and a five-minute timeout per check. An empty test suite fails the gate. A nonzero exit sends bounded diagnostics back to the selected model for at most two fresh repair attempts within the normal turn budget. Stop cancels the task. Run info records check starts, exits and repair attempts.
 
 A passing task leaves the candidate available for review. Inspect its diff and decide whether to keep the candidate or integrate the change through your normal Git workflow. Every new task requires a fresh opt-in and fresh edit approvals. Candidate edits and check receipts are separate from neural training.

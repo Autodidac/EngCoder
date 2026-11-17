@@ -4,28 +4,28 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P0-001",
     "priority": "P0",
     "title": "True process sandbox",
-    "details": "Workspace path checks do not contain `process.run`. Add isolated low-privilege OS principal/container or explicit safe executable allowlist; Windows restricted token/AppContainer policy, no-follow handle traversal and junction protection. Tests: a tool attempting to access files outside the project must be denied; cancel kills descendants.",
+    "details": "Windows Job Objects and POSIX process groups implement descendant termination. Workspace path checks still leave `process.run` outside an OS sandbox. Add isolated low-privilege OS principal/container or explicit safe executable allowlist, Windows restricted token/AppContainer policy, no-follow handle traversal, and junction protection. Verify denial outside the workspace and exercise descendant cancellation with live children.",
     "status": "open"
   },
   {
     "id": "P0-002",
     "priority": "P0",
-    "title": "Authenticated remote API — partially implemented (requires penetration/Windows verification)",
-    "details": "Prevent remote clients from invoking state-changing `/api/tasks`, model management or tool approvals without authentication; verify CSRF/CORS and TLS/proxy setup. Until then bind loopback only.",
+    "title": "Authenticated remote API",
+    "details": "Ordinary serving rejects remote requests while **Serve remotely** is off and requires bearer authentication on protected dynamic routes when enabled. Candidate hosts bind loopback. Verify state-changing routes, CSRF/CORS and TLS/proxy behavior on Windows before remote acceptance.",
     "status": "open"
   },
   {
     "id": "P0-003",
     "priority": "P0",
     "title": "MTP capability certification",
-    "details": "Validate draft GGUF tokenizer/architecture/metadata against the internal main model and actual `llama-server` supported switches before presenting Enable. Test known compatible/incompatible pairing on real Qwen; display a clear diagnostic, preserve active model on failure. Do not use LM Studio as cross-process MTP.",
+    "details": "Local profile checks reject missing, self-referential or invalid GGUF drafts before stopping a working runtime. Validate draft tokenizer, architecture and metadata against the main model and actual `llama-server` flags before enabling MTP. Test known compatible and incompatible real Qwen pairings, and preserve the active model on failure. Keep MTP within the qualified native model process.",
     "status": "open"
   },
   {
     "id": "P0-004",
     "priority": "P0",
     "title": "Windows native build, Qwen reload, offload and MTP end-to-end",
-    "details": "Capture compiler/test outputs and confirmed GPU residency. Verify Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, and negative test for incompatible MTP. On a real split GGUF, verify the model card can link the shards in place, keep the active model running until explicit reload, and use the new path after reload.",
+    "details": "Windows Debug and Release builds and external GGUF inference have separate recorded evidence. Verify built-in Qwen load, exact -ngl after changed GPU %, explicit reload, correct response, physical residency, and negative MTP pairing. On a real split GGUF, link shards in place, keep the active model running until explicit reload, and verify the new path after reload.",
     "status": "open"
   },
   {
@@ -39,7 +39,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-006",
     "priority": "P1",
     "title": "Server-side conversation transcript sync",
-    "details": "(Web UI currently uses localStorage, subject to quota). Build browser-independent transcript read API and event reconstruction, transactional checkpoints, corruption recovery, stable chat UUIDs, terminal-task reconciliation after native restart, and a true live event transport such as SSE.",
+    "details": "The isolated Windows candidate reconciles interrupted tasks on restart and the in-Codex preview recovered the saved approval. Chats still use localStorage. Build browser-independent transcript reads and reconstruction, transactional checkpoints, corruption recovery, stable chat UUIDs, and a live event transport such as SSE.",
     "status": "open"
   },
   {
@@ -67,14 +67,14 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-010",
     "priority": "P1",
     "title": "Capability manifest and dynamic UI",
-    "details": "Runtime-backed per-model compatibility matrix: context length, tools, vision, draft acceptance, tokenizer, KV formats, loaded state. Hide options until verified; use actual provider discovery with changing models and live device capabilities.",
+    "details": "Backend capabilities and cache/active state are available for native profiles. Verify a per-model matrix covering context length, tools, vision, draft acceptance, tokenizer, KV formats and loaded state. Use actual provider discovery and live device capabilities to decide which controls to expose.",
     "status": "open"
   },
   {
     "id": "P1-011",
     "priority": "P1",
     "title": "Power-loss safe profile storage and locking",
-    "details": "Atomic write + fsync + rename for native settings; race-free install/load/clear-cache/delete weights.",
+    "details": "Native profile writes use atomic replacement and Windows requests write-through. Verify durable file and directory flushing across platforms and coordinate profile writes with install, load, cache clearing and weight deletion.",
     "status": "open"
   },
   {
@@ -88,21 +88,21 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing, and restart reconciliation. The loopback restart test covered stale approval rejection and idempotence. Web fixtures cover Stop during submission, temporary disconnects, approval refresh, and terminal cursor replay. Working-source integration and desktop restart acceptance remain open.",
+    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing and restart reconciliation. Inside Codex, the approval cleared after restart and Run info retained the reason after reload. Web fixtures cover Stop during submission, temporary disconnects, terminal cursor replay and attaching one observer when the saved chat is reopened. Working-source integration and a full standalone desktop restart remain open.",
     "status": "open"
   },
   {
     "id": "P1-014",
     "priority": "P1",
     "title": "Cache operation lifecycle serialization",
-    "details": "Coordinate model downloads, load/unload, transient-cache clearing, and confirmed weight deletion under one operation lock; close time-of-check/time-of-use deletion races. Test concurrent install vs. clear/delete and cancellation.",
+    "details": "First reserve install admission before releasing the lock so two requests cannot both start the worker. Add an overlap fixture that uses local files. Then coordinate download, load/unload, transient-cache clearing and confirmed weight deletion, and test install versus clear/delete and cancellation.",
     "status": "open"
   },
   {
     "id": "P1-015",
     "priority": "P1",
-    "title": "Checkpoint restore path hardening — exact-path bindings and traversal checks implemented; handle-relative Windows reparse-point tests remain",
-    "details": "Validate untrusted checkpoint IDs and use secure handle-relative operations; test `..`, symlinks, reparse points, and Windows junctions before permitting restore or cleanup.",
+    "title": "Checkpoint restore path hardening",
+    "details": "Existing fixtures cover exact paths and traversal. The isolated patch test restored the original Windows line endings byte for byte. Use handle-relative operations and exercise symlinks, reparse points and Windows junctions for restore and cleanup.",
     "status": "open"
   },
   {
@@ -116,7 +116,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-017",
     "priority": "P1",
     "title": "Inference chain integration",
-    "details": "Verify an actual `/api/tasks` request traverses Architect -> chosen foundation -> advisory addons/tools -> approval -> verified memory, including provider 401/unload mid-run and stop/retry.",
+    "details": "A live isolated coding request exercised Foundation routing, an approved repair, stronger-model escalation and a verified-memory receipt. Extend the chain to advisory addons and verify provider 401, eviction or unload mid-run, and Stop/retry on the same workflow.",
     "status": "open"
   },
   {
@@ -137,7 +137,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-020",
     "priority": "P1",
     "title": "Main chat/footer end-to-end UX",
-    "details": "Verify auto-scroll and bottom anchoring during streaming, send/regenerate/refresh, toolbar wrapping at 320–768 px, and 4K high-DPI behavior with loaded models and the run-info drawer open. Include the repaired Load/More overlay, stable chat composer layout, and offline-safe rendering of math notation (safe MathML subset implemented; verify layout in Windows Edge and fallback cases).",
+    "details": "The browser passed dock resizing and width persistence at 1,440 × 900 and compact overlay at 620 × 800. Run info displayed live check receipts and retained a restart failure after reload. Verify bottom anchoring while streaming, send/regenerate/refresh, toolbar wrapping across 320–768 px, and loaded-model 4K/DPI with Run info open. Include Load/More, the composer and offline MathML in Windows Edge and fallback coverage.",
     "status": "open"
   },
   {
@@ -157,7 +157,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
   {
     "id": "P2-023",
     "priority": "P2",
-    "title": "Responses API streaming if needed; MCP server host if desired (existing integration is MCP client only)",
+    "title": "Add public Responses API streaming beyond the buffered endpoint. Evaluate MCP server hosting separately from the existing MCP client integration",
     "details": "",
     "status": "open"
   },

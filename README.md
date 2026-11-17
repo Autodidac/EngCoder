@@ -168,6 +168,8 @@ Remote serving is **off by default**. Enabling it exposes the same EngCoder runt
 
 EngCoder checkpoints approved edits and runs the build and tests. A failing check can trigger up to two repair attempts, with fresh approval for each edit. **Run info** shows the checks and any switch to a configured stronger model. Review the passing candidate diff before bringing it into your main checkout.
 
+To follow a candidate from inside Codex, open the loopback UI served by `EngCoderServer.exe` in Codex's browser preview. Use a separate data directory for each checkout. The [validation record](VALIDATION.md) identifies the checks run against the isolated Windows candidate and the work still awaiting integration.
+
 ## Build
 
 Windows:
@@ -204,6 +206,8 @@ AGENTS.md                  repository rules for coding agents
 ### Engineering mission register
 
 Use the **Missions** item in the main chat footer to review unfinished objectives from earlier releases. The register lives in `docs/FUTURE_MISSIONS.md`; synchronize the read-only Web/Desktop mission viewer using `python scripts/sync_missions.py`. This is a source-backed planning view, not a claim that mission execution or tracking is automatic.
+
+Record the tested scope and the remaining acceptance work in the mission entry as each repair is verified. Keep benchmark and run evidence in [Validation](VALIDATION.md).
 
 ### Math formatting and local models (0.6.9 maintenance)
 
