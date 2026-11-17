@@ -1,3 +1,18 @@
+## Transactional learning-ban persistence (2026-11-17)
+
+- Ban/unban now stage and verify the complete file, then use the existing platform-specific atomic replacement helper. Replacement failure never deletes the prior denylist. In-memory policy changes happen only after persistence succeeds; ban evidence removal follows successful policy persistence.
+- A forced staging failure test verifies failed ban preserves evidence, failed unban preserves the active ban, disk bytes remain unchanged, a reopened service retains the prior ban, and retry succeeds once the obstruction is removed.
+- Windows Release build succeeded; full CTest passed 77/77. No new Debug, visual QA, model training or release publication is claimed.
+- Follow-up: malformed JSON, non-array policies, invalid entries and malformed hashes now fail learning-service initialization with an explicit path/error, leaving the original file intact. Five corrupt fixtures and a valid empty policy passed; rebuilt Release and full CTest passed 78/78. A recovery UI and in-flight candidate/checkpoint revocation remain open. Atomic ban persistence does not retroactively remove learned weights.
+
+## Corpus coverage and raw-generation diagnostic (2026-11-17)
+
+- Added a read-only, standard-library corpus audit with two passing tests for exact counts, non-mutation and malformed-row diagnostics. Audited bootstrap, seed and both anchor files without modifying shipped data or model state.
+- Bundled bootstrap: 4,247 records, 190,369 assistant UTF-8 bytes, 1,663 distinct answers. Seed: 190 records, 24,924 assistant bytes, 42 distinct answers. Repeated author score dictionaries are not compiler/test receipts.
+- Raw bootstrap anchors overlap 49 exact training conversations. Recompiled using the production guard's normalized Foundation scope: 462 selected representatives, 28,696 supervised byte tokens, 277 anchor-overlap exclusions, zero exact message-array overlap in the output. The first direct audit used the unnormalized `english-foundation` compiler label and selected nothing; the corrected run uses `internal_scope_for`, as production does. This audit does not prove semantic independence.
+- Actual g000004 weights generated malformed text on three seen examples, without retrieval. Teacher-forced token accuracy was 38.6%, 66.7%, and 58.4%; cached/full-prefix maximum logit differences were below 0.000002 on eight probed target bytes. No optimization or promotion occurred during this diagnostic. Active weights remain unchanged.
+- Local evidence: `out/self-iteration-2026-11-17/compositional-curriculum/` contains `generation-diagnostic.json`, `reproducible-bundled-audit.json`, and `bundled-compiled-manifest.json`. This tooling/documentation pass does not claim another native build, visual test or release.
+
 ## Reviewed curriculum contract and measured rerun (2026-11-17)
 
 - Compiler and tensor loader now share explicit independently attributed review receipts. Self-review, changed material, malformed review hashes, rejected/private/error content and held-out-to-gradient reclassification are rejected. Training now preflights the compiled hash and exact loaded sequence count before model allocation. Six CPU tests exercise real compile-to-loader behavior; eight denylist tests also pass. The integrated Windows Release build and full CTest suite passed 76/76. Review attribution is not reviewer authentication.

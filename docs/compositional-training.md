@@ -22,7 +22,17 @@ Compare the current checkpoint and candidate at the same parameter count and tra
 
 This compact suite is a transfer test and a curriculum component, not sufficient English pretraining by itself. The existing 110-example random-initialization experiment updated weights but failed generation readiness. More repeats of that small batch cannot supply missing language coverage. C++ learning remains in its own addon, not this conversation suite.
 
-## Research informing the design
+## Measured curriculum coverage (2026-11-17)
+
+Run `python scripts/audit_training_corpus.py projects/native/resources/training/bootstrap.jsonl projects/native/resources/training/seed.jsonl` for a read-only inventory. It reports source hashes, domains, overlapping tags, exact answer repetition, assistant UTF-8 bytes and score patterns. It does not equate bytes with tokens or authored scores with verified outcomes.
+
+The shipped bootstrap contains 4,247 records but only 190,369 assistant UTF-8 bytes and 1,663 distinct exact answers. Its overlapping tags include 425 exact-copy, 414 casing, 441 arithmetic and 440 comparison examples; 572 are tagged conversation. The additional seed has 190 records and 42 distinct answers. These counts do not establish broad English coverage. Repeated score dictionaries even assign compiler/sanitizer grades to English transformations; no measurement receipt accompanies those grades in these records. Do not cite them as executed checks.
+
+There are 49 exact message-array overlaps between the raw training files and the 320 bootstrap anchors. The production compiler's anchor exclusion matters: compiling both bundled training files against both anchor files with the guard's `keymaker-foundation` scope selected 462 representatives / 28,696 supervised byte tokens, excluded 277 anchor-overlap candidates, and left zero exact message-array overlaps. This is a compilation audit, not a tensor-training or semantic-leakage certification. Only 188 anchor records passed the compiler's English/pair filtering; the nominal count of 320 must not be presented as 320 completed evaluations.
+
+The isolated 29.6M-parameter candidate at 1,024 total training steps still produced malformed English on three seen examples. Teacher-forced next-token accuracy was 39–67%; cached and full-prefix logits differed by less than 0.000002 on the probed prefixes. This narrow diagnostic supports improving foundational language coverage rather than assuming a cache defect or blindly repeating greeting pairs. No candidate was promoted. The compact compositional suite remains a held-out transfer target within a broader coherent English curriculum.
+
+## Research sources
 
 - [TinyStories (2023)](https://arxiv.org/abs/2305.07759) demonstrates coherent English in small models using constrained synthetic stories. It motivates simple, coherent language coverage; it does not establish that a few dozen chat pairs suffice.
 - [Systematic Generalization in Language Models Scales with Information Entropy (ACL 2025)](https://aclanthology.org/2025.findings-acl.90/) studies how the distribution of components affects systematic generalization. Our inference is to balance values and compositions, not multiply near-duplicate greetings.

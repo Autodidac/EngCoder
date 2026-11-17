@@ -1,4 +1,5 @@
 #include "engcoder/learning/learning_service.hpp"
+#include "engcoder/core/file_replace.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -35,36 +36,51 @@ void LearningService::load_denylist() {
     denylist_ = json::array();
     banned_prompt_hashes_.clear();
     banned_response_hashes_.clear();
-    std::ifstream input(denylist_path_, std::ios::binary);
-    if (input) {
-        try {
-            auto parsed = json::parse(input);
-            if (parsed.is_array()) denylist_ = std::move(parsed);
-        } catch (...) { denylist_ = json::array(); }
-    }
-    for (const auto& item : denylist_) {
-        const auto ph = item.value("prompt_hash", std::string{});
-        const auto rh = item.value("response_hash", std::string{});
-        if (!ph.empty()) banned_prompt_hashes_.insert(ph);
-        if (!rh.empty()) banned_response_hashes_.insert(rh);
+    try {
+        if (!std::filesystem::exists(denylist_path_)) return;
+        std::ifstream input(denylist_path_, std::ios::binary);
+        if (!input) throw std::runtime_error("file is unreadable");
+        auto parsed = json::parse(input);
+        if (!parsed.is_array()) throw std::runtime_error("expected an array");
+        const auto valid_hash = [](const std::string& value) {
+            return value.size() == 16 && std::ranges::all_of(value, [](unsigned char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            });
+        };
+        for (const auto& item : parsed) {
+            if (!item.is_object()) throw std::runtime_error("invalid policy entry");
+            const auto id = item.at("id").get<std::string>();
+            const auto ph = item.at("prompt_hash").get<std::string>();
+            const auto rh = item.at("response_hash").get<std::string>();
+            if (!valid_hash(id) || !valid_hash(ph) || !valid_hash(rh))
+                throw std::runtime_error("invalid policy hash");
+        }
+        denylist_ = std::move(parsed);
+        for (const auto& item : denylist_) {
+            banned_prompt_hashes_.insert(item.at("prompt_hash").get<std::string>());
+            banned_response_hashes_.insert(item.at("response_hash").get<std::string>());
+        }
+    } catch (const std::exception& error) {
+        throw std::runtime_error("Learning denylist cannot be verified: " +
+                                 denylist_path_.string() + ": " + error.what());
     }
 }
 
-void LearningService::save_denylist_locked() const {
+void LearningService::save_denylist_locked(const json& next) const {
     const auto temp = denylist_path_.string() + ".tmp";
     {
         std::ofstream output(temp, std::ios::binary | std::ios::trunc);
-        if (!output) return;
-        output << denylist_.dump(2) << '\n';
+        if (!output) throw std::runtime_error("Cannot stage learning denylist");
+        output << next.dump(2) << '\n';
+        output.flush();
+        if (!output) throw std::runtime_error("Cannot write learning denylist");
+        output.close();
+        if (!output) throw std::runtime_error("Cannot close learning denylist");
     }
-    std::error_code ec;
-    std::filesystem::rename(temp, denylist_path_, ec);
-    if (ec) {
-        ec.clear();
-        std::filesystem::remove(denylist_path_, ec);
-        ec.clear();
-        std::filesystem::rename(temp, denylist_path_, ec);
-        if (ec) std::filesystem::remove(temp, ec);
+    if (const auto ec = core::replace_file(temp, denylist_path_)) {
+        std::error_code cleanup;
+        std::filesystem::remove(temp, cleanup);
+        throw std::runtime_error("Cannot replace learning denylist: " + ec.message());
     }
 }
 
@@ -89,13 +105,13 @@ json LearningService::ban(std::string_view prompt, std::string_view response, st
     std::size_t removed = 0;
     {
         std::scoped_lock lock(mutex_);
-        removed = episodes_.erase_matching(prompt, response);
+        auto next = denylist_;
         bool exists = false;
         for (const auto& item : denylist_) {
             if (item.value("id", std::string{}) == ban_id) { exists = true; break; }
         }
         if (!exists) {
-            denylist_.push_back({
+            next.push_back({
                 {"id", ban_id},
                 {"prompt_hash", prompt_hash},
                 {"response_hash", response_hash},
@@ -105,9 +121,11 @@ json LearningService::ban(std::string_view prompt, std::string_view response, st
                 {"created_unix_ms", memory::EpisodeStore::now_unix_ms()},
             });
         }
+        save_denylist_locked(next);
+        denylist_ = std::move(next);
         banned_prompt_hashes_.insert(prompt_hash);
         banned_response_hashes_.insert(response_hash);
-        save_denylist_locked();
+        removed = episodes_.erase_matching(prompt, response);
     }
     return json{{"banned", true}, {"ban_id", ban_id}, {"removed_records", removed}};
 }
@@ -119,6 +137,7 @@ bool LearningService::unban(std::string_view ban_id) {
     json next = json::array();
     for (const auto& item : denylist_) if (item.value("id", std::string{}) != ban_id) next.push_back(item);
     if (next.size() == old_size) return false;
+    save_denylist_locked(next);
     denylist_ = std::move(next);
     banned_prompt_hashes_.clear();
     banned_response_hashes_.clear();
@@ -128,7 +147,6 @@ bool LearningService::unban(std::string_view ban_id) {
         if (!ph.empty()) banned_prompt_hashes_.insert(ph);
         if (!rh.empty()) banned_response_hashes_.insert(rh);
     }
-    save_denylist_locked();
     return true;
 }
 

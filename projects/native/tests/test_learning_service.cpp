@@ -1,9 +1,64 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "engcoder/learning/learning_service.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
+
+TEST_CASE("corrupt learning denylist never becomes an empty policy") {
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-learning-corrupt-policy-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "learning");
+    const auto path = root / "learning" / "denylist.json";
+    for (const auto* invalid : {"{", "{}", "[null]", "[{}]",
+                               "[{\"id\":\"bad\",\"prompt_hash\":\"bad\",\"response_hash\":\"bad\"}]"}) {
+        { std::ofstream output(path); output << invalid; }
+        REQUIRE_THROWS_WITH(engcoder::learning::LearningService(root),
+                           Catch::Matchers::ContainsSubstring("Learning denylist cannot be verified"));
+        std::ifstream input(path);
+        REQUIRE(std::string(std::istreambuf_iterator<char>(input), {}) == invalid);
+    }
+    { std::ofstream output(path); output << "[]"; }
+    REQUIRE_NOTHROW(engcoder::learning::LearningService(root));
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("failed denylist persistence preserves prior bans and evidence") {
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-learning-ban-write-test";
+    std::filesystem::remove_all(root);
+    {
+        engcoder::learning::LearningService learning(root);
+        const auto first = learning.ban("existing forbidden prompt", "");
+        const auto ban_id = first.at("ban_id").get<std::string>();
+        const auto path = root / "learning" / "denylist.json";
+        const auto read = [&] {
+            std::ifstream input(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), {});
+        };
+        const auto before = read();
+        const auto staged = root / "learning" / "denylist.json.tmp";
+        std::filesystem::create_directory(staged);
+        const engcoder::learning::EvidenceRecord evidence{
+            .skill = "english", .prompt = "new prompt", .response = "new response",
+        };
+        REQUIRE(learning.record(evidence));
+        REQUIRE_THROWS(learning.ban(evidence.prompt, evidence.response));
+        REQUIRE_FALSE(learning.is_banned(evidence.prompt, evidence.response));
+        REQUIRE(learning.recent(10).at("items").size() == 1);
+        REQUIRE_THROWS(learning.unban(ban_id));
+        REQUIRE(learning.is_banned("existing forbidden prompt", "anything"));
+        REQUIRE(read() == before);
+        engcoder::learning::LearningService reopened(root);
+        REQUIRE(reopened.is_banned("existing forbidden prompt", "anything"));
+        std::filesystem::remove(staged);
+        REQUIRE(learning.unban(ban_id));
+        REQUIRE(learning.ban(evidence.prompt, evidence.response).at("banned").get<bool>());
+        REQUIRE(learning.recent(10).at("items").empty());
+    }
+    std::filesystem::remove_all(root);
+}
 
 TEST_CASE("verified learning evidence is deduplicated and immediately retrievable") {
     const auto root = std::filesystem::temp_directory_path() / "engcoder-learning-service-test";

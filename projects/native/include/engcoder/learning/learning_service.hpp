@@ -59,7 +59,7 @@ private:
     std::unordered_set<std::string> banned_prompt_hashes_;
     std::unordered_set<std::string> banned_response_hashes_;
     void load_denylist();
-    void save_denylist_locked() const;
+    void save_denylist_locked(const json& next) const;
 };
 
 } // namespace engcoder::learning
