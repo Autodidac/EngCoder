@@ -3,6 +3,7 @@
 #include <expected>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +35,8 @@ struct ToolProposal {
     json arguments;
     std::string workspace_root;
 };
+
+[[nodiscard]] bool protected_workspace_target(std::string_view relative_path);
 
 class IDecisionEngine {
 public:

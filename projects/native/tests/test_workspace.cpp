@@ -9,6 +9,26 @@
 TEST_CASE("workspace blocks parent escape") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE_FALSE(w.resolve("../escape.txt").has_value());std::filesystem::remove_all(root);}
 TEST_CASE("workspace round trip") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace2";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE(w.write_text("a/b.txt","hello").has_value());auto x=w.read_text("a/b.txt");REQUIRE(x);REQUIRE(*x=="hello");std::filesystem::remove_all(root);}
 
+TEST_CASE("workspace tree distinguishes files from empty directories") {
+    const auto root = std::filesystem::temp_directory_path() / engcoder::core::make_id("workspace-tree-target");
+    std::filesystem::create_directories(root / "empty");
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    const engcoder::workspace::Workspace workspace(root);
+    REQUIRE(workspace.write_text("src/ordinary.txt", "example\n"));
+    const auto empty = workspace.tree("empty");
+    REQUIRE(empty);
+    CHECK(empty->empty());
+    const auto populated = workspace.tree("src");
+    REQUIRE(populated);
+    CHECK(*populated == std::vector<std::string>{"src/ordinary.txt"});
+    const auto file = workspace.tree("src/ordinary.txt");
+    REQUIRE_FALSE(file);
+    CHECK(file.error().code == engcoder::core::make_error_code(engcoder::core::Errc::invalid_argument));
+}
+
 TEST_CASE("workspace tree and search enumerate canonical source files once") {
     const auto root = std::filesystem::temp_directory_path() / engcoder::core::make_id("workspace-enumeration");
     std::filesystem::create_directories(root);
@@ -19,6 +39,9 @@ TEST_CASE("workspace tree and search enumerate canonical source files once") {
     const engcoder::workspace::Workspace workspace(root);
     REQUIRE(workspace.write_text("src/ordinary.txt", "example marker\n"));
     REQUIRE(workspace.write_text("build/generated.txt", "example marker\n"));
+#ifdef _WIN32
+    REQUIRE(workspace.write_text("OuT/generated.txt", "example marker\n"));
+#endif
 
     const auto assert_normal_view = [&] {
         const auto tree = workspace.tree(".");
@@ -102,6 +125,40 @@ TEST_CASE("workspace tools preserve exact patches and bound candidate reads") {
     const auto patch = [&](const char* expected, const char* replacement) {
         return tools.invoke("workspace.patch", {{"path", "source.cpp"}, {"expected", expected}, {"replacement", replacement}}, {});
     };
+
+    SECTION("direct mutation handlers protect configuration after path resolution") {
+        constexpr auto protected_path = ".github/workflows/build.yml";
+        REQUIRE(workspace.write_text(protected_path, "original"));
+        const auto run = [&](const char* path) {
+            CHECK_FALSE(tools.invoke("workspace.write", {{"path", path}, {"content", "new"}}, {}));
+            CHECK_FALSE(tools.invoke("workspace.patch",
+                {{"path", path}, {"expected", "original"}, {"replacement", "new"}}, {}));
+            CHECK(workspace.read_text(protected_path) == "original");
+            CHECK(std::filesystem::is_empty(root / ".engcoder" / "checkpoints"));
+        };
+        run(protected_path);
+        std::error_code link_error;
+        std::filesystem::create_symlink(root / protected_path, root / "workflow.txt", link_error);
+        if (!link_error) run("workflow.txt");
+    }
+
+    SECTION("the host can patch the observed duplicate while model arguments cannot select a line") {
+        constexpr auto original = "repeat\r\nkeep\r\nrepeat\r\n";
+        REQUIRE(workspace.write_text("source.cpp", original));
+        auto args = engcoder::tools::json{{"path", "source.cpp"}, {"expected", "repeat"},
+            {"replacement", "changed"}, {"patch_start_line", 3}};
+        CHECK_FALSE(tools.invoke("workspace.patch", args, {}));
+        CHECK(workspace.read_text("source.cpp") == original);
+        args.erase("patch_start_line");
+        engcoder::tools::Context candidate;
+        candidate.candidate_mode = true;
+        candidate.patch_start_line = 3;
+        REQUIRE(tools.invoke("workspace.patch", args, candidate));
+        CHECK(workspace.read_text("source.cpp") == "repeat\r\nkeep\r\nchanged\r\n");
+        REQUIRE(workspace.write_text("source.cpp", "repeat\r\nkeep\r\nrepeat-extra\r\n"));
+        CHECK_FALSE(tools.invoke("workspace.patch", args, candidate));
+        CHECK(workspace.read_text("source.cpp") == "repeat\r\nkeep\r\nrepeat-extra\r\n");
+    }
 
     SECTION("converts LF arguments to CRLF and captures the original bytes") {
         constexpr auto original = "prefix\r\nold line\r\nsecond line\r\nsuffix";
@@ -205,4 +262,27 @@ TEST_CASE("workspace tools preserve exact patches and bound candidate reads") {
         }
         REQUIRE_FALSE(tools.invoke("workspace.read", {{"path", "source.cpp"}, {"max_lines", 1.5}}, {}));
     }
+}
+
+TEST_CASE("workspace search previews preserve complete UTF-8 characters at the byte limit") {
+    const auto root = std::filesystem::temp_directory_path() / engcoder::core::make_id("search-utf8");
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    engcoder::workspace::Workspace workspace(root);
+    const std::string crossing = std::string(399, 'x') + "\xC3\xA9" + " remaining";
+    const std::string aligned = std::string(397, 'y') + "\xE2\x82\xAC" + " remaining";
+    const std::string ascii(401, 'z');
+    REQUIRE(workspace.write_text("fixture.txt", crossing + "\n" + aligned + "\n" + ascii + "\n"));
+    const auto hits = workspace.search_text("", 3);
+    REQUIRE(hits);
+    REQUIRE(hits->size() == 3);
+    const auto no_matches = workspace.search_text("not present", 3);
+    REQUIRE(no_matches);
+    CHECK(no_matches->empty());
+    CHECK(hits->at(0) == "fixture.txt:1:" + std::string(399, 'x'));
+    CHECK(hits->at(1) == "fixture.txt:2:" + aligned.substr(0, 400));
+    CHECK(hits->at(2) == "fixture.txt:3:" + ascii.substr(0, 400));
 }

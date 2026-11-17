@@ -133,12 +133,20 @@ json LearningService::ban(std::string_view prompt, std::string_view response, st
             if (item.value("id", std::string{}) == ban_id) { exists = true; break; }
         }
         if (!exists) {
+            const auto preview = [](std::string_view text) {
+                auto end = std::min(text.size(), std::size_t{240});
+                if (end < text.size()) {
+                    while (end != 0 && (static_cast<unsigned char>(text[end]) & 0xC0U) == 0x80U)
+                        --end;
+                }
+                return std::string{text.substr(0, end)};
+            };
             next.push_back({
                 {"id", ban_id},
                 {"prompt_hash", prompt_hash},
                 {"response_hash", response_hash},
-                {"prompt_preview", std::string{prompt}.substr(0, 240)},
-                {"response_preview", std::string{response}.substr(0, 240)},
+                {"prompt_preview", preview(prompt)},
+                {"response_preview", preview(response)},
                 {"reason", std::string{reason}},
                 {"created_unix_ms", memory::EpisodeStore::now_unix_ms()},
             });

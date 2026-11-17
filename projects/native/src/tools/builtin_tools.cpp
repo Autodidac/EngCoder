@@ -15,6 +15,19 @@
 namespace engcoder::tools {
 namespace {
 
+[[nodiscard]] std::expected<void, core::Error> validate_workspace_edit_target(
+    const workspace::Workspace& workspace, std::string_view path) {
+    const auto resolved = workspace.resolve(path);
+    if (!resolved) return std::unexpected(resolved.error());
+    const auto relative = resolved->lexically_relative(workspace.root());
+    if (decision::protected_workspace_target(path) ||
+        decision::protected_workspace_target(relative.generic_string())) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::workspace_violation),
+            "Agent edits to protected workspace configuration are blocked."});
+    }
+    return {};
+}
+
 [[nodiscard]] json string_schema() {
     return json{{"type", "string"}};
 }
@@ -326,6 +339,8 @@ void register_builtin_tools(
             {"path", "content"}),
         [&workspace, &checkpoints](const json& arguments, const Context& context) -> std::expected<json, core::Error> {
             const auto path = arguments.at("path").get<std::string>();
+            const auto target = validate_workspace_edit_target(workspace, path);
+            if (!target) return std::unexpected(target.error());
 
             const auto checkpoint = checkpoints.capture(path);
             if (!checkpoint) {
@@ -360,13 +375,15 @@ void register_builtin_tools(
                 {"replacement_lines", string_array_schema()},
             },
             {"path"}),
-        [&workspace, &checkpoints](const json& arguments, const Context&) -> std::expected<json, core::Error> {
+        [&workspace, &checkpoints](const json& arguments, const Context& context) -> std::expected<json, core::Error> {
             if (!arguments.contains("expected") || !arguments.at("expected").is_string() ||
                 arguments.contains("source_ref")) {
                 return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
                     "An exact expected block is required. A source_ref must be resolved by the candidate host."});
             }
             const auto path = arguments.at("path").get<std::string>();
+            const auto target = validate_workspace_edit_target(workspace, path);
+            if (!target) return std::unexpected(target.error());
             const auto& expected = arguments.at("expected").get_ref<const std::string&>();
             const auto replacement = workspace_patch_replacement(arguments);
             if (!replacement) return std::unexpected(replacement.error());
@@ -376,7 +393,8 @@ void register_builtin_tools(
                 return std::unexpected(text.error());
             }
 
-            const auto patch = workspace::plan_text_patch(*text, expected, *replacement);
+            const auto patch = workspace::plan_text_patch(*text, expected, *replacement,
+                context.candidate_mode ? context.patch_start_line : std::nullopt);
             if (!patch) return std::unexpected(patch.error());
 
             const auto checkpoint = checkpoints.capture(path);
@@ -430,7 +448,7 @@ void register_builtin_tools(
         [&workspace](const json&, const Context& context) -> std::expected<json, core::Error> {
             process::Request request;
             request.executable = "git";
-            request.arguments = {"status", "--porcelain=v1", "--branch"};
+            request.arguments = {"-c", "core.fsmonitor=false", "status", "--porcelain=v1", "--branch"};
             request.working_directory = workspace.root();
             return process_result_json(process::run(request, context.stop));
         }));
@@ -445,7 +463,7 @@ void register_builtin_tools(
         [&workspace](const json& arguments, const Context& context) -> std::expected<json, core::Error> {
             process::Request request;
             request.executable = "git";
-            request.arguments = {"--no-pager", "diff", "--no-ext-diff"};
+            request.arguments = {"-c", "core.fsmonitor=false", "--no-pager", "diff", "--no-ext-diff", "--no-textconv"};
             request.working_directory = workspace.root();
 
             if (arguments.value("staged", false)) {

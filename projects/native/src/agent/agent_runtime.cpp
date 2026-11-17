@@ -347,14 +347,16 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 "--output-on-failure", "--no-tests=error"}
             : std::vector<std::string>{"--build", build_dir.string(), "--config", "Release", "--parallel", "1"};
         emit(request, "iteration.check_started", {{"check", check}, {"attempt", attempt}, {"stage", stage}});
-        auto executed = tools_.execute("process.run", {
+        // The operator opted in to this fixed host-owned validation sequence.
+        // Model-provided process calls still go through tool policy.
+        auto executed = tools_.invoke("process.run", {
             {"executable", test ? "ctest" : "cmake"}, {"arguments", arguments},
             {"cwd", "."}, {"timeout_ms", 300'000},
         }, context);
         if (stop.stop_requested()) return std::unexpected(core::Error{
             core::make_error_code(core::Errc::cancelled), "cancelled"});
         if (!executed) return std::unexpected(executed.error());
-        auto& receipt = executed->value;
+        auto& receipt = *executed;
         const auto exit_code = receipt.value("exit_code", -1);
         if (exit_code < 0 || receipt.value("timed_out", true) || receipt.value("cancelled", true)) {
             return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
@@ -1155,6 +1157,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
         for (auto& call : model_result->tool_calls) {
             std::optional<core::Error> patch_argument_error;
             std::optional<std::filesystem::path> referenced_target;
+            std::optional<std::size_t> referenced_line;
             if (call.name == "workspace.patch" && call.arguments.contains("source_ref")) {
                 const auto& reference = call.arguments.at("source_ref");
                 const auto observed = std::ranges::find_if(observed_sources, [&](const auto& source) {
@@ -1174,6 +1177,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                             "The referenced source changed. Read those lines again before proposing a patch."};
                     } else {
                         referenced_target = observed->target;
+                        referenced_line = observed->start_line;
                         auto expected = observed->content;
                         // Keep the final line ending outside the replacement block.
                         if (expected.ends_with("\r\n")) expected.resize(expected.size() - 2);
@@ -1192,7 +1196,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     patch_argument_error = std::move(replacement.error());
                 }
             }
-            const auto signature = call.name + "\n" + call.arguments.dump();
+            auto signature = call.name + "\n" + call.arguments.dump();
+            if (referenced_line) signature += "\n" + std::to_string(*referenced_line);
             const auto repetitions = ++signatures[signature];
             if (repetitions > config_.repeated_action_limit) {
                 model::Message warning{
@@ -1226,6 +1231,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 stop,
                 request.addon_models,
                 candidate_workspace.has_value(),
+                referenced_line,
             };
 
             auto review = [&]() -> std::expected<decision::ToolReview, core::Error> {
@@ -1245,16 +1251,10 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 const auto relative_to_build = path ? path->lexically_relative(build_dir) : std::filesystem::path{};
                 if (relative.empty() || relative == "." ||
                     (referenced_target && *path != *referenced_target) ||
-                    std::ranges::any_of(relative, [](const auto& part) {
-                        auto name = part.string();
-                        std::ranges::transform(name, name.begin(), [](unsigned char ch) {
-                            return static_cast<char>(std::tolower(ch));
-                        });
-                        return name == ".git" || name == ".engcoder";
-                    }) ||
+                    decision::protected_workspace_target(relative.generic_string()) ||
                     (!relative_to_build.empty() && *relative_to_build.begin() != "..")) {
                     review = std::unexpected(core::Error{core::make_error_code(core::Errc::workspace_violation),
-                        "Candidate edits must target source outside Git metadata, state, and build output."});
+                        "Candidate edits must target source outside protected configuration, state, and build output."});
                 } else if (review->disposition == decision::ToolDisposition::allow) {
                     review->disposition = decision::ToolDisposition::require_approval;
                     review->reason = "Candidate edits require operator approval.";
@@ -1278,9 +1278,12 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                         } else {
                             const auto patch = workspace::plan_text_patch(*preimage,
                                 call.arguments.at("expected").get_ref<const std::string&>(),
-                                call.arguments.at("replacement").get_ref<const std::string&>());
+                                call.arguments.at("replacement").get_ref<const std::string&>(),
+                                referenced_line);
                             if (patch) {
                                 approved_preimage = std::move(*preimage);
+                                if (referenced_line)
+                                    review->reason += " Source starts at line " + std::to_string(*referenced_line) + ".";
                             } else {
                                 review = std::unexpected(patch.error());
                             }
@@ -1345,7 +1348,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
 
             if (review->disposition == decision::ToolDisposition::require_approval) {
                 const auto approval_id = request.wait_for_approval ? core::make_id("approval") : std::string{};
-                const auto approval_data = core::json{
+                auto approval_data = core::json{
                     {"call_id", request.wait_for_approval ? approval_id : call.id},
                     {"tool_call_id", call.id},
                     {"tool", call.name},
@@ -1358,6 +1361,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                         {"deny", review->probabilities.deny},
                     }},
                 };
+                if (referenced_line) approval_data["source_line"] = *referenced_line;
 
                 emit(request, "tool.approval_required", {
                     {"id", call.id},

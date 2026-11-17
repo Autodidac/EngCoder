@@ -27,7 +27,8 @@ struct TextPatch {
 };
 
 [[nodiscard]] std::expected<TextPatch, core::Error> plan_text_patch(
-    std::string_view source, std::string_view expected, std::string_view replacement);
+    std::string_view source, std::string_view expected, std::string_view replacement,
+    std::optional<std::size_t> start_line = std::nullopt);
 
 class Workspace {
 public:

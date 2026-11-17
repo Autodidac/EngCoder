@@ -175,3 +175,25 @@ TEST_CASE("learning evidence can be removed and hard-banned from future ingestio
     }
     std::filesystem::remove_all(root);
 }
+
+TEST_CASE("learning ban previews do not split a UTF-8 character") {
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-utf8-ban-preview-test";
+    const auto prompt = std::string(239, 'p') + "\xC3\xA9" + " end";
+    const auto response = std::string(238, 'r') + "\xE2\x82\xAC" + " end";
+    engcoder::learning::LearningService learning(root);
+    const auto ban = learning.ban(prompt, response);
+    REQUIRE(ban.at("banned") == true);
+    const auto entry = learning.bans().at("items").back();
+    REQUIRE(entry.at("prompt_preview") == std::string(239, 'p'));
+    REQUIRE(entry.at("response_preview") == std::string(238, 'r'));
+    REQUIRE(engcoder::learning::LearningService(root).is_banned(prompt, response));
+    REQUIRE(learning.unban(ban.at("ban_id").get<std::string>()));
+
+    const auto aligned = std::string(238, 'a') + "\xC3\xA9" + " end";
+    const auto ascii = std::string(241, 'b');
+    const auto edge_ban = learning.ban(aligned, ascii);
+    const auto edge = learning.bans().at("items").back();
+    REQUIRE(edge.at("prompt_preview") == aligned.substr(0, 240));
+    REQUIRE(edge.at("response_preview") == ascii.substr(0, 240));
+    REQUIRE(learning.unban(edge_ban.at("ban_id").get<std::string>()));
+}

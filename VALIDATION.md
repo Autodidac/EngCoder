@@ -1,3 +1,17 @@
+## Live C++ directory-target repair and location-aware approvals (2026-11-17)
+
+- An isolated fixture compiled EngCoder’s actual workspace code and reproduced a successful empty listing for a regular-file target. After an earlier denial, Qwen 3.5 9B used a verified bounded reference to line 223 and drafted a guard using the repository’s `std::unexpected` convention supplied in the prompt. The operator approved the exact patch in the existing Codex preview.
+- Task `task_75714ca6a1fc_2_bdb6fca9464c3886` saved checkpoint `cp_75788cf34ee8_9_470006d32990fa9c` and recorded exit 0 for build and tests. Only the intended source file changed in the fixture. The native task events span 36.468 seconds. During the proposal turn the provider evaluated 145 uncached prompt tokens in 223.31 ms and decoded 224 tokens at 27.80 tokens/s. Sampled working-set peaks were 5.59 GiB for the model and 12.86 MiB for the host. Whole-device GPU samples peaked at 6,872 MiB and 80% utilization. The model and temporary server were stopped and the original Codex preview was restored.
+- The independent duplicate-line test verified that approval names the selected line and preserves the first occurrence. The Codex restart test used a scripted provider and verified that a genuine pending approval recovered into one terminal error, stale approval returned HTTP 409 and the source was unchanged. This covers the shared UI and native host in Codex.
+- Source and runtime receipts are under `out/self-iteration-2026-11-17/tree-target-final`, `source-location-review` and `codex-restart-qa`. Working-source integration requires review.
+
+## Native AI tool authority review (2026-11-17)
+
+- Read Epoch's deterministic tool policy in `Engine/dep/EpochSelfCoding/integration/src/ai/native/ai.backend_decision_decision_engine.cpp` at Epoch commit `16402d0c`. Adapted its approval precedence, process categories, and protected workspace edit policy to EngCoder.
+- Verified in an isolated Windows x64 Release build. All 83 CTest checks passed. Regressions exercised hard approval when Architect's score favors allowing a call, exact tool names, malformed proposals, denied process categories, protected writes and patches, and timely approvals for model-proposed CTest calls. The existing candidate lifecycle tests still exercised the fixed host-owned build and test sequence.
+- The 23 shared Web smoke tests passed. Candidate opt-in now explains that its fixed validation runs with the host account's permissions. Model-proposed process review is a native policy check. It provides no OS process confinement or isolation from effects of project-supplied code.
+- Working-source integration requires approval. Evidence and the exact review patch are in `out/self-iteration-2026-11-17/epoch-security-review`.
+
 ## Live source-reference repair verification (2026-11-17)
 
 - An independent test reproduced search previews cutting a UTF-8 character at byte 400 in the isolated Windows candidate. It also covered an exactly aligned multibyte character and an ASCII line. Qwen 3.5 9B used the bounded read reference in three drafts. All three edits were denied for incorrect C++ behavior.

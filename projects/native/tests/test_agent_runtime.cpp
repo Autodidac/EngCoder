@@ -42,7 +42,7 @@ public:
         if (reference_trial) {
             if (turn == 0) {
                 return engcoder::model::ModelResponse{.tool_calls = {
-                    {"read-source", "workspace.read", {{"path", "fixture.cpp"}, {"start_line", 1}, {"max_lines", 1}}},
+                    {"read-source", "workspace.read", {{"path", "fixture.cpp"}, {"start_line", 3}, {"max_lines", 1}}},
                 }};
             }
             if (turn == 1) {
@@ -233,7 +233,7 @@ public:
                     .id = "approval-call-1",
                     .name = "process.run",
                     .arguments = {
-                        {"executable", "custom-check"},
+                        {"executable", "ctest"},
                         {"arguments", engcoder::core::json::array({std::to_string(turn)})},
                         {"cwd", "."},
                     },
@@ -529,16 +529,30 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     unsigned edits = 0;
     std::vector<std::string> checks;
     tools.add({{"workspace.patch", "fixture edit", core::json::object()},
-        [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
+        [&](const core::json& args, const tools::Context& context) -> std::expected<core::json, core::Error> {
             ++edits;
             CHECK(args.at("path") == "fixture.cpp");
+            if (model.reference_trial) {
+                CHECK(context.patch_start_line == 3);
+                const workspace::Workspace candidate(root);
+                auto source = candidate.read_text("fixture.cpp");
+                REQUIRE(source);
+                const auto patch = workspace::plan_text_patch(*source,
+                    args.at("expected").get_ref<const std::string&>(),
+                    args.at("replacement").get_ref<const std::string&>(), context.patch_start_line);
+                REQUIRE(patch);
+                source->replace(patch->offset, patch->length, patch->replacement);
+                REQUIRE(candidate.write_text("fixture.cpp", *source));
+                return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
+            }
             std::ofstream(root / "fixture.cpp", std::ios::binary) << "edited " << edits << "\r\naaaa\r\nfooter\r\n";
             return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
         }});
     tools.add({{"workspace.read", "fixture read", core::json::object()},
         [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
             const workspace::Workspace candidate(root);
-            const auto page = candidate.read_text_page(args.at("path").get<std::string>(), 1, 1);
+            const auto page = candidate.read_text_page(args.at("path").get<std::string>(),
+                args.at("start_line").get<std::size_t>(), args.at("max_lines").get<std::size_t>());
             if (!page) return std::unexpected(page.error());
             return core::json{{"content", page->content}};
         }});
@@ -573,6 +587,8 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
                 CHECK_FALSE(arguments.contains("source_ref"));
                 CHECK(arguments.at("expected") == "original");
                 CHECK(arguments.at("replacement") == "edited 1");
+                CHECK(event.data.at("source_line") == 3);
+                CHECK(event.data.at("reason").get<std::string>().find("line 3") != std::string::npos);
             } else {
                 CHECK(arguments.at("replacement").get<std::string>().ends_with("\naaaa\nfooter"));
             }
@@ -650,15 +666,21 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             stale_reference = stale;
             const std::string id = stale ? "stale-source" : "verified-source";
             reset_candidate();
+            std::ofstream(root / "fixture.cpp", std::ios::binary)
+                << "original\r\nretained\r\noriginal\r\nfooter\r\n";
             model.turns = 0;
             edits = 0;
             checks.clear();
             const auto trial = runtime.run({.project_id = "candidate", .session_id = id,
-                .task_id = id, .user_message = "Change the first fixture line.",
+                .task_id = id, .user_message = "Change only the third fixture line.",
                 .include_history = false, .wait_for_approval = true, .self_iteration = true});
             INFO((trial ? "Completed" : trial.error().message));
             CHECK(trial.has_value() == !stale);
             CHECK(edits == (stale ? 0u : 1u));
+            if (!stale) {
+                const workspace::Workspace candidate(root);
+                CHECK(candidate.read_text("fixture.cpp") == "original\r\nretained\r\nedited 1\r\nfooter\r\n");
+            }
             const auto receipts = store.events_after(id, 0);
             REQUIRE(receipts);
             const auto rejected = std::ranges::count_if(*receipts, [](const auto& event) {
@@ -758,7 +780,7 @@ TEST_CASE("agent runtime executes only a timely interactive approval for the exa
         if (expire) config.tool_approval_timeout = std::chrono::milliseconds{25};
 
         ApprovalToolModelProvider model;
-        engcoder::decision::WeightedDecisionEngine decisions;
+        engcoder::decision::CompositeDecisionEngine decisions({}, {});
         engcoder::models::ModelRegistry models(config, config.data_root);
         engcoder::residency::ModelResidencyManager residency;
         residency.sync(models);
@@ -779,6 +801,7 @@ TEST_CASE("agent runtime executes only a timely interactive approval for the exa
             if (event.type != "task.awaiting_approval") return;
             const auto id = event.data.at("call_id").get<std::string>();
             CHECK(event.data.at("tool_call_id") == "approval-call-1");
+            if (approval_ids.empty()) CHECK_FALSE(invoked);
             if (expire) {
                 approval_ids.push_back(id);
                 return;

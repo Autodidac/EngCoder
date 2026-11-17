@@ -1,6 +1,8 @@
 #pragma once
+#include <cstddef>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <nlohmann/json.hpp>
@@ -17,6 +19,7 @@ struct Context {
     std::stop_token stop;
     json addon_models = json::object(); // per-session model assignments, never tool authority
     bool candidate_mode{false};
+    std::optional<std::size_t> patch_start_line{}; // verified by the candidate host
 };
 
 struct Definition {

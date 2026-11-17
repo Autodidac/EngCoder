@@ -1,5 +1,6 @@
 #include "engcoder/workspace/workspace.hpp"
 #include "engcoder/core/ids.hpp"
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -12,7 +13,16 @@ namespace engcoder::workspace {
 namespace {
 bool is_ignored(const std::filesystem::path& p) {
     for (const auto& part : p) {
-        const auto s = part.string();
+        const auto s = [](std::string piece) {
+            if constexpr (std::filesystem::path::preferred_separator != '/') {
+                for (char& c : piece) {
+                    if (c >= 'A' && c <= 'Z') {
+                        c = static_cast<char>(c - 'A' + 'a');
+                    }
+                }
+            }
+            return piece;
+        }(part.string());
         if (s == ".git" || s == ".engcoder" || s == "out" || s == "build" || s == "node_modules" || s == "vcpkg_installed") return true;
     }
     return false;
@@ -67,10 +77,22 @@ std::expected<std::string, core::Error> patch_text_as_crlf(std::string_view text
 std::unexpected<core::Error> invalid_patch(std::string message) {
     return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument), std::move(message)});
 }
+
+std::optional<std::size_t> line_offset(std::string_view text, std::size_t start_line) {
+    if (start_line == 0) return std::nullopt;
+    std::size_t start = 0;
+    for (std::size_t line = 1; line < start_line; ++line) {
+        const auto newline = text.find('\n', start);
+        if (newline == std::string_view::npos || newline + 1 == text.size()) return std::nullopt;
+        start = newline + 1;
+    }
+    return start;
+}
 }
 
 std::expected<TextPatch, core::Error> plan_text_patch(
-    std::string_view source, std::string_view expected, std::string_view replacement) {
+    std::string_view source, std::string_view expected, std::string_view replacement,
+    std::optional<std::size_t> start_line) {
     if (expected.empty()) return invalid_patch("expected block must not be empty");
 
     std::string adjusted_expected;
@@ -86,6 +108,16 @@ std::expected<TextPatch, core::Error> plan_text_patch(
         replacement = adjusted_replacement;
     }
 
+    if (start_line) {
+        const auto start = line_offset(source, *start_line);
+        if (!start || !source.substr(*start).starts_with(expected))
+            return invalid_patch("expected block no longer matches the referenced line");
+        const auto rest = source.substr(*start + expected.size());
+        if (!rest.empty() && !rest.starts_with('\n') && !rest.starts_with("\r\n"))
+            return invalid_patch("expected block no longer matches the complete referenced lines");
+        if (expected == replacement) return invalid_patch("replacement does not change the expected block");
+        return TextPatch{*start, expected.size(), std::string{replacement}};
+    }
     const auto first = source.find(expected);
     if (first == std::string_view::npos) return invalid_patch("expected block not found");
     if (source.find(expected, first + 1) != std::string_view::npos) {
@@ -135,15 +167,10 @@ std::expected<TextPage, core::Error> Workspace::read_text_page(
     if (!contents) return std::unexpected(contents.error());
 
     const std::string_view text = *contents;
-    std::size_t start = 0;
-    for (std::size_t line = 1; line < start_line; ++line) {
-        const auto newline = text.find('\n', start);
-        if (newline == std::string_view::npos || newline + 1 == text.size()) {
-            return std::unexpected(core::Error{
-                core::make_error_code(core::Errc::invalid_argument), "start_line is past the end of the file"});
-        }
-        start = newline + 1;
-    }
+    const auto offset = line_offset(text, start_line);
+    if (!offset) return std::unexpected(core::Error{
+        core::make_error_code(core::Errc::invalid_argument), "start_line is past the end of the file"});
+    const auto start = *offset;
 
     std::size_t end = start;
     std::size_t lines = 0;
@@ -194,6 +221,9 @@ std::expected<void, core::Error> Workspace::write_text(
 std::expected<std::vector<std::string>, core::Error> Workspace::tree(std::string_view relative, std::size_t max_entries) const {
     auto start = resolve(relative, true); if (!start) return std::unexpected(start.error());
     std::vector<std::string> out; std::error_code ec;
+    if (!std::filesystem::is_directory(*start, ec)) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument), "workspace tree target must be a directory"});
+    }
     for (std::filesystem::recursive_directory_iterator it(*start, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end && out.size() < max_entries; it.increment(ec)) {
         if (ec) { ec.clear(); continue; }
         std::filesystem::path relative_path;
@@ -215,7 +245,16 @@ std::expected<std::vector<std::string>, core::Error> Workspace::search_text(std:
         const auto size = it->file_size(ec); if (ec || size > 2 * 1024 * 1024) { ec.clear(); continue; }
         std::ifstream in(it->path()); if (!in) continue;
         std::string line; std::size_t n = 0;
-        while (std::getline(in, line) && out.size() < max_results) { ++n; if (line.find(query) != std::string::npos) out.push_back(relative_path.generic_string() + ":" + std::to_string(n) + ":" + line.substr(0, 400)); }
+        while (std::getline(in, line) && out.size() < max_results) {
+            ++n;
+            if (line.find(query) == std::string::npos) continue;
+            auto end = std::min(line.size(), std::size_t{400});
+            while (end > 0 && end < line.size() &&
+                   (static_cast<unsigned char>(line[end]) & 0xC0U) == 0x80U) {
+                --end;
+            }
+            out.push_back(relative_path.generic_string() + ":" + std::to_string(n) + ":" + line.substr(0, end));
+        }
     }
     return out;
 }

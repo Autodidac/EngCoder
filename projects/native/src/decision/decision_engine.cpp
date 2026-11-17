@@ -59,17 +59,53 @@ namespace {
 
 
 
-[[nodiscard]] bool is_shell(std::string_view executable) {
-    static constexpr std::array<std::string_view, 8> shells{
-        "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "bash", "sh", "zsh"
-    };
-    return std::ranges::find(shells, executable) != shells.end();
+[[nodiscard]] bool forbidden_process(std::string_view executable) {
+    if (executable.ends_with(".exe")) executable.remove_suffix(4);
+    static constexpr auto forbidden = std::to_array<std::string_view>({
+        "cmd", "command.com", "powershell", "pwsh", "bash", "sh", "zsh", "fish",
+        "python", "python3", "node", "deno", "wscript", "cscript", "mshta",
+        "rundll32", "regsvr32", "reg", "sc", "schtasks", "wmic", "diskpart", "format.com",
+        "bcdedit", "vssadmin", "curl", "wget", "bitsadmin", "certutil", "fsutil",
+        "rm", "del", "erase", "rmdir", "rd", "dd", "mkfs", "mkfs.ext4",
+        "chown", "chmod", "shutdown", "reboot", "robocopy", "xcopy",
+    });
+    return std::ranges::find(forbidden, executable) != forbidden.end();
+}
+
+[[nodiscard]] bool cmake_script_mode(const std::vector<std::string>& arguments) {
+    return std::ranges::any_of(arguments, [](std::string_view arg) {
+        return arg.starts_with("-P") || arg == "-E" || arg == "--install" ||
+            arg.starts_with("--install=");
+    });
 }
 
 } // namespace
 
+bool protected_workspace_target(std::string_view relative_path) {
+    auto normalized = lower(std::string{relative_path});
+    std::ranges::replace(normalized, '\\', '/');
+    std::string_view parent;
+    for (std::string_view remaining = normalized; !remaining.empty();) {
+        const auto separator = remaining.find('/');
+        auto name = remaining.substr(0, separator);
+        remaining.remove_prefix(separator == std::string_view::npos ? remaining.size() : separator + 1);
+        if (name == "." || name.empty()) continue;
+#ifdef _WIN32
+        // Win32 can normalize trailing dots/spaces and interpret a colon as a stream.
+        if (name.find(':') != std::string::npos) return true;
+        if (const auto last = name.find_last_not_of(" ."); last != std::string::npos)
+            name = name.substr(0, last + 1);
+#endif
+        if (name == ".git" || name == ".ssh" || name == ".codex" || name == ".engcoder" ||
+            (parent == ".github" && name == "workflows") ||
+            (parent == ".vscode" && (name == "tasks.json" || name == "launch.json"))) return true;
+        parent = name;
+    }
+    return false;
+}
+
 std::expected<ToolReview, core::Error> DeterministicDecisionEngine::review_tool(const ToolProposal& proposal) {
-    if (proposal.name.starts_with("workspace.read") || proposal.name == "workspace.tree" ||
+    if (proposal.name == "workspace.read" || proposal.name == "workspace.tree" ||
         proposal.name == "workspace.search" || proposal.name == "session.search" ||
         proposal.name == "git.status" || proposal.name == "git.diff" ||
         proposal.name == "expert.list" || proposal.name == "expert.call" ||
@@ -79,8 +115,17 @@ std::expected<ToolReview, core::Error> DeterministicDecisionEngine::review_tool(
     }
 
     if (proposal.name == "workspace.write" || proposal.name == "workspace.patch") {
+        if (!proposal.arguments.is_object() || !proposal.arguments.contains("path") ||
+            !proposal.arguments.at("path").is_string()) {
+            return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+                "Workspace edits require a file path."});
+        }
+        if (protected_workspace_target(proposal.arguments.at("path").get_ref<const std::string&>())) {
+            return make_review(ToolDisposition::deny, one_hot(ToolDisposition::deny),
+                "Agent edits to protected workspace configuration are blocked.", "deterministic");
+        }
         return make_review(ToolDisposition::require_approval, one_hot(ToolDisposition::require_approval),
-            "checkpointed workspace mutation delegated to weighted review", "deterministic");
+            "A checkpointed workspace edit requires operator approval.", "deterministic");
     }
 
     if (proposal.name == "lmstudio.integration") {
@@ -93,10 +138,18 @@ std::expected<ToolReview, core::Error> DeterministicDecisionEngine::review_tool(
             "unknown side-effect class", "deterministic");
     }
 
-    const auto executable = basename(proposal.arguments.value("executable", std::string{}));
-    if (is_shell(executable)) {
+    if (!proposal.arguments.is_object() || !proposal.arguments.contains("executable") ||
+        !proposal.arguments.at("executable").is_string() ||
+        (proposal.arguments.contains("arguments") &&
+         (!proposal.arguments.at("arguments").is_array() ||
+          !std::ranges::all_of(proposal.arguments.at("arguments"), &json::is_string)))) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+            "Process proposals require an executable and a string argument array, if supplied."});
+    }
+    const auto executable = basename(proposal.arguments.at("executable").get<std::string>());
+    if (forbidden_process(executable)) {
         return make_review(ToolDisposition::deny, one_hot(ToolDisposition::deny),
-            "shell interpreters are not accepted by the structured process tool", "deterministic");
+            "The structured process tool blocks unconfined interpreters and machine-control utilities.", "deterministic");
     }
 
     if (executable == "git" || executable == "git.exe") {
@@ -104,41 +157,21 @@ std::expected<ToolReview, core::Error> DeterministicDecisionEngine::review_tool(
             "use fixed git.status/git.diff tools for unattended Git inspection", "deterministic");
     }
 
-    if (executable == "where" || executable == "where.exe" || executable == "which") {
-        return make_review(ToolDisposition::allow, one_hot(ToolDisposition::allow, 0.99),
-            "read-only executable discovery", "deterministic");
-    }
-
-    if (executable == "cmake" || executable == "cmake.exe") {
-        const auto args = proposal.arguments.value("arguments", std::vector<std::string>{});
-        if (std::ranges::find(args, "-P") != args.end() ||
-            std::ranges::find(args, "-E") != args.end() ||
-            std::ranges::find(args, "--install") != args.end()) {
-            return make_review(ToolDisposition::require_approval, one_hot(ToolDisposition::require_approval),
-                "cmake script/command/install modes require review", "deterministic");
-        }
-        return make_review(ToolDisposition::allow, one_hot(ToolDisposition::allow, 0.98),
-            "CMake configure/build mode using structured arguments", "deterministic");
-    }
-
-    static const std::vector<std::string> build_tools{
-        "ctest", "ctest.exe", "ninja", "ninja.exe", "msbuild", "msbuild.exe",
-        "cl", "cl.exe", "clang", "clang++", "gcc", "g++"
-    };
-    if (std::ranges::find(build_tools, executable) != build_tools.end()) {
-        return make_review(ToolDisposition::allow, one_hot(ToolDisposition::allow, 0.98),
-            "recognized build/test tool using structured arguments", "deterministic");
+    if ((executable == "cmake" || executable == "cmake.exe") &&
+        cmake_script_mode(proposal.arguments.value("arguments", std::vector<std::string>{}))) {
+        return make_review(ToolDisposition::deny, one_hot(ToolDisposition::deny),
+            "CMake command, script and install modes are blocked.", "deterministic");
     }
 
     return make_review(ToolDisposition::require_approval, one_hot(ToolDisposition::require_approval),
-        "unrecognized process requires weighted review", "deterministic");
+        "Model-requested processes can run local code and require operator approval.", "deterministic");
 }
 
 std::expected<ToolReview, core::Error> WeightedDecisionEngine::review_tool(const ToolProposal& proposal) {
     DecisionProbabilities probabilities{0.04, 0.94, 0.02};
     std::string reason = "weighted local policy: ambiguous side effect";
 
-    if (proposal.name.starts_with("workspace.read") || proposal.name == "workspace.tree" ||
+    if (proposal.name == "workspace.read" || proposal.name == "workspace.tree" ||
         proposal.name == "workspace.search" || proposal.name == "session.search" ||
         proposal.name == "git.status" || proposal.name == "git.diff" ||
         proposal.name == "expert.list" || proposal.name == "expert.call" ||
@@ -155,7 +188,7 @@ std::expected<ToolReview, core::Error> WeightedDecisionEngine::review_tool(const
         const auto executable = basename(proposal.arguments.value("executable", std::string{}));
         const auto args = proposal.arguments.value("arguments", std::vector<std::string>{});
 
-        if (is_shell(executable)) {
+        if (forbidden_process(executable)) {
             probabilities = {0.0, 0.001, 0.999};
             reason = "weighted local policy: unrestricted shell surface";
         } else if (executable == "cmake" || executable == "cmake.exe") {
@@ -210,9 +243,11 @@ std::expected<ToolReview, core::Error> CompositeDecisionEngine::review_tool(cons
     auto local = weighted_.review_tool(proposal);
     if (!local) return hard;
 
-    // A deterministic allow acts as a safety floor for known fixed-function
-    // build/read operations, but the weighted distribution remains visible.
-    if (hard->disposition == ToolDisposition::allow && local->disposition != ToolDisposition::deny) {
+    // Weighted advice can tighten deterministic policy but cannot grant authority.
+    if (hard->disposition == ToolDisposition::require_approval && local->disposition != ToolDisposition::deny) {
+        local->disposition = hard->disposition;
+        local->reason = hard->reason;
+    } else if (hard->disposition == ToolDisposition::allow && local->disposition != ToolDisposition::deny) {
         local->disposition = local->probabilities.allow >= 0.75
             ? ToolDisposition::allow
             : ToolDisposition::require_approval;
