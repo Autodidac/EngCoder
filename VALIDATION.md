@@ -1,3 +1,9 @@
+## Live host-issued approval of an isolated Windows repair (2026-11-17)
+
+- From `ffe39ef`, a separate EngCoder checkout and test reproduced tree/search including generated files under mixed-case `OuT` on Windows. The existing Qwen 3.5 9B submitted two invalid C++ patches in the shared Codex UI. The operator denied both and neither produced a checkpoint. The third task used an operator-supplied replacement and verified the UI approval workflow.
+- The approved task `task_7188230fd4b8_10_92f6febb92a4894f` used host ID `approval_7189632fd2e0_13_13dda4896724db45`, created checkpoint `cp_718c688c6764_14_1b77f91585ce9953`, and recorded exit 0 for Release build and CTest before the terminal event at 41.675 s. Protected test and CMake input hashes matched. An independent Release CTest run passed 82/82. Candidate edits remain isolated.
+- The approved proposal turn evaluated 325 uncached prompt tokens in 435 ms and generated 133 tokens at 26.87 tokens/s. Across all three attempts, peak sampled working sets were 5.89 GiB for the provider and 15.96 MiB for the host. Whole-device GPU memory peaked at 6,860 MiB and utilization at 68%. The model was stopped and the preview returned HTTP 200 afterward. Receipts and raw logs are in `out/self-iteration-2026-11-17/windows-build-case`.
+
 ## Host-issued approvals for model tool calls (2026-11-17)
 
 - Adapted the single-use identity principle from Epoch's development guard. EngCoder issues its own approval ID for each interactive request, even if the provider repeats a tool-call ID. The browser submits and matches decisions against the host ID. Audit events retain both identities. The native candidate path and preimage checks still run before the edit.
