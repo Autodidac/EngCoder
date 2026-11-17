@@ -1,3 +1,9 @@
+## 0.7.5 isolated patch approval preflight (2026-11-17)
+
+- The native candidate fixture reproduced prompts for empty, absent, overlapping, and unchanged patches. The candidate now checks the same matching rules before review and execution. It reports the reason to the model and the Run info timeline. Valid patches still require per-edit approval, and edits to the file while approval is pending still invalidate that approval.
+- A first Qwen 3.5 9B attempt read the whole runtime source and exceeded its 8,192-token context. With exact source excerpts and explicit session instructions, the next attempt authored the preflight call in the isolated checkout. It evaluated 595 prompt tokens in 1,395 ms after cache reuse and decoded 190 tokens at 11.52 tokens/s. The sampled provider and EngCoder working-set peaks were 6.05 GiB and 12.22 MiB. Whole-device GPU use reached 13,226 MiB of 16,303 MiB with a 71% utilization peak while running with 12 offloaded layers.
+- The local approval API recorded the exact tool approval and checkpoint `cp_5ba4063c4960_a_615488a92da158e7`. The live candidate build passed. Its test run exposed fixture state that was reused between two simulated repair tasks. The live task ended after 128.4 s including approval and validation. The operator reset the fixture state and formatted the model edit. The independent Windows x64 Release rebuild and 68/68 CTest cases passed, as did 19 Web checks. The working-source integration bundle is staged for review.
+
 ## 0.7.5 isolated Windows patch follow-up (2026-11-16)
 
 - A new native test reproduced four failures through the registered `workspace.patch` tool: LF text could fail to match CRLF, a multiline replacement could introduce mixed endings, overlapping matches could be accepted, and a match could split a CRLF pair.
