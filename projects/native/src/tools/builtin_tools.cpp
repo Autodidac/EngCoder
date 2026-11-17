@@ -259,7 +259,8 @@ void register_builtin_tools(
     registry.add(make_tool(
         "workspace.read",
         "Read a UTF-8/text project file inside the workspace. In candidate mode or with line arguments, "
-        "return a bounded page of complete lines. Use the one-based start_line from next_line to continue.",
+        "return a bounded page of complete lines. Use the one-based start_line from next_line to continue. "
+        "In candidate mode, read just the lines to replace and use the returned source_ref for workspace.patch.",
         object_schema(
             {
                 {"path", string_schema()},
@@ -347,16 +348,24 @@ void register_builtin_tools(
 
     registry.add(make_tool(
         "workspace.patch",
-        "Replace one exact text block. Use replacement_lines (one JSON string per physical line) for multiline C++, or replacement for exact text. Supply only one. Uniform CRLF files retain CRLF. Missing or ambiguous matches fail.",
+        "Replace one exact text block. Supply expected text or, in candidate mode, source_ref from a bounded workspace.read of the same path. "
+        "Use replacement_lines (one JSON string per physical line) for multiline C++, or replacement for exact text. "
+        "Uniform CRLF files retain CRLF. Missing or ambiguous matches fail.",
         object_schema(
             {
                 {"path", string_schema()},
                 {"expected", string_schema()},
+                {"source_ref", string_schema()},
                 {"replacement", string_schema()},
                 {"replacement_lines", string_array_schema()},
             },
-            {"path", "expected"}),
+            {"path"}),
         [&workspace, &checkpoints](const json& arguments, const Context&) -> std::expected<json, core::Error> {
+            if (!arguments.contains("expected") || !arguments.at("expected").is_string() ||
+                arguments.contains("source_ref")) {
+                return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+                    "An exact expected block is required. A source_ref must be resolved by the candidate host."});
+            }
             const auto path = arguments.at("path").get<std::string>();
             const auto& expected = arguments.at("expected").get_ref<const std::string&>();
             const auto replacement = workspace_patch_replacement(arguments);

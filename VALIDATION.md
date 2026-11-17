@@ -1,3 +1,8 @@
+## Candidate patch references to bounded source reads (2026-11-17)
+
+- After a bounded read, the candidate host issues a task-local `source_ref` for the file and observed page. A patch can supply it instead of retyping the expected block. The host rechecks the resolved target and source bytes, expands the exact block before approval, and leaves the final line ending outside the replacement. Existing ambiguity, preimage, checkpoint, and validation checks still apply.
+- Native fixtures exercised a successful referred edit through approval and validation, rejection of unknown and wrong-file references, and rejection after the observed text changed. Windows Release built and passed 82/82 CTest checks. This pass used a model fixture for the new reference path.
+
 ## Multiline tool patches and live Run info verification (2026-11-17)
 
 - `workspace.patch` accepts `replacement_lines` as an alternative to `replacement`. Native code joins the lines before review so the approval shows exactly what will be applied. Windows Release passed all 82 tests, including exact preflight, checkpoint restore, preserved C++ string escapes, and refusal of malformed or ambiguous arguments.

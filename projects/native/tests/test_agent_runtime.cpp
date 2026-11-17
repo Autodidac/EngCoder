@@ -14,6 +14,7 @@
 #include "engcoder/learning/learning_service.hpp"
 #include "engcoder/persistence/session_store.hpp"
 #include "engcoder/tools/tool_registry.hpp"
+#include "engcoder/workspace/workspace.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -29,6 +30,7 @@ public:
     bool boundary{};
     bool expect_memory{};
     bool stronger_available{true};
+    bool reference_trial{};
     std::vector<std::string> models;
     std::expected<engcoder::model::ModelResponse, engcoder::core::Error> complete(
         const engcoder::model::ModelRequest& request) override {
@@ -37,6 +39,26 @@ public:
         }
         const auto turn = turns++;
         models.push_back(request.model);
+        if (reference_trial) {
+            if (turn == 0) {
+                return engcoder::model::ModelResponse{.tool_calls = {
+                    {"read-source", "workspace.read", {{"path", "fixture.cpp"}, {"start_line", 1}, {"max_lines", 1}}},
+                }};
+            }
+            if (turn == 1) {
+                const auto observed = engcoder::core::json::parse(request.messages.back().content);
+                const auto reference = observed.at("source_ref").get<std::string>();
+                return engcoder::model::ModelResponse{.tool_calls = {
+                    {"unknown-source", "workspace.patch",
+                        {{"path", "fixture.cpp"}, {"source_ref", "unknown"}, {"replacement", "edited 1"}}},
+                    {"other-source", "workspace.patch",
+                        {{"path", "other.cpp"}, {"source_ref", reference}, {"replacement", "edited 1"}}},
+                    {"edit-source", "workspace.patch",
+                        {{"path", "fixture.cpp"}, {"source_ref", reference}, {"replacement", "edited 1"}}},
+                }};
+            }
+            return engcoder::model::ModelResponse{.text = "Candidate change summary"};
+        }
         if (turn == 0 && boundary) {
             CHECK((request.messages.front().content.find("Previously verified C++ boundary lesson") != std::string::npos)
                 == expect_memory);
@@ -513,11 +535,20 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             std::ofstream(root / "fixture.cpp", std::ios::binary) << "edited " << edits << "\r\naaaa\r\nfooter\r\n";
             return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
         }});
+    tools.add({{"workspace.read", "fixture read", core::json::object()},
+        [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
+            const workspace::Workspace candidate(root);
+            const auto page = candidate.read_text_page(args.at("path").get<std::string>(), 1, 1);
+            if (!page) return std::unexpected(page.error());
+            return core::json{{"content", page->content}};
+        }});
     tools.add({{"process.run", "fixture process", core::json::object()},
         [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
             const auto command = args.at("executable").get<std::string>();
             checks.push_back(command);
             if (command == "ctest") CHECK(args.at("arguments").back() == "--no-tests=error");
+            if (model.reference_trial) return core::json{
+                {"exit_code", 0}, {"timed_out", false}, {"cancelled", false}};
             if (boundary) {
                 const bool fails = command == "ctest" && (checks.size() <= 4 || keep_failing);
                 return core::json{{"exit_code", fails ? 8 : 0}, {"timed_out", false}, {"cancelled", false},
@@ -530,6 +561,7 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     core::EventBus events;
     agent::AgentRuntime runtime(config, model, addons, controller, models, residency, training, learning, tools, store, events);
     unsigned recalled = 0;
+    bool stale_reference = false;
     const auto subscription = events.subscribe([&](const core::Event& event) {
         if (event.type == "task.awaiting_approval") {
             CHECK(event.data.at("tool") == "workspace.patch");
@@ -537,11 +569,21 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             CHECK(event.data.at("tool_call_id").get<std::string>().starts_with("edit-"));
             const auto& arguments = event.data.at("arguments");
             CHECK_FALSE(arguments.contains("replacement_lines"));
-            CHECK(arguments.at("replacement").get<std::string>().ends_with("\naaaa\nfooter"));
+            if (model.reference_trial) {
+                CHECK_FALSE(arguments.contains("source_ref"));
+                CHECK(arguments.at("expected") == "original");
+                CHECK(arguments.at("replacement") == "edited 1");
+            } else {
+                CHECK(arguments.at("replacement").get<std::string>().ends_with("\naaaa\nfooter"));
+            }
             if (changed_while_pending) std::ofstream(root / "fixture.cpp") << "newer operator content";
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }
         if (event.type == "iteration.lesson_reused") ++recalled;
+        if (stale_reference && event.type == "tool.completed" &&
+            event.data.value("name", std::string{}) == "workspace.read") {
+            std::ofstream(root / "fixture.cpp") << "changed before patch";
+        }
         if ((event.type == "tool.approved" || event.type == "tool.denied" || event.type == "tool.completed") &&
             event.data.value("name", std::string{}) == "workspace.patch") {
             CHECK(event.data.at("candidate_path") == "fixture.cpp");
@@ -601,6 +643,29 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
         REQUIRE(repeated);
         CHECK(recalled == 1);
         CHECK(learning.recent().at("items").size() == 1);
+    }
+    if (!foreign_source && !deny && !keep_failing && !boundary && !stronger_available && !changed_while_pending) {
+        model.reference_trial = true;
+        for (const bool stale : {false, true}) {
+            stale_reference = stale;
+            const std::string id = stale ? "stale-source" : "verified-source";
+            reset_candidate();
+            model.turns = 0;
+            edits = 0;
+            checks.clear();
+            const auto trial = runtime.run({.project_id = "candidate", .session_id = id,
+                .task_id = id, .user_message = "Change the first fixture line.",
+                .include_history = false, .wait_for_approval = true, .self_iteration = true});
+            INFO((trial ? "Completed" : trial.error().message));
+            CHECK(trial.has_value() == !stale);
+            CHECK(edits == (stale ? 0u : 1u));
+            const auto receipts = store.events_after(id, 0);
+            REQUIRE(receipts);
+            const auto rejected = std::ranges::count_if(*receipts, [](const auto& event) {
+                return event.type == "tool.review_failed" && event.data.value("name", std::string{}) == "workspace.patch";
+            });
+            CHECK(rejected == (stale ? 3 : 2));
+        }
     }
     events.unsubscribe(subscription);
 }

@@ -289,7 +289,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             "make the requested checkpointed edits, then summarize the change. The host runs the "
             "configured build and tests when you finish. If a check fails, use the diagnostics to "
             "make a targeted repair before finishing again. Each edit needs operator approval. "
-            "Use workspace.read with start_line and max_lines for the needed source excerpt. "
+            "Use workspace.read with start_line and max_lines for the exact lines to replace. "
+            "Prefer its source_ref to copying exact preimage text into workspace.patch. "
             "For an unknown location, search for a specific symbol first and read around the match. "
             "Use workspace.patch to edit an existing file and workspace.write only to create a new file. "
             "For a multiline replacement, put each physical line in a separate replacement_lines entry and omit replacement.";
@@ -890,6 +891,16 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
 
     std::unordered_map<std::string, std::uint32_t> signatures;
     std::unordered_set<std::string> candidate_call_ids;
+    struct ObservedSource {
+        std::string reference;
+        std::string path;
+        std::filesystem::path target;
+        std::size_t start_line;
+        std::size_t max_lines;
+        std::string content;
+    };
+    constexpr std::size_t max_observed_sources = 24;
+    std::vector<ObservedSource> observed_sources;
     std::string parent = user_id;
     bool candidate_edited = false;
     bool repair_escalation_attempted = false;
@@ -1143,6 +1154,35 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
 
         for (auto& call : model_result->tool_calls) {
             std::optional<core::Error> patch_argument_error;
+            std::optional<std::filesystem::path> referenced_target;
+            if (call.name == "workspace.patch" && call.arguments.contains("source_ref")) {
+                const auto& reference = call.arguments.at("source_ref");
+                const auto observed = std::ranges::find_if(observed_sources, [&](const auto& source) {
+                    return reference.is_string() && reference.get_ref<const std::string&>() == source.reference;
+                });
+                if (!candidate_workspace || call.arguments.contains("expected") ||
+                    observed == observed_sources.end() || !call.arguments.contains("path") ||
+                    call.arguments.at("path") != observed->path) {
+                    patch_argument_error = core::Error{core::make_error_code(core::Errc::invalid_argument),
+                        "Use a source_ref from a recent bounded read of this candidate file, without expected."};
+                } else {
+                    const auto target = candidate_workspace->resolve(observed->path, true);
+                    const auto current = candidate_workspace->read_text_page(
+                        observed->path, observed->start_line, observed->max_lines);
+                    if (!target || *target != observed->target || !current || current->content != observed->content) {
+                        patch_argument_error = core::Error{core::make_error_code(core::Errc::workspace_violation),
+                            "The referenced source changed. Read those lines again before proposing a patch."};
+                    } else {
+                        referenced_target = observed->target;
+                        auto expected = observed->content;
+                        // Keep the final line ending outside the replacement block.
+                        if (expected.ends_with("\r\n")) expected.resize(expected.size() - 2);
+                        else if (expected.ends_with('\n')) expected.pop_back();
+                        call.arguments.erase("source_ref");
+                        call.arguments["expected"] = std::move(expected);
+                    }
+                }
+            }
             if (call.name == "workspace.patch" && call.arguments.contains("replacement_lines")) {
                 auto replacement = tools::workspace_patch_replacement(call.arguments);
                 if (replacement) {
@@ -1204,6 +1244,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 const auto relative = path ? path->lexically_relative(candidate_workspace->root()) : std::filesystem::path{};
                 const auto relative_to_build = path ? path->lexically_relative(build_dir) : std::filesystem::path{};
                 if (relative.empty() || relative == "." ||
+                    (referenced_target && *path != *referenced_target) ||
                     std::ranges::any_of(relative, [](const auto& part) {
                         auto name = part.string();
                         std::ranges::transform(name, name.begin(), [](unsigned char ch) {
@@ -1450,6 +1491,11 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     }
                 }
             }
+            std::optional<std::filesystem::path> observed_target;
+            if (candidate_workspace && call.name == "workspace.read") {
+                auto target = candidate_workspace->resolve(call.arguments.at("path").get_ref<const std::string&>(), true);
+                if (target) observed_target = std::move(*target);
+            }
             auto value = tools_.invoke(call.name, call.arguments, context);
             const auto tool_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - tool_started_at).count();
@@ -1468,6 +1514,27 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 continue;
             }
             if (candidate_workspace && iteration_edit(call.name)) candidate_edited = true;
+            if (observed_target) {
+                const auto& path = call.arguments.at("path").get_ref<const std::string&>();
+                const auto current_target = candidate_workspace->resolve(path, true);
+                const auto content = value->find("content");
+                if (current_target && *current_target == *observed_target &&
+                    content != value->end() && content->is_string() &&
+                    !content->get_ref<const std::string&>().empty() &&
+                    content->get_ref<const std::string&>().size() <= workspace::max_text_page_bytes) {
+                    if (observed_sources.size() == max_observed_sources)
+                        observed_sources.erase(observed_sources.begin());
+                    auto& observed = observed_sources.emplace_back(ObservedSource{
+                        core::make_id("source"),
+                        path,
+                        std::move(*observed_target),
+                        call.arguments.value("start_line", std::size_t{1}),
+                        call.arguments.value("max_lines", workspace::default_text_page_lines),
+                        content->get<std::string>(),
+                    });
+                    (*value)["source_ref"] = observed.reference;
+                }
+            }
 
             model::Message tool_message{"tool", value->dump(), {}, call.id};
             messages.push_back(tool_message);
