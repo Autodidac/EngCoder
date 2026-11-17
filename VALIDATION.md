@@ -1,3 +1,9 @@
+## 0.7.5 candidate approval and native installer cancellation receipts (2026-11-17)
+
+- The final Windows Release server ran three self-iteration approval cases with a scripted loopback provider. Deny and Stop left the CRLF fixture byte-identical. Approving after an intervening edit preserved the new contents and reported the changed preimage. All three emitted exactly one terminal event and started no build or test. Wrong-call and post-terminal approvals returned HTTP 409 in all three cases.
+- A compiled local stand-in for the native model process held startup open. The Release server returned HTTP 409 for clearing the cache during installation. Unload cancelled each of two explicit install attempts in 710 ms and 722 ms, measured to observing the `cancelled` state. The fixture recorded exactly two child launches. It never reported ready or transferred weights. Actual readiness-boundary timing and cancellation during a real download remain open.
+- Both independent receipts identify the tested `EngCoderServer.exe` by SHA-256 `ee08efdf658fb00d2ef62325811396066c8974630bdf3073cffbfb0e3c00f549`.
+
 ## 0.7.5 isolated native-model cache coordination (2026-11-17)
 
 - A local fixture reproduced transient cache clearing and profile removal going through while backend installation held its worker open. The isolated repair coordinates install admission, model preparation, profile changes, and cache removal. The regression uses two competing callers, verifies busy results throughout installation, and checks successful retry after the fixture installer exits. It also checks confirmed profile and cached-file removal. It writes synthetic files and downloads no weights.

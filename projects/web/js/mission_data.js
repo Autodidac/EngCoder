@@ -88,14 +88,14 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing and restart reconciliation. Inside Codex, the approval cleared after restart and Run info retained the reason after reload. Web fixtures cover Stop during submission, temporary disconnects, terminal cursor replay and attaching one observer when the saved chat is reopened. Working-source integration and a full standalone desktop restart remain open.",
+    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing and restart reconciliation. Release fixtures verify Deny, Stop, wrong-call and stale approvals, and preserving an intervening file edit. Inside Codex, the approval cleared after restart and Run info retained the reason after reload. Web fixtures cover Stop during submission, temporary disconnects, terminal cursor replay and attaching one observer when the saved chat is reopened. Working-source integration and a full standalone desktop restart remain open.",
     "status": "open"
   },
   {
     "id": "P1-014",
     "priority": "P1",
     "title": "Cache operation lifecycle serialization",
-    "details": "The isolated Windows Release candidate reserves install admission and coordinates preparation, profile changes, transient-cache clearing and confirmed weight deletion. A fixture using local files verifies that only one of two competing callers starts installation, that competing mutations return busy, and that a retry succeeds after the installer exits. Live download cancellation, cross-platform checks and working-source integration remain open.",
+    "details": "The isolated Windows Release candidate reserves install admission and coordinates preparation, profile changes, transient-cache clearing and confirmed weight deletion. A fixture using local files verifies that only one of two competing callers starts installation, that competing mutations return busy, and that a retry succeeds after the installer exits. The Release API cancelled a delayed native backend twice without extra process launches. Cancellation at successful readiness or during a real download, cross-platform checks and working-source integration remain open.",
     "status": "open"
   },
   {
