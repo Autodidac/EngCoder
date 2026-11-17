@@ -1,3 +1,9 @@
+## Live source-reference repair verification (2026-11-17)
+
+- An independent test reproduced search previews cutting a UTF-8 character at byte 400 in the isolated Windows candidate. It also covered an exactly aligned multibyte character and an ASCII line. Qwen 3.5 9B used the bounded read reference in three drafts. All three edits were denied for incorrect C++ behavior.
+- In a fourth task the model submitted an operator-supplied correction via the same reference. The saved model call contained the reference from line 227 and omitted `expected`. The native approval event showed exactly the referenced bytes and replacement. After approval, task `task_72e752f27360_1d_3b250f854d9ae8f9` created checkpoint `cp_72ee1a56f858_24_3291f6cf788bdbc5`, recorded exit 0 for build and tests, and completed in 44.461 s. The shared Codex UI displayed all receipts. Test and CMake hashes were preserved. Independent candidate CTest passed 83/83.
+- The accepted proposal turn evaluated 202 uncached prompt tokens in 276 ms and generated 240 tokens at 27.12 tokens/s. Across the mission, sampled peaks were 5.59 GiB of model working set, 16.25 MiB of host working set and 6,918 MiB of whole-device GPU memory at up to 91% utilization. The owned model stopped, the preview remained healthy, and working source stayed unchanged. Logs and the receipt are in `out/self-iteration-2026-11-17/live-source-ref`.
+
 ## Candidate patch references to bounded source reads (2026-11-17)
 
 - After a bounded read, the candidate host issues a task-local `source_ref` for the file and observed page. A patch can supply it instead of retyping the expected block. The host rechecks the resolved target and source bytes, expands the exact block before approval, and leaves the final line ending outside the replacement. Existing ambiguity, preimage, checkpoint, and validation checks still apply.
