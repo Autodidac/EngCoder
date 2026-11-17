@@ -2777,6 +2777,15 @@ def train_internal(arguments: argparse.Namespace) -> int:
             progress_file=progress_file,
             timeout_seconds=max(1.0, arguments.slot_timeout_seconds),
         ):
+            selection_manifest = getattr(arguments, "curriculum_manifest", None)
+            if selection_manifest is not None:
+                active_path = internal.resolve_active_generation(arguments.state_root)
+                active_manifest = internal.generation_manifest(active_path)
+                active_config = internal.ModelConfig.from_path(active_path / str(active_manifest.get("config_file", "config.json")))
+                data_scope = internal.canonical_training_scope(arguments.scope)
+                scope_filter = None if data_scope in {"all", "core", "bootstrap", "general"} else data_scope
+                counts = internal.preflight_compiled_training(data_paths, Path(selection_manifest), active_config.context_length, scope_filter)
+                print(json.dumps({"event": "training-admission-preflight", **counts}), flush=True)
             metrics = internal.train_candidate(
                 state_root=arguments.state_root,
                 data_paths=data_paths,

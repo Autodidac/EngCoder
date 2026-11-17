@@ -2642,6 +2642,8 @@ def load_training_sequences(
     paths: Iterable[Path | str],
     maximum_tokens: int,
     skill: str | None = None,
+    *,
+    evaluation: bool = False,
 ) -> list[TrainingSequence]:
     tokenizer = ByteTokenizer()
     sequences: list[TrainingSequence] = []
@@ -2683,6 +2685,31 @@ def load_training_sequences(
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not evaluation and _curriculum_compiler.evaluation_record(record):
+                    continue
+                reviewed = _curriculum_compiler.independently_reviewed(record, "evaluation" if evaluation else "training")
+                if "independent_review" in record and not reviewed:
+                    continue
+                if evaluation and reviewed:
+                    if not _curriculum_compiler.evaluation_record(record):
+                        continue
+                    # Evaluation-only admission does not alter the persisted
+                    # record or permit gradients on a held-out example.
+                    probe = dict(record)
+                    probe.pop("independent_review", None)
+                    probe["accepted"] = True
+                    probe["eligible_for_training"] = True
+                    system, prompt, response = _curriculum_compiler._dialogue(probe)
+                    if _curriculum_compiler._filter_reason(probe, system, prompt, response, normalized_skill, evaluation=True):
+                        continue
+                elif evaluation:
+                    system, prompt, response = _curriculum_compiler._dialogue(record)
+                    if _curriculum_compiler._filter_reason(record, system, prompt, response, normalized_skill, evaluation=True):
+                        continue
+                elif reviewed:
+                    system, prompt, response = _curriculum_compiler._dialogue(record)
+                    if _curriculum_compiler._filter_reason(record, system, prompt, response, normalized_skill):
+                        continue
                 # Defense in depth: even if a caller bypasses the worker's
                 # filtered JSONL paths, an KeyMaker-only optimizer scope must
                 # never consume explicit or code-shaped C++ evidence.
@@ -2721,7 +2748,9 @@ def load_training_sequences(
                     and human_approval_counts.get(record_skill, 0)
                     >= _MINIMUM_DIVERSE_HUMAN_APPROVALS
                 )
-                if "eligible_for_training" in record:
+                if evaluation and reviewed:
+                    pass
+                elif "eligible_for_training" in record:
                     if not bool(record.get("eligible_for_training", False)) and not hard_correction and not human_batch_ready:
                         continue
                     if not _weight_training_skill(record_skill):
@@ -2730,10 +2759,11 @@ def load_training_sequences(
                         bool(record.get("human_accepted", False))
                         or bool(record.get("deterministic_verified", False))
                         or bool(record.get("reference_verified", False))
+                        or reviewed
                     ):
                         continue
                     if (
-                        (_human_only_training_record(record) or hard_correction)
+                        (_human_only_training_record(record) or hard_correction) and not reviewed
                         and human_approval_counts.get(record_skill, 0)
                         < _MINIMUM_DIVERSE_HUMAN_APPROVALS
                     ):
@@ -2765,6 +2795,26 @@ def load_training_sequences(
                 # multiplication.
                 sequences.append(sequence)
     return sequences
+
+
+def load_evaluation_sequences(paths: Iterable[Path | str], maximum_tokens: int,
+                              skill: str | None = None) -> list[TrainingSequence]:
+    """Load held-out targets; never use this view as optimizer input."""
+    return load_training_sequences(paths, maximum_tokens, skill, evaluation=True)
+
+
+def preflight_compiled_training(data_paths: Sequence[Path], manifest_path: Path,
+                                maximum_tokens: int, scope: str | None) -> dict[str, int]:
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    expected = manifest.get("counts", {}).get("selected_records")
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+        raise RuntimeError("compiled curriculum has no valid selected-record count")
+    if len(data_paths) != 1 or sha256_file(Path(data_paths[0])) != manifest.get("hashes", {}).get("output_sha256"):
+        raise RuntimeError("compiled curriculum does not match its manifest")
+    loaded = len(load_training_sequences(data_paths, maximum_tokens, scope))
+    if loaded != expected:
+        raise RuntimeError(f"training admission mismatch: compiler selected {expected}, tensor loader admitted {loaded}; review eligibility, scope and duplicate dialogue before training")
+    return {"compiled_records": expected, "loaded_training_sequences": loaded}
 
 
 def training_sequences_fingerprint(sequences: Sequence[TrainingSequence]) -> str:
@@ -3140,7 +3190,7 @@ def train_candidate(
         config.context_length,
         scope_filter,
     )
-    anchors = load_training_sequences(
+    anchors = load_evaluation_sequences(
         anchor_paths,
         config.context_length,
         None if requested_scope == "english-foundation" else scope_filter,

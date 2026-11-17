@@ -931,6 +931,41 @@ def _matches_scope(record: dict[str, Any], scope: str | None) -> bool:
     return False
 
 
+def review_record_sha256(record: dict[str, Any]) -> str:
+    """Bind review to material and admission flags, excluding compiler metadata."""
+    material = {key: value for key, value in record.items()
+                if key not in {"independent_review", "id", "curriculum_weight"}}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def evaluation_record(record: dict[str, Any]) -> bool:
+    markers = {"heldout", "held-out", "evaluation", "evaluation-only", "eval", "eval-only", "test", "validation", "dev"}
+    explicit = {_normalize_label(record.get(key, "")) for key in ("split", "kind", "type", "purpose")}
+    # Generic test/dev capability tags may describe C++ training material.
+    label_markers = {"heldout", "held-out", "evaluation", "evaluation-only", "eval-only"}
+    return bool(explicit.intersection(markers) or _labels(record).intersection(label_markers))
+
+
+def independently_reviewed(record: dict[str, Any], purpose: str = "training") -> bool:
+    """Validate attributed review metadata, not reviewer authentication."""
+    if purpose == "training" and evaluation_record(record):
+        return False
+    review = record.get("independent_review")
+    if not isinstance(review, dict) or review.get("verdict") != "accepted" or review.get("purpose") != purpose:
+        return False
+    generator = review.get("generator_id")
+    reviewer = review.get("reviewer_id")
+    if not isinstance(generator, str) or not isinstance(reviewer, str):
+        return False
+    if not generator.strip() or not reviewer.strip() or generator.strip().casefold() == reviewer.strip().casefold():
+        return False
+    artifact = review.get("review_artifact_sha256")
+    if not isinstance(artifact, str) or re.fullmatch(r"[0-9a-f]{64}", artifact) is None:
+        return False
+    return review.get("record_sha256") == review_record_sha256(record)
+
+
 def _filter_reason(
     record: dict[str, Any],
     system: str,
@@ -939,7 +974,10 @@ def _filter_reason(
     scope: str | None,
     *,
     had_emoji: bool = False,
+    evaluation: bool = False,
 ) -> str | None:
+    if not evaluation and evaluation_record(record):
+        return "not_eligible"
     if not prompt or not response:
         return "emoji_noise" if had_emoji else "missing_training_pair"
     hard_correction = _is_hard_correction(record)
@@ -979,6 +1017,8 @@ def _filter_reason(
     ):
         return "rejected"
     if "eligible_for_training" in record and not _truthy(record.get("eligible_for_training")):
+        return "not_eligible"
+    if "independent_review" in record and not independently_reviewed(record):
         return "not_eligible"
     combined = _all_training_text(record, system, prompt, response)
     if _PRIVATE_TEXT_RE.search(combined):
@@ -1208,6 +1248,7 @@ def _authoritative_episode(candidate: _Candidate) -> bool:
             or _truthy(record.get("human_accepted", False))
             or _truthy(record.get("deterministic_verified", False))
             or _truthy(record.get("reference_verified", False))
+            or independently_reviewed(record)
         )
     )
 
