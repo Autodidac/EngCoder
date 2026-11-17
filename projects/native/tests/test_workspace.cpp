@@ -3,10 +3,42 @@
 #include "engcoder/tools/builtin_tools.hpp"
 #include "engcoder/workspace/workspace.hpp"
 #include "engcoder/workspace/checkpoint_store.hpp"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 TEST_CASE("workspace blocks parent escape") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE_FALSE(w.resolve("../escape.txt").has_value());std::filesystem::remove_all(root);}
 TEST_CASE("workspace round trip") {const auto root=std::filesystem::temp_directory_path()/"engcoder-test-workspace2";std::filesystem::create_directories(root);engcoder::workspace::Workspace w(root);REQUIRE(w.write_text("a/b.txt","hello").has_value());auto x=w.read_text("a/b.txt");REQUIRE(x);REQUIRE(*x=="hello");std::filesystem::remove_all(root);}
+
+TEST_CASE("workspace tree and search enumerate canonical source files once") {
+    const auto root = std::filesystem::temp_directory_path() / engcoder::core::make_id("workspace-enumeration");
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    const engcoder::workspace::Workspace workspace(root);
+    REQUIRE(workspace.write_text("src/ordinary.txt", "example marker\n"));
+    REQUIRE(workspace.write_text("build/generated.txt", "example marker\n"));
+
+    const auto assert_normal_view = [&] {
+        const auto tree = workspace.tree(".");
+        REQUIRE(tree);
+        CHECK(tree->size() == 2);
+        CHECK(std::ranges::find(*tree, "src/ordinary.txt") != tree->end());
+        const auto matches = workspace.search_text("example marker");
+        REQUIRE(matches);
+        REQUIRE(matches->size() == 1);
+        CHECK(matches->front() == "src/ordinary.txt:1:example marker");
+    };
+    assert_normal_view();
+
+    std::error_code error;
+    std::filesystem::create_symlink(root / "src/ordinary.txt", root / "alias.txt", error);
+    if (error) SKIP("Symbolic links unavailable: " + error.message());
+    std::filesystem::create_directory_symlink(root / "src", root / "src-alias", error);
+    REQUIRE_FALSE(error);
+    assert_normal_view();
+}
 
 TEST_CASE("create-only workspace writes never replace an existing file") {
     const auto root = std::filesystem::temp_directory_path() / "engcoder-test-create-only";

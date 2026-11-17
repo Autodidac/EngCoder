@@ -18,6 +18,24 @@ bool is_ignored(const std::filesystem::path& p) {
     return false;
 }
 
+bool admit_enumerated_entry(const Workspace& workspace,
+                            std::filesystem::recursive_directory_iterator& entry,
+                            std::filesystem::path& relative) {
+    std::error_code error;
+    const auto status = entry->symlink_status(error);
+    relative = entry->path().lexically_relative(workspace.root());
+    if (!error && !std::filesystem::is_symlink(status) && !relative.empty() &&
+        !is_ignored(relative)) {
+        const auto admitted = workspace.resolve(relative.generic_string(), true);
+        // A directory alias may be reported as an ordinary directory by the
+        // platform. Do not enumerate a second path to the same files.
+        if (admitted && admitted->lexically_normal() == entry->path().lexically_normal())
+            return true;
+    }
+    entry.disable_recursion_pending();
+    return false;
+}
+
 bool has_uniform_crlf(std::string_view text) {
     auto newline = text.find_first_of("\r\n");
     if (newline == std::string_view::npos) return false;
@@ -178,9 +196,11 @@ std::expected<std::vector<std::string>, core::Error> Workspace::tree(std::string
     std::vector<std::string> out; std::error_code ec;
     for (std::filesystem::recursive_directory_iterator it(*start, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end && out.size() < max_entries; it.increment(ec)) {
         if (ec) { ec.clear(); continue; }
-        const auto rel = std::filesystem::relative(it->path(), root_, ec); if (ec) { ec.clear(); continue; }
-        if (is_ignored(rel)) { if (it->is_directory()) it.disable_recursion_pending(); continue; }
-        out.push_back(rel.generic_string() + (it->is_directory() ? "/" : ""));
+        std::filesystem::path relative_path;
+        if (!admit_enumerated_entry(*this, it, relative_path)) continue;
+        const bool directory = it->is_directory(ec);
+        if (ec) { ec.clear(); it.disable_recursion_pending(); continue; }
+        out.push_back(relative_path.generic_string() + (directory ? "/" : ""));
     }
     return out;
 }
@@ -189,13 +209,13 @@ std::expected<std::vector<std::string>, core::Error> Workspace::search_text(std:
     std::vector<std::string> out; std::error_code ec;
     for (std::filesystem::recursive_directory_iterator it(root_, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end && out.size() < max_results; it.increment(ec)) {
         if (ec) { ec.clear(); continue; }
-        const auto rel = std::filesystem::relative(it->path(), root_, ec); if (ec) { ec.clear(); continue; }
-        if (is_ignored(rel)) { if (it->is_directory()) it.disable_recursion_pending(); continue; }
-        if (!it->is_regular_file()) continue;
+        std::filesystem::path relative_path;
+        if (!admit_enumerated_entry(*this, it, relative_path)) continue;
+        if (!it->is_regular_file(ec)) { ec.clear(); continue; }
         const auto size = it->file_size(ec); if (ec || size > 2 * 1024 * 1024) { ec.clear(); continue; }
         std::ifstream in(it->path()); if (!in) continue;
         std::string line; std::size_t n = 0;
-        while (std::getline(in, line) && out.size() < max_results) { ++n; if (line.find(query) != std::string::npos) out.push_back(rel.generic_string() + ":" + std::to_string(n) + ":" + line.substr(0, 400)); }
+        while (std::getline(in, line) && out.size() < max_results) { ++n; if (line.find(query) != std::string::npos) out.push_back(relative_path.generic_string() + ":" + std::to_string(n) + ":" + line.substr(0, 400)); }
     }
     return out;
 }
