@@ -88,7 +88,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh correctly and execute only with consent. Web fixtures cover Stop during submission, temporary disconnects, and approval refresh. The first EngCoder self-iteration candidate persists terminal events for pre-request cancellation and failed model preparation. Release CTest and the live Run info receipts passed in isolation. Working-source review, native restart reconciliation, context-bounded workspace reads, and exact patch matching across Windows line endings remain open.",
+    "details": "Pending approvals must survive refresh correctly and execute only with consent. Web fixtures cover Stop during submission, temporary disconnects, and approval refresh. Isolated Windows Release tests cover terminal events for cancellation and failed model preparation, and exact patches that preserve CRLF. Working-source review, native restart reconciliation, context-bounded workspace reads, and detecting unchanged or unmatched proposals before approval remain open.",
     "status": "open"
   },
   {
