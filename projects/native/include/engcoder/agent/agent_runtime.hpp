@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <expected>
@@ -96,6 +97,7 @@ private:
     ContextManager context_;
     struct PendingApproval {
         std::string approval_id;
+        std::chrono::steady_clock::time_point deadline;
         bool decided{false};
         bool approved{false};
     };

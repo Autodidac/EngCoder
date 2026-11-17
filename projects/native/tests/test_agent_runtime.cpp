@@ -665,10 +665,15 @@ TEST_CASE("agent runtime emits weighted tool review telemetry before execution")
 }
 
 
-TEST_CASE("agent runtime resumes the exact tool call after interactive approval") {
+TEST_CASE("agent runtime executes only a timely interactive approval for the exact call") {
+    const bool expire = GENERATE(false, true);
     const auto root = std::filesystem::temp_directory_path() / "engcoder-agent-approval-test";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / ".engcoder");
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
 
     {
         engcoder::core::Config config;
@@ -677,6 +682,7 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
         config.model = "fake-model";
         config.addon_auto_route = false;
         config.max_model_turns = 4;
+        if (expire) config.tool_approval_timeout = std::chrono::milliseconds{25};
 
         ApprovalToolModelProvider model;
         engcoder::decision::WeightedDecisionEngine decisions;
@@ -700,6 +706,10 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
             if (event.type != "task.awaiting_approval") return;
             const auto id = event.data.at("call_id").get<std::string>();
             CHECK(event.data.at("tool_call_id") == "approval-call-1");
+            if (expire) {
+                approval_ids.push_back(id);
+                return;
+            }
             CHECK_FALSE(runtime.resolve_approval(event.task_id, "approval-call-1", true));
             if (!approval_ids.empty()) {
                 CHECK(id != approval_ids.front());
@@ -731,6 +741,20 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
         const auto result = runtime.run(request);
         events.unsubscribe(subscription);
 
+        if (expire) {
+            REQUIRE_FALSE(result);
+            CHECK(result.error().message.find("Tool approval expired") != std::string::npos);
+            REQUIRE(approval_ids.size() == 1);
+            CHECK_FALSE(invoked);
+            CHECK_FALSE(runtime.resolve_approval(request.task_id, approval_ids.front(), true));
+            const auto receipts = store.events_after(request.session_id, 0);
+            REQUIRE(receipts);
+            REQUIRE_FALSE(receipts->empty());
+            CHECK(receipts->back().type == "task.failed");
+            CHECK(receipts->back().data.at("approval_id") == approval_ids.front());
+            return;
+        }
+
         REQUIRE(result);
         CHECK(result->final_text == "approval-cycle-ok");
         REQUIRE(approval_ids.size() == 2);
@@ -750,7 +774,6 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
         CHECK(approved->data.at("approval_id") == approval_ids.front());
     }
 
-    std::filesystem::remove_all(root);
 }
 
 

@@ -1,3 +1,8 @@
+## Expiration of unanswered tool approvals (2026-11-17)
+
+- The native host uses a monotonic deadline for interactive tool approvals, with a one-hour default matching the Epoch development guard. The same deadline governs both submitting a decision and waiting for one. Expiration removes the pending ID and records a terminal task error. Stop retains its cancellation result.
+- A short-deadline fixture verified expiration without invoking the tool, rejection of a late decision and persistence of the exact failed approval ID. The existing timely and reused-ID cases still pass. Windows Release built and passed 82/82 CTest checks.
+
 ## Live host-issued approval of an isolated Windows repair (2026-11-17)
 
 - From `ffe39ef`, a separate EngCoder checkout and test reproduced tree/search including generated files under mixed-case `OuT` on Windows. The existing Qwen 3.5 9B submitted two invalid C++ patches in the shared Codex UI. The operator denied both and neither produced a checkpoint. The third task used an operator-supplied replacement and verified the UI approval workflow.

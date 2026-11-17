@@ -193,7 +193,9 @@ bool AgentRuntime::resolve_approval(
     {
         std::scoped_lock lock(approval_mutex_);
         const auto it = pending_approvals_.find(std::string{task_id});
-        if (it == pending_approvals_.end() || it->second.decided || it->second.approval_id != call_id) {
+        if (it == pending_approvals_.end() || it->second.decided ||
+            it->second.approval_id != call_id ||
+            std::chrono::steady_clock::now() >= it->second.deadline) {
             return false;
         }
         it->second.decided = true;
@@ -1330,11 +1332,12 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     });
                 }
 
+                const auto approval_deadline = std::chrono::steady_clock::now() + config_.tool_approval_timeout;
                 {
                     std::scoped_lock lock(approval_mutex_);
                     pending_approvals_.insert_or_assign(
                         request.task_id,
-                        PendingApproval{.approval_id = approval_id});
+                        PendingApproval{.approval_id = approval_id, .deadline = approval_deadline});
                 }
 
                 emit(request, "task.awaiting_approval", approval_data);
@@ -1342,7 +1345,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 bool approved = false;
                 {
                     std::unique_lock approval_lock(approval_mutex_);
-                    const bool resolved = approval_cv_.wait(approval_lock, stop, [&] {
+                    const bool resolved = approval_cv_.wait_until(approval_lock, stop, approval_deadline, [&] {
                         const auto it = pending_approvals_.find(request.task_id);
                         return it != pending_approvals_.end() && it->second.decided;
                     });
@@ -1350,10 +1353,16 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     if (!resolved || stop.stop_requested()) {
                         pending_approvals_.erase(request.task_id);
                         approval_lock.unlock();
-                        emit(request, "task.cancelled", {{"reason", "cancelled while awaiting approval"}});
+                        if (stop.stop_requested()) {
+                            emit(request, "task.cancelled", {{"reason", "cancelled while awaiting approval"}});
+                            return std::unexpected(core::Error{
+                                core::make_error_code(core::Errc::cancelled), "cancelled",
+                            });
+                        }
+                        const std::string message = "Tool approval expired. Start a new task to review the proposal again.";
+                        emit(request, "task.failed", {{"error", message}, {"approval_id", approval_id}});
                         return std::unexpected(core::Error{
-                            core::make_error_code(core::Errc::cancelled),
-                            "cancelled",
+                            core::make_error_code(core::Errc::stalled), message,
                         });
                     }
 

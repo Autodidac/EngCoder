@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -32,6 +33,7 @@ struct Config {
     std::string iteration_escalation_model;
     std::string iteration_boundary_source;
     std::string iteration_boundary_rule;
+    std::chrono::milliseconds tool_approval_timeout{std::chrono::hours{1}};
     std::string lm_studio_url = "http://127.0.0.1:1234";
     std::string model = "auto"; // KeyMaker Foundation model / fallback provider model.
     std::string controller_model; // Optional external provider model for Architect decisions.
