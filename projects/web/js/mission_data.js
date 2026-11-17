@@ -137,7 +137,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-020",
     "priority": "P1",
     "title": "Main chat/footer end-to-end UX",
-    "details": "The browser passed dock resizing and width persistence at 1,440 × 900 and compact overlay at 620 × 800. Run info displayed live checks and retained a restart failure after reload. The isolated receipt update adds checkpoint IDs and retains the last result per check across save/restore in the Web fixture. Verify the updated panel visually, along with bottom anchoring while streaming, send/regenerate/refresh, toolbar wrapping across 320–768 px, and loaded-model 4K/DPI. Include Load/More, the composer and offline MathML in Windows Edge and fallback coverage.",
+    "details": "The browser passed dock resizing and width persistence at 1,440 × 900 and compact overlay at 620 × 800. Run info retained a restart failure after reload. A live C++ repair inside Codex at 1,280 × 720 confirmed that Run info showed the approval, checkpoint, build and tests after reload. Verify bottom anchoring while streaming, send/regenerate/refresh, toolbar wrapping across 320–768 px, and loaded-model 4K/DPI. Include Load/More, the composer and offline MathML in Windows Edge and fallback coverage.",
     "status": "open"
   },
   {
