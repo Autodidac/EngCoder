@@ -49,6 +49,7 @@ public:
     [[nodiscard]] std::vector<Episode> recent(std::size_t limit = 20) const;
     [[nodiscard]] std::size_t size() const;
     [[nodiscard]] std::size_t training_eligible_count() const;
+    [[nodiscard]] bool contains_hash(std::string_view content_hash) const;
     [[nodiscard]] bool erase_hash(std::string_view content_hash);
     [[nodiscard]] std::size_t erase_matching(std::string_view prompt, std::string_view response);
     [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
@@ -62,7 +63,7 @@ public:
 private:
     void load();
     void index_episode(const Episode& episode);
-    bool rewrite_locked();
+    bool rewrite_locked(const std::vector<Episode>& next);
     void rebuild_indexes_locked();
 
     std::filesystem::path path_;

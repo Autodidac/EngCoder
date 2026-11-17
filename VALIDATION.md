@@ -1,3 +1,16 @@
+## Remove-only training invalidation and live preview refresh (2026-11-17)
+
+- Remove now serializes with weight activation and persists a new revision before rewriting verified evidence. The worker checks that revision at curriculum admission, across checkpoints and before activation. Cold-start source filtering and compilation share the lock so neither can label a stale copy with a new revision. A ledger write failure preserves the old evidence and can conservatively invalidate queued training.
+- Windows Release built and passed all 81 CTest checks. The optional PyTorch environment passed eight CPU admission tests and seven CPU lineage tests, including rejection of a stale candidate after Remove without a Ban. The isolated Release HTTP smoke cleared one synthetic evidence record, confirmed the revision persisted, and verified that a repeated Remove preserved the revision without creating a denylist.
+- The running Codex preview uses a copy of the new Release server outside the build directory. The same preview URL returned HTTP 200 and continues using existing review state with model autoload and training disabled.
+- Previously active weights remain in place after removal. Candidates derived from a generation with an older policy are refused. The application still needs a guided rebuild or recovery path for that case.
+
+## Visible preview restored and transactional evidence removal (2026-11-17)
+
+- The prior preview process was absent. Started the last verified server as PID 21852 on loopback port 55462 with the existing review state and current shared frontend. Health returned `ok: true`; Codex browser inspection showed the prior chats and learning controls. Model autoload and training remain disabled; this is an idle preview, not an ongoing AI coding run.
+- Evidence removal now stages a new episode vector, flushes/closes its file, atomically replaces disk data and only then updates memory/indexes. Forced staging failure preserves both records, deduplication and eligibility counters; reopening retains the same records and retry succeeds.
+- Release test target built and CTest passed 81/81. The full build could not relink the running `EngCoderServer.exe` (LNK1104); the preview was deliberately left available. The newly repaired store is tested but is not yet running in that preview. Full server relink/restart remains required. Remove-only policy invalidation is still open.
+
 ## Native/worker lock and checkpoint race verification (2026-11-17)
 
 - Added a test-only compiled C++ lock probe and registered OS lock and interoperability tests with CTest. Python-held ownership blocks native acquisition; native-held ownership blocks Python acquisition; both acquire after release. Full Windows Release build and CTest passed 80/80. POSIX remains unexecuted.

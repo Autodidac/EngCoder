@@ -1265,10 +1265,16 @@ def bounded_bootstrap_learning_rate(
 
 def learning_policy_snapshot(state_root: Path) -> dict[str, Any]:
     """Read under policy_lock when paired with an activation or mutation."""
-    digest = _curriculum_compiler._admission_denylist(
-        Path(state_root) / "learning" / "denylist.json"
-    )[2]
-    return {"schema": 1, "denylist_sha256": digest}
+    path = Path(state_root) / "learning" / "denylist.json"
+    return _policy_fingerprint(_curriculum_compiler._admission_denylist(path)[2],
+                               _curriculum_compiler.removal_revision_digest(path))
+
+
+def _policy_fingerprint(denylist: str | None, removal: str | None) -> dict[str, Any]:
+    result = {"schema": 1, "denylist_sha256": denylist}
+    if removal is not None:
+        result["removal_sha256"] = removal
+    return result
 
 
 def require_learning_policy(manifest: dict[str, Any], snapshot: dict[str, Any]) -> None:
@@ -2839,16 +2845,19 @@ def preflight_compiled_training(data_paths: Sequence[Path], manifest_path: Path,
         path, expected_hash = policy["path"], policy["sha256"]
         if path is not None and (not isinstance(path, str) or not path):
             raise RuntimeError("compiled curriculum has an invalid learning-policy path")
-        current_hash = _curriculum_compiler._admission_denylist(Path(path) if path else None)[2]
-        if current_hash != expected_hash:
+        policy_path = Path(path) if path else None
+        current_hash = _curriculum_compiler._admission_denylist(policy_path)[2]
+        if (current_hash != expected_hash
+                or _curriculum_compiler.removal_revision_digest(policy_path) != policy.get("removal_sha256")):
             raise RuntimeError("learning policy changed after curriculum compilation; recompile before training")
     check_policy_snapshot()
     loaded = len(load_training_sequences(data_paths, maximum_tokens, scope))
     check_policy_snapshot()
     if loaded != expected:
         raise RuntimeError(f"training admission mismatch: compiler selected {expected}, tensor loader admitted {loaded}; review eligibility, scope and duplicate dialogue before training")
+    policy = manifest["learning_denylist"]
     return {"compiled_records": expected, "loaded_training_sequences": loaded,
-            "learning_policy": {"schema": 1, "denylist_sha256": manifest["learning_denylist"]["sha256"]}}
+            "learning_policy": _policy_fingerprint(policy["sha256"], policy.get("removal_sha256"))}
 
 
 def training_sequences_fingerprint(sequences: Sequence[TrainingSequence]) -> str:

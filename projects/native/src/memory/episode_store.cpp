@@ -1,4 +1,5 @@
 #include "engcoder/memory/episode_store.hpp"
+#include "engcoder/core/file_replace.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -212,36 +213,39 @@ void EpisodeStore::rebuild_indexes_locked() {
     }
 }
 
-bool EpisodeStore::rewrite_locked() {
+bool EpisodeStore::rewrite_locked(const std::vector<Episode>& next) {
     const auto temp = path_.string() + ".tmp";
     {
         std::ofstream output(temp, std::ios::binary | std::ios::trunc);
         if (!output) return false;
-        for (const auto& episode : episodes_) output << to_json(episode).dump() << '\n';
+        for (const auto& episode : next) output << to_json(episode).dump() << '\n';
+        output.flush();
+        if (!output) return false;
+        output.close();
         if (!output) return false;
     }
-    std::error_code ec;
-    std::filesystem::rename(temp, path_, ec);
-    if (ec) {
-        ec.clear();
-        std::filesystem::remove(path_, ec);
-        ec.clear();
-        std::filesystem::rename(temp, path_, ec);
-    }
-    if (ec) {
-        std::filesystem::remove(temp, ec);
+    if (const auto ec = core::replace_file(temp, path_)) {
+        std::error_code cleanup;
+        std::filesystem::remove(temp, cleanup);
         return false;
     }
     return true;
+}
+
+bool EpisodeStore::contains_hash(std::string_view content_hash) const {
+    std::scoped_lock lock(mutex_);
+    return hashes_.contains(std::string(content_hash));
 }
 
 bool EpisodeStore::erase_hash(std::string_view content_hash) {
     if (content_hash.empty()) return false;
     std::scoped_lock lock(mutex_);
     const auto old_size = episodes_.size();
-    std::erase_if(episodes_, [&](const Episode& episode) { return episode.content_hash == content_hash; });
-    if (episodes_.size() == old_size) return false;
-    if (!rewrite_locked()) return false;
+    auto next = episodes_;
+    std::erase_if(next, [&](const Episode& episode) { return episode.content_hash == content_hash; });
+    if (next.size() == old_size) return false;
+    if (!rewrite_locked(next)) return false;
+    episodes_ = std::move(next);
     rebuild_indexes_locked();
     return true;
 }
@@ -250,13 +254,15 @@ std::size_t EpisodeStore::erase_matching(std::string_view prompt, std::string_vi
     if (prompt.empty() && response.empty()) return 0;
     std::scoped_lock lock(mutex_);
     const auto old_size = episodes_.size();
-    std::erase_if(episodes_, [&](const Episode& episode) {
+    auto next = episodes_;
+    std::erase_if(next, [&](const Episode& episode) {
         return (!prompt.empty() && episode.prompt == prompt) ||
                (!response.empty() && episode.response == response);
     });
-    const auto removed = old_size - episodes_.size();
+    const auto removed = old_size - next.size();
     if (removed == 0) return 0;
-    if (!rewrite_locked()) return 0;
+    if (!rewrite_locked(next)) return 0;
+    episodes_ = std::move(next);
     rebuild_indexes_locked();
     return removed;
 }

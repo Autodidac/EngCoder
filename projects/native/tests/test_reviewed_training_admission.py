@@ -18,6 +18,15 @@ def reviewed(row, purpose="training"):
 
 
 class ReviewAdmission(unittest.TestCase):
+    def test_removal_revision_invalidates_compiled_input_without_ban(self):
+        self.write([reviewed(self.row)])
+        policy = self.source.parent / "denylist.json"
+        compiler.compile_curriculum(self.source, self.output, self.manifest,
+                                    scope="keymaker-foundation", denylist_path=policy)
+        policy.with_name("removal-revision").write_bytes(b"remove_1_2_3\n")
+        with self.assertRaisesRegex(RuntimeError, "policy changed"):
+            internal.preflight_compiled_training([self.output], self.manifest, 256, "keymaker-foundation")
+
     def test_policy_changes_invalidate_preflight(self):
         self.write([reviewed(self.row)])
         policy = self.source.parent / "denylist.json"

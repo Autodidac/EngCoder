@@ -1406,6 +1406,19 @@ def _admission_denylist(path: Path | None) -> tuple[set[str], set[str], str | No
         raise RuntimeError(f"learning denylist cannot be verified: {path}") from exc
 
 
+def removal_revision_digest(denylist_path: Path | None) -> str | None:
+    if denylist_path is None:
+        return None
+    path = denylist_path.with_name("removal-revision")
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    if re.fullmatch(rb"remove_[0-9a-f]+_[0-9a-f]+_[0-9a-f]+\n", payload) is None:
+        raise RuntimeError(f"learning removal revision cannot be verified: {path}")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _banned_at_admission(record: dict[str, Any], hashes: tuple[set[str], set[str], str | None]) -> bool:
     prompts, responses, _digest = hashes
     # Inspect raw fields and all supervised dialogue turns, before stripping,
@@ -1471,6 +1484,7 @@ def compile_curriculum(
 
     policy_path = Path(denylist_path).resolve() if denylist_path is not None else None
     admission_policy = _admission_denylist(policy_path)
+    removal_digest = removal_revision_digest(policy_path)
     delta_paths = _resolved_paths(delta_sources)
     delta_path_set = set(delta_paths)
     source_paths = tuple(path for path in _resolved_paths(sources) if path not in delta_path_set)
@@ -1482,6 +1496,7 @@ def compile_curriculum(
     all_inputs = {*source_paths, *delta_paths, *anchors}
     if policy_path is not None:
         all_inputs.add(policy_path)
+        all_inputs.add(policy_path.with_name("removal-revision"))
     if output == manifest_output:
         raise ValueError("output_path and manifest_path must be different")
     if output in all_inputs or manifest_output in all_inputs:
@@ -1781,7 +1796,7 @@ def compile_curriculum(
     rows = [_stable_json(candidate.record) for candidate in selected]
     output_bytes = (("\n".join(rows) + "\n") if rows else "").encode("utf-8")
     output_hash = hashlib.sha256(output_bytes).hexdigest()
-    if _admission_denylist(policy_path) != admission_policy:
+    if _admission_denylist(policy_path) != admission_policy or removal_revision_digest(policy_path) != removal_digest:
         raise RuntimeError("learning denylist changed while compiling curriculum")
     _atomic_write(output, output_bytes)
 
@@ -1819,7 +1834,8 @@ def compile_curriculum(
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "policy": COMPILER_POLICY,
-        "learning_denylist": {"path": str(policy_path) if policy_path else None, "sha256": admission_policy[2]},
+        "learning_denylist": {"path": str(policy_path) if policy_path else None,
+                              "sha256": admission_policy[2], "removal_sha256": removal_digest},
         "scope": scope,
         "sources": [str(path) for path in source_paths],
         "delta_sources": [str(path) for path in delta_paths],
@@ -1853,7 +1869,7 @@ def compile_curriculum(
     final_hashes = {str(path): _sha256_file(path) for path in (*source_paths, *delta_paths, *anchors)}
     if final_hashes != input_hashes:
         raise RuntimeError("an append-only input changed while the curriculum was being compiled")
-    if _admission_denylist(policy_path) != admission_policy:
+    if _admission_denylist(policy_path) != admission_policy or removal_revision_digest(policy_path) != removal_digest:
         raise RuntimeError("learning denylist changed while compiling curriculum")
     return manifest
 

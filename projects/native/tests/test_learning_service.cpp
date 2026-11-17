@@ -7,6 +7,39 @@
 #include <fstream>
 #include <string>
 
+TEST_CASE("failed evidence removal preserves memory disk and retrieval indexes") {
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-evidence-remove-failure-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto path = root / "evidence.jsonl";
+    {
+        engcoder::memory::EpisodeStore store(path);
+        engcoder::memory::Episode first{.skill = "english", .prompt = "morning greeting",
+            .response = "Good morning.", .eligible_for_training = true};
+        auto second = first;
+        second.prompt = "evening greeting";
+        second.response = "Good evening.";
+        REQUIRE(store.append_if_new(first));
+        REQUIRE(store.append_if_new(second));
+        const auto hash = engcoder::memory::EpisodeStore::make_content_hash(first.skill, first.prompt, first.response);
+        const auto staged = std::filesystem::path(path.string() + ".tmp");
+        std::filesystem::create_directory(staged);
+        REQUIRE_FALSE(store.erase_hash(hash));
+        REQUIRE(store.erase_matching(first.prompt, "") == 0);
+        REQUIRE(store.size() == 2);
+        REQUIRE(store.training_eligible_count() == 2);
+        REQUIRE(store.retrieve("morning", 5).size() > 0);
+        REQUIRE_FALSE(store.append_if_new(first));
+        engcoder::memory::EpisodeStore reopened(path);
+        REQUIRE(reopened.size() == 2);
+        std::filesystem::remove(staged);
+        REQUIRE(store.erase_hash(hash));
+        REQUIRE(store.size() == 1);
+        REQUIRE(store.training_eligible_count() == 1);
+    }
+    std::filesystem::remove_all(root);
+}
+
 TEST_CASE("corrupt learning denylist never becomes an empty policy") {
     const auto root = std::filesystem::temp_directory_path() / "engcoder-learning-corrupt-policy-test";
     std::filesystem::remove_all(root);
@@ -115,7 +148,12 @@ TEST_CASE("learning evidence can be removed and hard-banned from future ingestio
         const auto recent = learning.recent(10);
         REQUIRE(recent.at("items").size() == 1);
         const auto hash = recent.at("items").at(0).at("content_hash").get<std::string>();
+        REQUIRE_FALSE(learning.remove("unknown"));
+        const auto revision = root / "learning" / "removal-revision";
+        REQUIRE_FALSE(std::filesystem::exists(revision));
         REQUIRE(learning.remove(hash));
+        REQUIRE(std::filesystem::is_regular_file(revision));
+        REQUIRE_FALSE(std::filesystem::exists(root / "learning" / "denylist.json"));
         REQUIRE(learning.recent(10).at("items").empty());
 
         REQUIRE(learning.record(evidence));

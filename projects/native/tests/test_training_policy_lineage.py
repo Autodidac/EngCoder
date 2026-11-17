@@ -46,6 +46,15 @@ class PolicyLineageTests(unittest.TestCase):
             internal.promote_generation(self.root, "g000001", self.parent)
         self.assertEqual(pointer.read_bytes(), before)
 
+    def test_remove_without_ban_blocks_activation(self):
+        self.candidate(self.snapshot)
+        pointer = internal.active_manifest_path(self.root)
+        before = pointer.read_bytes()
+        (self.root / "learning" / "removal-revision").write_bytes(b"remove_1_2_3\n")
+        with self.assertRaisesRegex(RuntimeError, "learning policy"):
+            internal.promote_generation(self.root, "g000001", self.parent)
+        self.assertEqual(pointer.read_bytes(), before)
+
     def test_matching_policy_promotes_but_later_rollback_is_rejected(self):
         self.candidate(self.snapshot)
         result = internal.promote_generation(self.root, "g000001", self.parent)

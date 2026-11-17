@@ -1,6 +1,7 @@
 #include "engcoder/learning/learning_service.hpp"
 #include "engcoder/core/file_replace.hpp"
 #include "engcoder/core/learning_policy_lock.hpp"
+#include "engcoder/core/ids.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -93,7 +94,26 @@ bool LearningService::is_banned(std::string_view prompt, std::string_view respon
 }
 
 bool LearningService::remove(std::string_view content_hash) {
-    return episodes_.erase_hash(content_hash);
+    const core::LearningPolicyLock policy_lock(root_.parent_path());
+    std::scoped_lock lock(mutex_);
+    if (!episodes_.contains_hash(content_hash)) return false;
+
+    // Invalidate first. On a failed ledger rewrite we may conservatively
+    // discard pending work, but a successful removal can never leave it valid.
+    const auto revision = root_ / "removal-revision";
+    const auto staged = root_ / "removal-revision.tmp";
+    {
+        std::ofstream output(staged, std::ios::binary | std::ios::trunc);
+        if (!output) throw std::runtime_error("Cannot stage learning removal revision");
+        output << core::make_id("remove") << '\n';
+        output.close();
+        if (!output) throw std::runtime_error("Cannot write learning removal revision");
+    }
+    if (const auto error = core::replace_file(staged, revision))
+        throw std::runtime_error("Cannot publish learning removal revision: " + error.message());
+    if (!episodes_.erase_hash(content_hash))
+        throw std::runtime_error("Cannot rewrite learning evidence");
+    return true;
 }
 
 json LearningService::ban(std::string_view prompt, std::string_view response, std::string_view reason) {

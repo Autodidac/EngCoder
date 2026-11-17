@@ -18,8 +18,10 @@ from typing import Any
 
 try:
     from . import curriculum_compiler as _curriculum_compiler
+    from .learning_policy import policy_lock
 except ImportError:
     import curriculum_compiler as _curriculum_compiler
+    from learning_policy import policy_lock
 
 ENGLISH_TARGET = "english-foundation"
 ENGLISH_INTERNAL_SCOPE = "keymaker-foundation"
@@ -483,37 +485,40 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
     ready = established(data_root)
     requested = _serializable_namespace(namespace)
 
-    if not ready:
-        namespace.scope = ENGLISH_TARGET
-        # Native start/resume does not pass a bootstrap target. A cold
-        # Foundation must train its shared backbone, not only an addon on top
-        # of random frozen weights. Preserve explicit cumulative targets and
-        # leave the caller's per-run safety cap unchanged.
-        if int(getattr(namespace, "bootstrap_target_steps", 0) or 0) <= 0:
-            namespace.bootstrap_target_steps = max(
-                1, int(getattr(namespace, "max_steps", 1) or 1)
-            )
-        if hasattr(namespace, "seed_dataset"):
-            namespace.seed_dataset = filter_dataset(
-                namespace.seed_dataset,
-                data_root,
-                purpose="bootstrap",
-                required=True,
-            )
-        if getattr(namespace, "episodes", None) is not None:
-            namespace.episodes = filter_dataset(
-                namespace.episodes,
-                data_root,
-                purpose="episodes",
-                required=False,
-            )
-        # Anchors are evaluation-only. Preserve the complete disjoint suite so
-        # the KeyMaker Foundation must not regress planning/coding behavior even
-        # though only English records provide gradients during this stage.
-        os.environ["ENGCODER_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
-        os.environ["ENGCODER_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
+    # A removal publishes its revision before rewriting the ledger. Protect
+    # both the initial English filtering and the subsequent compilation.
+    with policy_lock(data_root):
+        if not ready:
+            namespace.scope = ENGLISH_TARGET
+            # Native start/resume does not pass a bootstrap target. A cold
+            # Foundation must train its shared backbone, not only an addon on top
+            # of random frozen weights. Preserve explicit cumulative targets and
+            # leave the caller's per-run safety cap unchanged.
+            if int(getattr(namespace, "bootstrap_target_steps", 0) or 0) <= 0:
+                namespace.bootstrap_target_steps = max(
+                    1, int(getattr(namespace, "max_steps", 1) or 1)
+                )
+            if hasattr(namespace, "seed_dataset"):
+                namespace.seed_dataset = filter_dataset(
+                    namespace.seed_dataset,
+                    data_root,
+                    purpose="bootstrap",
+                    required=True,
+                )
+            if getattr(namespace, "episodes", None) is not None:
+                namespace.episodes = filter_dataset(
+                    namespace.episodes,
+                    data_root,
+                    purpose="episodes",
+                    required=False,
+                )
+            # Anchors are evaluation-only. Preserve the complete disjoint suite so
+            # the KeyMaker Foundation must not regress planning/coding behavior even
+            # though only English records provide gradients during this stage.
+            os.environ["ENGCODER_EFFECTIVE_TRAINING_TARGET"] = ENGLISH_TARGET
+            os.environ["ENGCODER_EFFECTIVE_INTERNAL_SCOPE"] = ENGLISH_INTERNAL_SCOPE
 
-    selection = compile_minimal_curriculum(namespace, data_root, ready)
+        selection = compile_minimal_curriculum(namespace, data_root, ready)
     effective = _serializable_namespace(namespace)
     write_status(data_root, requested, effective, ready)
     counts = selection.get("counts", {})
