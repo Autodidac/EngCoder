@@ -68,6 +68,12 @@ Initialization creates random weights. It does not copy weights from an external
 
 Do not train every lane blindly at once; dependencies and evaluation quality matter more than maximum GPU occupancy.
 
+For a conversation-first EngCoder, build the Foundation batch around ordinary English dialogue. Cover greetings, follow-ups, uncertainty, corrections, turn-taking, tone, and context over several turns. Give the compiler an independently written holdout and keep one useful representative per behavior cluster. Add examples where the held-out model fails. Evaluate conversation quality on fresh prompts before promotion.
+
+Keep C++ examples in the C++23 addons with independent compile and test evidence. Role-play belongs in a separate addon curriculum. The current built-in addon registry has no dedicated role-play component yet.
+
+Thumbs-up on an ordinary chat reply saves the exact verified prompt and reply for Learning. Use it for replies that answer the turn naturally, follow the user's preferences, and make sense in context. Record authored and teacher-generated curriculum with their own provenance. The compiler can still exclude saved evidence for scope, privacy, duplication, or insufficient support for a live delta. The active weights change only when a separately trained candidate passes evaluation and is promoted.
+
 ## Candidate lifecycle
 
 ```text

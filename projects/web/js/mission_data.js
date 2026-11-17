@@ -88,7 +88,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh correctly but never execute without consent; no orphaned tasks on backend restart. Web fixtures cover Stop during submission, temporary disconnects, and approval refresh. First self-iteration mission for EngCoder source: persist a terminal event when a queued task is stopped or model preparation fails. Verify in the desktop window and cover tasks that lose their terminal event on runtime restart.",
+    "details": "Pending approvals must survive refresh correctly and execute only with consent. Web fixtures cover Stop during submission, temporary disconnects, and approval refresh. The first EngCoder self-iteration candidate persists terminal events for pre-request cancellation and failed model preparation. Release CTest and the live Run info receipts passed in isolation. Working-source review, native restart reconciliation, context-bounded workspace reads, and exact patch matching across Windows line endings remain open.",
     "status": "open"
   },
   {
@@ -122,8 +122,8 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
   {
     "id": "P1-018",
     "priority": "P1",
-    "title": "Training preemption correctness",
-    "details": "Confirm candidate weights never replace active weights; test checkpoint/resume, VRAM release, evidence deduplication, promotion gates, rejection, and rollback under realistic workload.",
+    "title": "Training preemption and conversation Foundation acceptance",
+    "details": "A one-step CUDA smoke updated a disposable conversational candidate and left the active generation unchanged after rejection. Expand a deduplicated conversation-only batch and assess fresh dialogue across multiple turns before promotion. Keep role-play and C++ curricula in separate addon scopes. Verify checkpoint/resume, VRAM release, evidence deduplication, promotion, rejection, and rollback under realistic workload.",
     "status": "open"
   },
   {
