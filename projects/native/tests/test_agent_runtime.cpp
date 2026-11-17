@@ -538,6 +538,10 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }
         if (event.type == "iteration.lesson_reused") ++recalled;
+        if ((event.type == "tool.approved" || event.type == "tool.denied" || event.type == "tool.completed") &&
+            event.data.value("name", std::string{}) == "workspace.patch") {
+            CHECK(event.data.at("candidate_path") == "fixture.cpp");
+        }
     });
     const auto result = runtime.run({.project_id = "candidate", .session_id = "iteration",
         .task_id = "iteration-task", .user_message = "Update the fixture source.",

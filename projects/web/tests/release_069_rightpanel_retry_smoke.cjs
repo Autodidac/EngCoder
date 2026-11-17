@@ -86,7 +86,8 @@ assert.match(body.innerHTML, /Tool review failed · workspace\.patch · expected
 
 const recordSource = api.slice(api.indexOf('function freshExecutionStats('), api.indexOf('async function deleteRuntimeSession('));
 vm.runInContext(recordSource + '\nthis.record = recordExecutionEvent;', ctxt);
-const checkpoint = {type: 'tool.completed', data: {name: 'workspace.patch', result: {ok: true, checkpoint_id: 'cp_test_01'}}};
+const checkpoint = {type: 'tool.completed', data: {name: 'workspace.patch', candidate_path: 'src/fixture.cpp',
+  result: {ok: true, checkpoint_id: 'cp_test_01'}}};
 assert.equal(ctxt.formatEvent(checkpoint), 'Checkpoint saved · cp_test_01');
 assert.equal(ctxt.formatEvent({type: 'tool.completed', data: {name: 'workspace.read', result: checkpoint.data.result}}),
   'Completed tool · workspace.read');
@@ -97,11 +98,15 @@ assert.equal(ctxt.formatEvent({type: 'verification.completed', data: {status: 'm
 const candidateState = {candidateIteration: true, content: 'Draft', completionState: 'Stopped'};
 const record = (target, event) => ctxt.record(target, event, ctxt.formatEvent(event));
 const checkEvent = (type, check, attempt, detail = {}) => ({type, data: {stage: 'candidate', check, attempt, ...detail}});
-record(candidateState, {type: 'tool.approved', data: {name: 'workspace.patch', source: 'user'}});
+record(candidateState, {type: 'task.awaiting_approval', data: {tool: 'workspace.patch',
+  arguments: {path: 'src/<draft>.cpp', expected: 'original source', replacement: 'new source'}}});
+record(candidateState, {type: 'tool.approved', data: {name: 'workspace.patch', source: 'user',
+  candidate_path: 'src/fixture.cpp'}});
 assert.doesNotMatch(JSON.stringify(candidateState.executionStats.candidateEvidence), /Checkpoint saved/);
 record(candidateState, checkpoint);
 record(candidateState, checkEvent('iteration.check_started', 'build', 1));
 record(candidateState, checkEvent('iteration.check_finished', 'build', 1, {exit_code: 0}));
+record(candidateState, checkEvent('iteration.check_started', 'build', 1));
 record(candidateState, checkEvent('iteration.check_started', 'tests', 1));
 record(candidateState, {type: 'task.cancelled', sequence: 12});
 record(candidateState, {type: 'task.cancelled', sequence: 12});
@@ -109,8 +114,10 @@ for (let index = 0; index < 305; index++) record(candidateState, {type: 'model.r
 ctxt.activeThinkingState = JSON.parse(JSON.stringify(candidateState));
 ctxt.draw();
 const cancelledEvidence = body.innerHTML.split('Runtime timeline')[0];
-assert.match(cancelledEvidence, /Approved tool · workspace\.patch/);
-assert.match(cancelledEvidence, /Checkpoint saved · cp_test_01/);
+assert.match(cancelledEvidence, /Waiting for approval · workspace\.patch · src\/&lt;draft&gt;\.cpp/);
+assert.match(cancelledEvidence, /Approved tool · workspace\.patch · src\/fixture\.cpp/);
+assert.match(cancelledEvidence, /Checkpoint saved · cp_test_01 · src\/fixture\.cpp/);
+assert.doesNotMatch(cancelledEvidence, /original source|new source/);
 assert.match(cancelledEvidence, /Candidate build · attempt 1 · passed/);
 assert.doesNotMatch(cancelledEvidence, /Candidate build · attempt 1 · started/);
 assert.match(cancelledEvidence, /Candidate tests · attempt 1 · started/);

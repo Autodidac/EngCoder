@@ -1,3 +1,8 @@
+## Candidate file paths in Run info (2026-11-17)
+
+- Native approval, denial, and checkpoint events now carry the candidate file path. Run info retains the proposal path when the approval card closes and displays it alongside the decision and checkpoint. The saved view contains the path and outcome without duplicating the proposed source. A late start event cannot replace a finished check in that view.
+- The Windows Release build and all 82 CTest checks passed. All 23 Web smoke checks passed, including a restored Run info view with path escaping, no persisted patch text in the evidence section, and a delayed check start. This pass used fixtures for the new receipt display.
+
 ## Expiration of unanswered tool approvals (2026-11-17)
 
 - The native host uses a monotonic deadline for interactive tool approvals, with a one-hour default matching the Epoch development guard. The same deadline governs both submitting a decision and waiting for one. Expiration removes the pending ID and records a terminal task error. Stop retains its cancellation result.

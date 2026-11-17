@@ -1254,6 +1254,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                 continue;
             }
 
+            const auto candidate_path = approved_path
+                ? call.arguments.at("path").get<std::string>() : std::string{};
             const char* disposition = "approval";
             if (review->disposition == decision::ToolDisposition::allow) disposition = "allow";
             else if (review->disposition == decision::ToolDisposition::deny) disposition = "deny";
@@ -1399,6 +1401,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                         {"id", call.id},
                         {"approval_id", approval_id},
                         {"name", call.name},
+                        {"candidate_path", candidate_path},
                         {"error", "user denied approval"},
                         {"source", "user"},
                     });
@@ -1409,6 +1412,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     {"id", call.id},
                     {"approval_id", approval_id},
                     {"name", call.name},
+                    {"candidate_path", candidate_path},
                     {"source", "user"},
                 });
             }
@@ -1461,6 +1465,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             emit(request, "tool.completed", {
                 {"id", call.id},
                 {"name", call.name},
+                {"candidate_path", candidate_path},
                 {"result", *value},
                 {"review_confidence", review->confidence},
                 {"reviewer", review->reviewer},

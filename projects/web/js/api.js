@@ -341,6 +341,7 @@ function candidateCheckpointId(event) {
 function recordCandidateEvidence(stats, event, item) {
   const data = event.data || {};
   let checkKey = '';
+  let path = '';
   switch (event.type) {
     case 'iteration.check_started':
     case 'iteration.check_finished':
@@ -348,12 +349,18 @@ function recordCandidateEvidence(stats, event, item) {
       break;
     case 'tool.completed':
       if (!candidateCheckpointId(event)) return;
+      path = data.candidate_path;
+      break;
+    case 'task.awaiting_approval':
+      if (!isCandidateEditTool(data.tool)) return;
+      path = data.arguments?.path;
       break;
     case 'tool.approved':
     case 'tool.denied':
     case 'tool.review_failed':
     case 'tool.failed':
       if (!isCandidateEditTool(data.name)) return;
+      path = data.candidate_path;
       break;
     case 'verification.completed':
       if (data.status !== 'candidate build and tests passed') return;
@@ -374,9 +381,13 @@ function recordCandidateEvidence(stats, event, item) {
   if (item.sequence > 0 && evidence.some(receipt => receipt?.sequence === item.sequence)) return;
   if (checkKey) {
     const prior = evidence.findIndex(receipt => receipt?.checkKey === checkKey);
-    if (prior >= 0) evidence.splice(prior, 1);
+    if (prior >= 0) {
+      if (evidence[prior].type === 'iteration.check_finished' && item.type === 'iteration.check_started') return;
+      evidence.splice(prior, 1);
+    }
   }
-  evidence.push({ ...item, checkKey });
+  const file = typeof path === 'string' ? path.trim().slice(0, 512) : '';
+  evidence.push({ ...item, checkKey, text: file ? `${item.text} · ${file}` : item.text });
   if (evidence.length > 64) evidence.splice(0, evidence.length - 64);
 }
 
