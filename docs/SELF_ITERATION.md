@@ -16,3 +16,11 @@ The candidate setting is consumed on submission. KeyMaker can inspect the checko
 A passing task leaves the candidate available for review. Inspect its diff and decide whether to keep the candidate or integrate the change through your normal Git workflow. Every new task requires a fresh opt-in and fresh edit approvals. Candidate edits and check receipts are separate from neural training.
 
 The candidate directory is operator-designated and the build cache must point into it. Use trusted build scripts and test targets. Compiler and test processes run with the host account’s permissions. For untrusted builds, use a separately confined environment. Keep other editors and builds off the candidate while the run is active. This workflow leaves campaign queues, restart/resume and automatic source promotion outside its scope.
+
+## EngCoder maintenance
+
+Use the local KeyMaker model to propose the first change for a bounded mission. Give it the symptom, source paths, expected behavior, and one validation target. Keep independent tests outside the proposed edit. For multi-file work, use a separate EngCoder checkout and retain an exact diff for review before integrating it into the working source.
+
+Start with the smallest model that can complete the mission. If the run stalls, compare the tool calls, provider timing, and latest candidate receipt before retrying. Change the route, input context, or runtime condition that caused the failure. Keep a passing build and test receipt, the model and candidate identities, and what the operator approved. Report provider token counts and decode speed when measured. Browser estimates and whole-device GPU measurements have their own labels.
+
+The first pass covers task lifecycle, approval recovery, and visible candidate evidence. A standalone row-selection repair provides a small end-to-end test before running the missing task terminal events mission against EngCoder source. Track integration and platform acceptance separately in [Future missions](FUTURE_MISSIONS.md) and [Validation](../VALIDATION.md).

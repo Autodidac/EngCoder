@@ -62,6 +62,23 @@ assert.match(body.innerHTML, /lmstudio\/small-model/);
 assert.match(body.innerHTML, /Runtime timeline/);
 assert.equal(body.label, 'Run information');
 assert.equal(t1.selected, 'false');assert.equal(t2.selected,'true');
+assert.doesNotMatch(body.innerHTML, /Candidate repair evidence/);
+
+const eventFormatting = api.slice(api.indexOf('function eventActivityLine('), api.indexOf('function terminalFromEvent('));
+ctxt.$ = () => null;
+vm.runInContext(eventFormatting + '\nthis.formatEvent = eventActivityLine;', ctxt);
+ctxt.activeThinkingState.activityEvents = [
+  {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'tests', attempt: 1, exit_code: 8}},
+  {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'build', attempt: 2, exit_code: 0}},
+  {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'tests', attempt: 2, exit_code: 0}},
+].map(event => ({ type: event.type, text: ctxt.formatEvent(event) }));
+ctxt.draw();
+const evidence = body.innerHTML.split('Runtime timeline')[0];
+assert.match(evidence, /Candidate repair evidence/);
+assert.match(evidence, /Candidate tests · attempt 1 · failed \(exit 8\)/);
+assert.match(evidence, /Candidate build · attempt 2 · passed/);
+assert.match(evidence, /Candidate tests · attempt 2 · passed/);
+assert.doesNotMatch(body.innerHTML, /data-activity-thinking open/);
 // Output mode must not expose run metadata or JSON. It only streams generated text.
 ctxt.rightPanelView='output';
 const pre={textContent:'',scrollHeight:100,scrollTop:0,clientHeight:100,dataset:{}};

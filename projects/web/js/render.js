@@ -227,7 +227,9 @@ function syncRunInfo() {
     ? state.activityEvents
     : cleanThinkingContent(state.thinking || '').split('\n').filter(Boolean).map(text => ({ text }));
   const timelineOpen = !!state.activityThinkingOpen;
-  const candidateEvidence = events.filter(item => item.type === 'iteration.escalated' || item.type === 'iteration.lesson');
+  const candidateEvidence = events.filter(item =>
+    ['iteration.check_started', 'iteration.check_finished', 'iteration.repair',
+      'iteration.escalated', 'iteration.escalation_unavailable', 'iteration.lesson'].includes(item.type));
   const candidate = candidateEvidence.length ? sectionHtml('Candidate repair evidence', candidateEvidence.map(item =>
     `<div class="activity-line">${esc(item.text || '')}</div>`).join('')) : '';
   const timeline = events.length ? `<section class="activity-section">

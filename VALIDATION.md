@@ -1,3 +1,10 @@
+## 0.7.5 self-iteration checkpoint (2026-11-16)
+
+- Run info shows baseline and candidate build and test receipts, attempt numbers, and failing exit codes while the full timeline stays collapsed. Verified in the served Windows Release UI and in the Web fixture.
+- The disposable C++23 row-selection candidate compiled. Independent CTest probes reproduced two failures and one pass. The 0.5B Qwen Coder run reached its token limit without an edit. The 4B Qwen Instruct run read the candidate and proposed a patch that still admitted the one-past-end index and removed a brace. The operator denied it through the visible UI. The task recorded that no checkpointed edit completed. The candidate source, tests, and CMake inputs retained their starting hashes.
+- For the 4B run, llama.cpp measured 1,321 initial prompt tokens in 168 ms. The patch turn decoded 325 tokens at 165.3 tokens/s. Its provider used 5.89 CPU seconds and peaked at 2,866 MiB of working set across the sampled run. The RTX 5080 peaked at 6,312 MiB and 92% utilization across the device, with 2,136 MiB in use before launch. The active EngCoder process peaked at 13 MiB of working set. Samples do not isolate per-process VRAM.
+- Separate EngCoder source tests reproduce missing durable terminal events after early cancellation and provider preparation failure. The native repair remains a candidate mission. The test models were stopped and the two temporary GGUF files were removed.
+
 ## 0.7.5 dependency and output layout follow-up (2026-11-16)
 
 - Clean Windows x64 builds against vcpkg 2026.10.16 passed 67/67 CTest cases in Debug and Release. The registry resolved curl 8.23.0, cpp-httplib 0.59.0, SDL 3.4.18, ImGui 1.92.9, and Catch2 3.16.0. Linux and macOS builds were not run.

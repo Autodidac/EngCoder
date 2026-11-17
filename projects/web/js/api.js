@@ -365,8 +365,14 @@ function eventActivityLine(event) {
     case 'tool.failed': return `Tool failed · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error)}`;
     case 'agent.stall_detected': return 'Changed strategy after repeated action';
     case 'iteration.started': return 'Candidate self-iteration started';
-    case 'iteration.check_started': return `${data.stage === 'baseline' ? 'Baseline' : 'Candidate'} ${data.check} · running`;
-    case 'iteration.check_finished': return `${data.stage === 'baseline' ? 'Baseline' : 'Candidate'} ${data.check} · ${data.exit_code === 0 ? 'passed' : 'failed'}`;
+    case 'iteration.check_started':
+    case 'iteration.check_finished': {
+      const stage = data.stage === 'baseline' ? 'Baseline' : 'Candidate';
+      const attempt = Number.isInteger(data.attempt) && data.attempt > 0 ? ` · attempt ${data.attempt}` : '';
+      const result = event.type === 'iteration.check_started' ? 'running'
+        : data.exit_code === 0 ? 'passed' : `failed${Number.isInteger(data.exit_code) ? ` (exit ${data.exit_code})` : ''}`;
+      return `${stage} ${data.check}${attempt} · ${result}`;
+    }
     case 'iteration.repair': return `Candidate repair ${data.attempt} of 2`;
     case 'iteration.escalated': return `Escalated · ${data.from} → ${data.to} · ${data.reason}`;
     case 'iteration.escalation_unavailable': return `Escalation unavailable · ${data.model} · keeping current model`;

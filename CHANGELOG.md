@@ -8,6 +8,7 @@
 - Reported output token limits as failures with retry guidance, and kept pending approval controls mounted during live updates.
 - Kept Stop tied to the runtime's final result, restored approvals after refresh, and kept interrupted tasks available for reconnect.
 - Added a resizable docked output panel with keyboard controls, remembered width, and a compact overlay.
+- Made candidate build and test results visible in Run info, including repair attempts and exit codes.
 - Updated the app's pinned vcpkg registry to 2026.10.16.
 
 ## 0.7.4 — Windows maintenance release (2026-11-10)
