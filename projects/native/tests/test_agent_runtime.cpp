@@ -62,7 +62,8 @@ public:
                     {{"path", "fixture.cpp"}, {"expected", "aaaa\nfooter"}, {"replacement", "aaaa\r\nfooter"}}},
                 {"edit-" + std::to_string(turn), "workspace.patch",
                     {{"path", "fixture.cpp"}, {"expected", prefix + "\naaaa\nfooter"},
-                        {"replacement", "edited " + std::to_string(turn / 2 + 1) + "\naaaa\nfooter"}}},
+                        {"replacement_lines", engcoder::core::json::array({
+                            "edited " + std::to_string(turn / 2 + 1), "aaaa", "footer"})}}},
             }};
         }
         return engcoder::model::ModelResponse{.text = "Candidate change summary"};
@@ -534,6 +535,9 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
             CHECK(event.data.at("tool") == "workspace.patch");
             CHECK(event.data.at("call_id").get<std::string>().starts_with("approval_"));
             CHECK(event.data.at("tool_call_id").get<std::string>().starts_with("edit-"));
+            const auto& arguments = event.data.at("arguments");
+            CHECK_FALSE(arguments.contains("replacement_lines"));
+            CHECK(arguments.at("replacement").get<std::string>().ends_with("\naaaa\nfooter"));
             if (changed_while_pending) std::ofstream(root / "fixture.cpp") << "newer operator content";
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }

@@ -3,6 +3,7 @@
 #include <limits>
 
 #include "engcoder/core/ids.hpp"
+#include "engcoder/tools/builtin_tools.hpp"
 #include "engcoder/workspace/workspace.hpp"
 
 #include <algorithm>
@@ -290,7 +291,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             "make a targeted repair before finishing again. Each edit needs operator approval. "
             "Use workspace.read with start_line and max_lines for the needed source excerpt. "
             "For an unknown location, search for a specific symbol first and read around the match. "
-            "Use workspace.patch to edit an existing file and workspace.write only to create a new file.";
+            "Use workspace.patch to edit an existing file and workspace.write only to create a new file. "
+            "For a multiline replacement, put each physical line in a separate replacement_lines entry and omit replacement.";
     }
     // These are orchestration guidelines, not undocumented llama.cpp/LM Studio
     // reasoning knobs. Never disable verification or sandbox rules for speed.
@@ -1139,7 +1141,17 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             return TaskResult{model_result->text, TaskPhase::completed};
         }
 
-        for (const auto& call : model_result->tool_calls) {
+        for (auto& call : model_result->tool_calls) {
+            std::optional<core::Error> patch_argument_error;
+            if (call.name == "workspace.patch" && call.arguments.contains("replacement_lines")) {
+                auto replacement = tools::workspace_patch_replacement(call.arguments);
+                if (replacement) {
+                    call.arguments.erase("replacement_lines");
+                    call.arguments["replacement"] = std::move(*replacement);
+                } else {
+                    patch_argument_error = std::move(replacement.error());
+                }
+            }
             const auto signature = call.name + "\n" + call.arguments.dump();
             const auto repetitions = ++signatures[signature];
             if (repetitions > config_.repeated_action_limit) {
@@ -1177,6 +1189,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             };
 
             auto review = [&]() -> std::expected<decision::ToolReview, core::Error> {
+                if (patch_argument_error) return std::unexpected(*patch_argument_error);
                 if (candidate_workspace && (!iteration_tool_allowed(call.name) || !iteration_arguments_valid(call) ||
                     call.id.empty() || !candidate_call_ids.insert(call.id).second)) {
                     return std::unexpected(core::Error{core::make_error_code(core::Errc::tool_denied),

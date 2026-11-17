@@ -119,6 +119,32 @@ TEST_CASE("workspace tools preserve exact patches and bound candidate reads") {
         CHECK(workspace.read_text("source.cpp") == "one\r\ntwo\r\nafter\r\n");
     }
 
+    SECTION("multiline arrays join physical lines and preserve source string escapes") {
+        constexpr auto original = "before\r\nafter\r\n";
+        REQUIRE(workspace.write_text("source.cpp", original));
+        const auto result = tools.invoke("workspace.patch", {
+            {"path", "source.cpp"}, {"expected", "before"},
+            {"replacement_lines", engcoder::tools::json::array({"first", "", R"(const auto newline = "\n";)"})},
+        }, {});
+        REQUIRE(result);
+        CHECK(workspace.read_text("source.cpp") == "first\r\n\r\nconst auto newline = \"\\n\";\r\nafter\r\n");
+        REQUIRE(checkpoints.restore(result->at("checkpoint_id").get<std::string>(), "source.cpp"));
+        CHECK(workspace.read_text("source.cpp") == original);
+    }
+
+    SECTION("ambiguous or malformed representations cannot apply a patch") {
+        REQUIRE(workspace.write_text("source.cpp", "before\n"));
+        engcoder::tools::json args{{"path", "source.cpp"}, {"expected", "before"},
+            {"replacement", "first"}, {"replacement_lines", engcoder::tools::json::array({"second"})}};
+        REQUIRE_FALSE(tools.invoke("workspace.patch", args, {}));
+        args.erase("replacement");
+        args["replacement_lines"] = engcoder::tools::json::array({"first\nsecond"});
+        REQUIRE_FALSE(tools.invoke("workspace.patch", args, {}));
+        args["replacement_lines"] = engcoder::tools::json::array({42});
+        REQUIRE_FALSE(tools.invoke("workspace.patch", args, {}));
+        CHECK(workspace.read_text("source.cpp") == "before\n");
+    }
+
     SECTION("mixed endings retain exact matching and neighboring bytes") {
         REQUIRE(workspace.write_text("source.cpp", "before\r\nafter\n"));
         REQUIRE_FALSE(patch("before\nafter", "changed"));

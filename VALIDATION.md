@@ -1,3 +1,10 @@
+## Multiline tool patches and live Run info verification (2026-11-17)
+
+- `workspace.patch` accepts `replacement_lines` as an alternative to `replacement`. Native code joins the lines before review so the approval shows exactly what will be applied. Windows Release passed all 82 tests, including exact preflight, checkpoint restore, preserved C++ string escapes, and refusal of malformed or ambiguous arguments.
+- In the isolated Windows workspace candidate, Qwen 3.5 9B reformatted an existing one-line lambda into ten lines. Several preliminary proposals failed exact-preimage validation. The model then produced a valid array, which the operator mistakenly denied after reading JSON-escaped newlines as literal characters. A fresh run with an explicit tool example supplied the same decoded patch. Both decoded requests were checked to be identical.
+- Task `task_723ad9f0af9c_14_4cad5f268c16c336` received approval, created checkpoint `cp_72443d6a9930_18_bf68af91fb4324c7` and recorded passing build and test exits at 58.647 s from task creation to completion. The Codex preview showed the candidate file path, approval, checkpoint, build, and test receipts in Run info. Independent candidate CTest passed 82/82. Test and CMake hashes were preserved.
+- The approved proposal turn evaluated 231 uncached prompt tokens in 314 ms and generated 251 tokens at 24.62 tokens/s. The sampled mission peaked at 6.35 GiB provider working set, 15.25 MiB host working set and 7,409 MiB whole-device GPU memory at 51% utilization. The owned model stopped and the preview remained healthy. Raw evidence is in `out/self-iteration-2026-11-17/multiline-patch-live`. The candidate source edit stays isolated.
+
 ## Candidate file paths in Run info (2026-11-17)
 
 - Native approval, denial, and checkpoint events now carry the candidate file path. Run info retains the proposal path when the approval card closes and displays it alongside the decision and checkpoint. The saved view contains the path and outcome without duplicating the proposed source. A late start event cannot replace a finished check in that view.

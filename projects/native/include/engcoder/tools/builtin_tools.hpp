@@ -8,5 +8,6 @@
 #include "engcoder/workspace/workspace.hpp"
 
 namespace engcoder::tools {
+[[nodiscard]] std::expected<std::string, core::Error> workspace_patch_replacement(const json& arguments);
 void register_builtin_tools(ToolRegistry&, workspace::Workspace&, workspace::CheckpointStore&, persistence::SessionStore&, model::LmStudioProvider&, addons::AddonRegistry&, const core::Config&);
 }

@@ -98,6 +98,34 @@ namespace {
 
 } // namespace
 
+std::expected<std::string, core::Error> workspace_patch_replacement(const json& arguments) {
+    const auto invalid = [](std::string message) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument), std::move(message)});
+    };
+    const auto text = arguments.find("replacement");
+    const auto lines = arguments.find("replacement_lines");
+    if (text != arguments.end() && text->is_string() && lines == arguments.end())
+        return text->get<std::string>();
+    if (text != arguments.end() || lines == arguments.end() || !lines->is_array())
+        return invalid("Supply exactly one of replacement (text) or replacement_lines (array of lines).");
+
+    std::string result;
+    bool first = true;
+    for (const auto& line : *lines) {
+        if (!line.is_string()) return invalid("Each replacement_lines entry must be a string.");
+        const auto& value = line.get_ref<const std::string&>();
+        if (value.find_first_of("\r\n") != std::string::npos)
+            return invalid("Use a separate replacement_lines entry for each physical line.");
+        const std::size_t separator = first ? 0 : 1;
+        if (separator + value.size() > workspace::max_text_file_bytes - result.size())
+            return invalid("Replacement lines exceed the workspace text limit.");
+        if (!first) result.push_back('\n');
+        result += value;
+        first = false;
+    }
+    return result;
+}
+
 void register_builtin_tools(
     ToolRegistry& registry,
     workspace::Workspace& workspace,
@@ -319,25 +347,27 @@ void register_builtin_tools(
 
     registry.add(make_tool(
         "workspace.patch",
-        "Replace one exact text block in a project file. Uniform CRLF files accept LF blocks and preserve CRLF. Missing or ambiguous matches fail.",
+        "Replace one exact text block. Use replacement_lines (one JSON string per physical line) for multiline C++, or replacement for exact text. Supply only one. Uniform CRLF files retain CRLF. Missing or ambiguous matches fail.",
         object_schema(
             {
                 {"path", string_schema()},
                 {"expected", string_schema()},
                 {"replacement", string_schema()},
+                {"replacement_lines", string_array_schema()},
             },
-            {"path", "expected", "replacement"}),
+            {"path", "expected"}),
         [&workspace, &checkpoints](const json& arguments, const Context&) -> std::expected<json, core::Error> {
             const auto path = arguments.at("path").get<std::string>();
             const auto& expected = arguments.at("expected").get_ref<const std::string&>();
-            const auto& replacement = arguments.at("replacement").get_ref<const std::string&>();
+            const auto replacement = workspace_patch_replacement(arguments);
+            if (!replacement) return std::unexpected(replacement.error());
 
             auto text = workspace.read_text(path);
             if (!text) {
                 return std::unexpected(text.error());
             }
 
-            const auto patch = workspace::plan_text_patch(*text, expected, replacement);
+            const auto patch = workspace::plan_text_patch(*text, expected, *replacement);
             if (!patch) return std::unexpected(patch.error());
 
             const auto checkpoint = checkpoints.capture(path);
