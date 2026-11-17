@@ -1,3 +1,8 @@
+## Host-issued approvals for model tool calls (2026-11-17)
+
+- Adapted the single-use identity principle from Epoch's development guard. EngCoder issues its own approval ID for each interactive request, even if the provider repeats a tool-call ID. The browser submits and matches decisions against the host ID. Audit events retain both identities. The native candidate path and preimage checks still run before the edit.
+- A native fixture submitted two different proposals with the same provider ID. The model ID, a previous host ID, and a duplicate decision were refused. The Web fixture verified that a prior decision leaves the current approval card open and the matching decision closes it. Windows Release built and passed all 82 CTest checks. All 23 Web checks passed. These fixtures used no live model.
+
 ## Epoch workspace enumeration port and visible EngCoder repair trial (2026-11-17)
 
 - Inspected Epoch's workspace boundary implementation at `Engine/dep/EpochSelfCoding/integration/src/ai/native/ai.backend_workspace_workspace.cpp` read-only. EngCoder now uses the same containment principle for tree and search. Enumerated entries are checked for links, evaluated under their lexical workspace names and resolved before admission. The EngCoder regression verifies normal source results, ignored build directories and exclusion of file and directory aliases. Windows Release built and passed 82/82 CTest checks. This path check does not provide OS process isolation or certify behavior under hostile concurrent filesystem replacement.

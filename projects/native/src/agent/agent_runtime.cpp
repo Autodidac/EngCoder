@@ -193,7 +193,7 @@ bool AgentRuntime::resolve_approval(
     {
         std::scoped_lock lock(approval_mutex_);
         const auto it = pending_approvals_.find(std::string{task_id});
-        if (it == pending_approvals_.end() || it->second.decided || it->second.call_id != call_id) {
+        if (it == pending_approvals_.end() || it->second.decided || it->second.approval_id != call_id) {
             return false;
         }
         it->second.decided = true;
@@ -1286,8 +1286,10 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             }
 
             if (review->disposition == decision::ToolDisposition::require_approval) {
+                const auto approval_id = request.wait_for_approval ? core::make_id("approval") : std::string{};
                 const auto approval_data = core::json{
-                    {"call_id", call.id},
+                    {"call_id", request.wait_for_approval ? approval_id : call.id},
+                    {"tool_call_id", call.id},
                     {"tool", call.name},
                     {"arguments", call.arguments},
                     {"reason", review->reason},
@@ -1332,7 +1334,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     std::scoped_lock lock(approval_mutex_);
                     pending_approvals_.insert_or_assign(
                         request.task_id,
-                        PendingApproval{.call_id = call.id});
+                        PendingApproval{.approval_id = approval_id});
                 }
 
                 emit(request, "task.awaiting_approval", approval_data);
@@ -1386,6 +1388,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                     parent = message_id;
                     emit(request, "tool.denied", {
                         {"id", call.id},
+                        {"approval_id", approval_id},
                         {"name", call.name},
                         {"error", "user denied approval"},
                         {"source", "user"},
@@ -1395,6 +1398,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
 
                 emit(request, "tool.approved", {
                     {"id", call.id},
+                    {"approval_id", approval_id},
                     {"name", call.name},
                     {"source", "user"},
                 });

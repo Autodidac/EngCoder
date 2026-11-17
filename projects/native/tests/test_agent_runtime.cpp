@@ -203,7 +203,7 @@ class ApprovalToolModelProvider final : public engcoder::model::IModelProvider {
 public:
     std::expected<engcoder::model::ModelResponse, engcoder::core::Error> complete(
         const engcoder::model::ModelRequest&) override {
-        if (call_count_++ == 0) {
+        if (const auto turn = call_count_++; turn < 2) {
             return engcoder::model::ModelResponse{
                 .text = {},
                 .tool_calls = {{
@@ -211,7 +211,7 @@ public:
                     .name = "process.run",
                     .arguments = {
                         {"executable", "custom-check"},
-                        {"arguments", engcoder::core::json::array()},
+                        {"arguments", engcoder::core::json::array({std::to_string(turn)})},
                         {"cwd", "."},
                     },
                 }},
@@ -532,7 +532,8 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     const auto subscription = events.subscribe([&](const core::Event& event) {
         if (event.type == "task.awaiting_approval") {
             CHECK(event.data.at("tool") == "workspace.patch");
-            CHECK(event.data.at("call_id").get<std::string>().starts_with("edit-"));
+            CHECK(event.data.at("call_id").get<std::string>().starts_with("approval_"));
+            CHECK(event.data.at("tool_call_id").get<std::string>().starts_with("edit-"));
             if (changed_while_pending) std::ofstream(root / "fixture.cpp") << "newer operator content";
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }
@@ -694,15 +695,19 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
         engcoder::agent::AgentRuntime runtime(
             config, model, addons, controller, models, residency, training, learning, tools, store, events);
 
-        bool saw_wait = false;
-        bool resolved = false;
+        std::vector<std::string> approval_ids;
         const auto subscription = events.subscribe([&](const engcoder::core::Event& event) {
             if (event.type != "task.awaiting_approval") return;
-            saw_wait = true;
-            resolved = runtime.resolve_approval(
-                event.task_id,
-                event.data.value("call_id", std::string{}),
-                true);
+            const auto id = event.data.at("call_id").get<std::string>();
+            CHECK(event.data.at("tool_call_id") == "approval-call-1");
+            CHECK_FALSE(runtime.resolve_approval(event.task_id, "approval-call-1", true));
+            if (!approval_ids.empty()) {
+                CHECK(id != approval_ids.front());
+                CHECK_FALSE(runtime.resolve_approval(event.task_id, approval_ids.front(), true));
+            }
+            CHECK(runtime.resolve_approval(event.task_id, id, true));
+            CHECK_FALSE(runtime.resolve_approval(event.task_id, id, true));
+            approval_ids.push_back(id);
         });
 
         const engcoder::agent::TaskRequest request{
@@ -728,8 +733,7 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
 
         REQUIRE(result);
         CHECK(result->final_text == "approval-cycle-ok");
-        CHECK(saw_wait);
-        CHECK(resolved);
+        REQUIRE(approval_ids.size() == 2);
         CHECK(invoked);
 
         const auto persisted = store.events_after(request.session_id, 0);
@@ -743,6 +747,7 @@ TEST_CASE("agent runtime resumes the exact tool call after interactive approval"
         REQUIRE(approved != persisted->end());
         REQUIRE(completed != persisted->end());
         CHECK(approved->sequence < completed->sequence);
+        CHECK(approved->data.at("approval_id") == approval_ids.front());
     }
 
     std::filesystem::remove_all(root);

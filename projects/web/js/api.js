@@ -650,12 +650,12 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
           showError('');
           setStatus('Approval required', 'busy');
         } else if (event.type === 'tool.approved') {
-          if (!assistantState.approvalRequest || assistantState.approvalRequest.callId === String(event.data?.id || '')) {
+          if (assistantState.approvalRequest?.callId === String(event.data?.approval_id || event.data?.id || '')) {
             assistantState.approvalRequest = null;
           }
           setStatus('Running', 'busy');
         } else if (event.type === 'tool.denied') {
-          if (assistantState.approvalRequest?.callId === String(event.data?.id || '')) {
+          if (assistantState.approvalRequest?.callId === String(event.data?.approval_id || event.data?.id || '')) {
             assistantState.approvalRequest = null;
           }
           setStatus('Thinking', 'busy');

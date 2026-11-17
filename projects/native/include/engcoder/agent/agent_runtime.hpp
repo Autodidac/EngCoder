@@ -95,7 +95,7 @@ private:
     core::EventBus& events_;
     ContextManager context_;
     struct PendingApproval {
-        std::string call_id;
+        std::string approval_id;
         bool decided{false};
         bool approved{false};
     };

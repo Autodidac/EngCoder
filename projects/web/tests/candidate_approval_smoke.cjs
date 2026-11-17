@@ -15,8 +15,10 @@ const cases = [
 const event = (type, sequence, data) => ({type, sequence, data, task_id: 't'});
 const batches = [
   [event('tool.approval_required', 1, {id: 'edit', name: 'workspace.patch'})],
-  [event('task.awaiting_approval', 2, {call_id: 'edit', tool: 'workspace.patch', arguments: {path: 'test.cpp'}})],
-  [event('task.cancelled', 3, {})]
+  [event('task.awaiting_approval', 2, {call_id: 'approval_one', tool_call_id: 'edit', tool: 'workspace.patch', arguments: {path: 'test.cpp'}})],
+  [event('tool.approved', 3, {id: 'edit', approval_id: 'approval_old'})],
+  [event('tool.approved', 4, {id: 'edit', approval_id: 'approval_one'})],
+  [event('task.cancelled', 5, {})]
 ];
 const messages = [{role: 'user', content: 'Repair a candidate'}, {role: 'assistant'}, {role: 'user', content: 'Keep this message'}];
 const errors = [];
@@ -61,7 +63,9 @@ vm.runInContext([
     () => approvals.push(state.approvalRequest?.callId || null));
   assert.equal(result.kind, 'cancelled');
   assert.equal(approvals[0], null, 'policy event alone must not make the card actionable');
-  assert.equal(approvals[1], 'edit');
+  assert.equal(approvals[1], 'approval_one');
+  assert.equal(approvals[2], 'approval_one', 'an old decision cannot clear the current approval card');
+  assert.equal(approvals[3], null, 'the matching host approval ID clears the card');
   context.test.finalizeAssistantState(state, timing, 'engcoder-cancelled', 'fixture');
   assert.equal(state.approvalRequest, null, 'terminal runs must clear the approval card');
 
