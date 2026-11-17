@@ -392,6 +392,7 @@ def compile_minimal_curriculum(
         max_per_answer=answer_budget,
         replay_budget=replay_budget,
         delta_limit=delta_limit,
+        denylist_path=data_root / "learning" / "denylist.json",
     )
     counts = manifest.get("counts", {})
     if int(counts.get("selected_records", 0)) <= 0:
@@ -518,6 +519,7 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
     counts = selection.get("counts", {})
     print(
         "[curriculum-guard] "
+        f"effective data root: {data_root}; "
         f"English established: {ready}; "
         f"requested scope: {requested.get('scope', '')}; "
         f"effective target: {effective.get('scope', '')}; "
@@ -540,7 +542,7 @@ def install() -> None:
         return
     _installed = True
     print(
-        f"[curriculum-guard] data root: {root()}",
+        f"[curriculum-guard] default data root (command may override): {root()}",
         file=sys.stderr,
         flush=True,
     )

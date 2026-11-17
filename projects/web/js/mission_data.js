@@ -32,7 +32,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P0-005",
     "priority": "P0",
     "title": "Learning Remove + Ban end-to-end — evidence reader and serialized ingestion implemented; in-flight weight-training cancellation remains",
-    "details": "The isolated UI now preserves saved feedback after cancellation or a failed mutation and shows removal controls immediately after saving. Existing trainer may consume previously captured verified JSONL evidence without rechecking bans. Deny during every training ingestion, retroactive purge/ban, concurrent ingestion safeguards.",
+    "details": "The isolated UI now preserves saved feedback after cancellation or a failed mutation and shows removal controls immediately after saving. The internal curriculum guard was found to bypass denylist-aware episode ingestion when publishing its compiled view. The integrated admission repair passes eight CPU tests, including malformed policy and banned-correction supersession, and the full Release suite passes 76/76. Active-job cancellation alone is insufficient: policy revisions must also invalidate stale checkpoints/repair generations and serialize promotion. Already-promoted weights need rollback or retraining, not a claim of automatic unlearning. Deny during every training ingestion, retroactive purge/ban, concurrent ingestion safeguards.",
     "status": "open"
   },
   {

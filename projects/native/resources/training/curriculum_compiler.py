@@ -81,6 +81,7 @@ def training_validation_schedule(
     )
 
 _KNOWN_REASONS = (
+    "banned",
     "invalid_json",
     "invalid_record",
     "missing_training_pair",
@@ -1326,6 +1327,65 @@ def _cap_answer_templates(
     return kept, dropped
 
 
+def _learning_content_hash(prompt: str, response: str) -> str:
+    # Match native EpisodeStore::make_content_hash, including separators.
+    value = 1469598103934665603
+    for part in ("*", prompt, response):
+        for octet in part.encode("utf-8"):
+            value = ((value ^ octet) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        value = ((value ^ 0xFF) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def _admission_denylist(path: Path | None) -> tuple[set[str], set[str], str | None]:
+    if path is None:
+        return set(), set(), None
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError:
+        return set(), set(), None
+    except OSError as exc:
+        raise RuntimeError(f"learning denylist cannot be read: {path}") from exc
+    try:
+        entries = json.loads(payload)
+        if not isinstance(entries, list):
+            raise ValueError("denylist must be an array")
+        prompts: set[str] = set()
+        responses: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("denylist entry must be an object")
+            for key, target in (("prompt_hash", prompts), ("response_hash", responses)):
+                value = entry.get(key)
+                if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{16}", value) is None:
+                    raise ValueError(f"invalid {key}")
+                target.add(value)
+        return prompts, responses, hashlib.sha256(payload).hexdigest()
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise RuntimeError(f"learning denylist cannot be verified: {path}") from exc
+
+
+def _banned_at_admission(record: dict[str, Any], hashes: tuple[set[str], set[str], str | None]) -> bool:
+    prompts, responses, _digest = hashes
+    # Inspect raw fields and all supervised dialogue turns, before stripping,
+    # branding cleanup, correction selection or behavior deduplication.
+    prompt_values = [record.get(key) for key in ("prompt", "question", "instruction", "input")]
+    response_values = [record.get(key) for key in ("response", "answer", "completion", "output", "target", "correction")]
+    messages = record.get("messages", [])
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict):
+                role = str(message.get("role", "")).strip().casefold()
+                if role == "user":
+                    prompt_values.append(message.get("content"))
+                elif role == "assistant":
+                    response_values.append(message.get("content"))
+    _system, prompt, response = _dialogue(record)
+    prompt_values.append(prompt)
+    response_values.append(response)
+    return any(isinstance(value, str) and _learning_content_hash(value, "") in prompts for value in prompt_values) or any(isinstance(value, str) and _learning_content_hash("", value) in responses for value in response_values)
+
+
 def compile_curriculum(
     sources: Path | str | os.PathLike[str] | Iterable[Path | str | os.PathLike[str]],
     output_path: Path | str | os.PathLike[str],
@@ -1340,6 +1400,7 @@ def compile_curriculum(
     replay_budget: int = DEFAULT_REPLAY_BUDGET,
     delta_sources: Path | str | os.PathLike[str] | Iterable[Path | str | os.PathLike[str]] = (),
     delta_limit: int | None = None,
+    denylist_path: Path | str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Compile safe representatives and return the written audit manifest.
 
@@ -1367,6 +1428,8 @@ def compile_curriculum(
     if delta_limit is not None and delta_limit > MAX_DELTA_LIMIT:
         raise ValueError(f"delta_limit must not exceed {MAX_DELTA_LIMIT}")
 
+    policy_path = Path(denylist_path).resolve() if denylist_path is not None else None
+    admission_policy = _admission_denylist(policy_path)
     delta_paths = _resolved_paths(delta_sources)
     delta_path_set = set(delta_paths)
     source_paths = tuple(path for path in _resolved_paths(sources) if path not in delta_path_set)
@@ -1376,6 +1439,8 @@ def compile_curriculum(
     if not source_paths and not delta_paths:
         raise ValueError("at least one source or delta source is required")
     all_inputs = {*source_paths, *delta_paths, *anchors}
+    if policy_path is not None:
+        all_inputs.add(policy_path)
     if output == manifest_output:
         raise ValueError("output_path and manifest_path must be different")
     if output in all_inputs or manifest_output in all_inputs:
@@ -1401,6 +1466,7 @@ def compile_curriculum(
     stripped_emoji_records = 0
 
     raw_entries: list[tuple[Path, int, str, dict[str, Any]]] = []
+    denied_entries: set[tuple[str, int]] = set()
     for source_kind, paths in (("source", source_paths), ("delta", delta_paths)):
         for path in paths:
             for line_number, record, error in _iter_jsonl(path):
@@ -1410,6 +1476,9 @@ def compile_curriculum(
                     continue
                 assert record is not None
                 parsed_records += 1
+                if _banned_at_admission(record, admission_policy):
+                    reasons["banned"] += 1
+                    denied_entries.add((str(path), line_number))
                 raw_entries.append((path, line_number, source_kind, record))
 
     # Corrections supersede by exact normalized user prompt before other
@@ -1447,6 +1516,8 @@ def compile_curriculum(
     # train only the threshold-crossing row and silently discard its context.
     human_behaviors: dict[str, set[str]] = defaultdict(set)
     for _path, _line_number, _source_kind, record in raw_entries:
+        if (str(_path), _line_number) in denied_entries:
+            continue
         if not (
             _truthy(record.get("human_accepted", False))
             and not _truthy(record.get("human_rejected", False))
@@ -1468,6 +1539,8 @@ def compile_curriculum(
     candidates: list[_Candidate] = []
     seen_requested_ids: set[str] = set()
     for path, line_number, source_kind, record in raw_entries:
+        if (str(path), line_number) in denied_entries:
+            continue
         raw_hash = _record_hash(record)
         uid = raw_uids[(str(path), line_number)]
         identifier = _text(record.get("id", "")).strip() or f"compiled-{raw_hash[:16]}"
@@ -1667,6 +1740,8 @@ def compile_curriculum(
     rows = [_stable_json(candidate.record) for candidate in selected]
     output_bytes = (("\n".join(rows) + "\n") if rows else "").encode("utf-8")
     output_hash = hashlib.sha256(output_bytes).hexdigest()
+    if _admission_denylist(policy_path) != admission_policy:
+        raise RuntimeError("learning denylist changed while compiling curriculum")
     _atomic_write(output, output_bytes)
 
     combined_input_digest = hashlib.sha256()
@@ -1703,6 +1778,7 @@ def compile_curriculum(
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "policy": COMPILER_POLICY,
+        "learning_denylist": {"path": str(policy_path) if policy_path else None, "sha256": admission_policy[2]},
         "scope": scope,
         "sources": [str(path) for path in source_paths],
         "delta_sources": [str(path) for path in delta_paths],
@@ -1736,6 +1812,8 @@ def compile_curriculum(
     final_hashes = {str(path): _sha256_file(path) for path in (*source_paths, *delta_paths, *anchors)}
     if final_hashes != input_hashes:
         raise RuntimeError("an append-only input changed while the curriculum was being compiled")
+    if _admission_denylist(policy_path) != admission_policy:
+        raise RuntimeError("learning denylist changed while compiling curriculum")
     return manifest
 
 

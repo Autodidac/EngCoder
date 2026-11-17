@@ -188,6 +188,9 @@ if(ENGCODER_BUILD_TESTS)
         add_test(NAME training_bootstrap_boundary
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_training_bootstrap.py")
         set_tests_properties(training_bootstrap_boundary PROPERTIES TIMEOUT 30)
+        add_test(NAME curriculum_denylist_admission
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_curriculum_denylist.py")
+        set_tests_properties(curriculum_denylist_admission PROPERTIES TIMEOUT 30)
     endif()
 endif()
 
