@@ -9,7 +9,8 @@ namespace {
 core::Error db_error(sqlite3* db, std::string prefix) { return {core::make_error_code(core::Errc::persistence_error), std::move(prefix)+": "+(db?sqlite3_errmsg(db):"sqlite")}; }
 std::int64_t millis(std::chrono::system_clock::time_point tp){return std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();}
 }
-SessionStore::SessionStore(const std::filesystem::path& path) {
+SessionStore::SessionStore(const std::filesystem::path& path)
+    : task_host_path_(std::filesystem::path{path}.concat(".task-owner")) {
     std::filesystem::create_directories(path.parent_path());
     if(sqlite3_open_v2(path.string().c_str(),&db_,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|SQLITE_OPEN_FULLMUTEX,nullptr)!=SQLITE_OK)throw std::runtime_error("failed to open session database");
     const char* schema=R"SQL(
@@ -21,11 +22,57 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_
 CREATE TABLE IF NOT EXISTS events(rowid_pk INTEGER PRIMARY KEY AUTOINCREMENT, sequence INTEGER NOT NULL, project_id TEXT, session_id TEXT, task_id TEXT, type TEXT NOT NULL, data TEXT NOT NULL, created_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_events_session_task_type ON events(session_id, task_id, type);
+CREATE INDEX IF NOT EXISTS idx_events_task_origins ON events(type, session_id, task_id, project_id)
+    WHERE type IN ('task.queued', 'task.created');
 )SQL";
     char* err=nullptr;if(sqlite3_exec(db_,schema,nullptr,nullptr,&err)!=SQLITE_OK){std::string msg=err?err:"schema error";sqlite3_free(err);throw std::runtime_error(msg);}
 }
-SessionStore::~SessionStore(){if(db_)sqlite3_close(db_);}
+SessionStore::~SessionStore(){if(db_)sqlite3_close(db_);if(task_host_db_)sqlite3_close(task_host_db_);}
 std::expected<void,core::Error> SessionStore::exec_locked(std::string_view sql){char*err=nullptr;if(sqlite3_exec(db_,std::string(sql).c_str(),nullptr,nullptr,&err)!=SQLITE_OK){std::string msg=err?err:"sqlite";sqlite3_free(err);return std::unexpected(core::Error{core::make_error_code(core::Errc::persistence_error),msg});}return{};}
+
+std::expected<void, core::Error> SessionStore::claim_task_host() {
+    std::scoped_lock lock(mutex_);
+    if (task_host_db_) return {};
+
+    // Hold a write reservation in a separate SQLite file so normal session writes can continue.
+    const auto utf8_path = task_host_path_.u8string();
+    sqlite3* raw = nullptr;
+    const auto opened = sqlite3_open_v2(reinterpret_cast<const char*>(utf8_path.c_str()), &raw,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> owner(raw, sqlite3_close);
+    if (opened != SQLITE_OK) return std::unexpected(db_error(raw, "open task owner lock"));
+    const auto claimed = sqlite3_exec(raw, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr);
+    if (claimed == SQLITE_BUSY) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::persistence_error),
+            "Another EngCoder task host is using this data directory."});
+    }
+    if (claimed != SQLITE_OK) return std::unexpected(db_error(raw, "claim task owner lock"));
+
+    const auto interrupted = exec_locked(R"SQL(
+WITH incomplete AS (
+    SELECT project_id, session_id, task_id, MIN(rowid_pk) AS first_row
+    FROM events AS started
+    WHERE type IN ('task.queued', 'task.created') AND session_id <> '' AND task_id <> ''
+      AND NOT EXISTS (
+        SELECT 1 FROM events AS terminal
+        WHERE terminal.session_id = started.session_id AND terminal.task_id = started.task_id
+          AND terminal.project_id = started.project_id
+          AND terminal.type IN ('task.completed', 'task.failed', 'task.cancelled')
+    )
+    GROUP BY project_id, session_id, task_id
+), head AS MATERIALIZED (
+    SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events
+)
+INSERT INTO events(sequence, project_id, session_id, task_id, type, data, created_ms)
+SELECT head.sequence + ROW_NUMBER() OVER (ORDER BY incomplete.first_row), project_id, session_id, task_id,
+       'task.failed', '{"error":"EngCoder restarted before this task finished. Start a new task to continue.","reason":"runtime_restart"}',
+       CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)
+FROM incomplete CROSS JOIN head;
+)SQL");
+    if (!interrupted) return std::unexpected(interrupted.error());
+    task_host_db_ = owner.release();
+    return {};
+}
 
 std::expected<void,core::Error> SessionStore::ensure_project(std::string_view id,std::string_view root){std::scoped_lock l(mutex_);sqlite3_stmt*s=nullptr;const char*q="INSERT OR IGNORE INTO projects(id,root,created_ms) VALUES(?,?,?)";if(sqlite3_prepare_v2(db_,q,-1,&s,nullptr)!=SQLITE_OK)return std::unexpected(db_error(db_,"prepare project"));sqlite3_bind_text(s,1,id.data(),static_cast<int>(id.size()),SQLITE_TRANSIENT);sqlite3_bind_text(s,2,root.data(),static_cast<int>(root.size()),SQLITE_TRANSIENT);sqlite3_bind_int64(s,3,millis(std::chrono::system_clock::now()));const auto rc=sqlite3_step(s);sqlite3_finalize(s);if(rc!=SQLITE_DONE)return std::unexpected(db_error(db_,"insert project"));return{};}
 std::expected<void,core::Error> SessionStore::ensure_session(std::string_view id,std::string_view pid,std::string_view title){std::scoped_lock l(mutex_);sqlite3_stmt*s=nullptr;const char*q="INSERT OR IGNORE INTO sessions(id,project_id,title,created_ms) VALUES(?,?,?,?)";if(sqlite3_prepare_v2(db_,q,-1,&s,nullptr)!=SQLITE_OK)return std::unexpected(db_error(db_,"prepare session"));sqlite3_bind_text(s,1,id.data(),static_cast<int>(id.size()),SQLITE_TRANSIENT);sqlite3_bind_text(s,2,pid.data(),static_cast<int>(pid.size()),SQLITE_TRANSIENT);sqlite3_bind_text(s,3,title.data(),static_cast<int>(title.size()),SQLITE_TRANSIENT);sqlite3_bind_int64(s,4,millis(std::chrono::system_clock::now()));const auto rc=sqlite3_step(s);sqlite3_finalize(s);if(rc!=SQLITE_DONE)return std::unexpected(db_error(db_,"insert session"));return{};}

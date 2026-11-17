@@ -26,6 +26,7 @@ public:
     [[nodiscard]] std::expected<void, core::Error> ensure_session(std::string_view session_id, std::string_view project_id, std::string_view title = {});
     [[nodiscard]] std::expected<void, core::Error> append_message(std::string_view session_id, std::string_view parent_message_id, std::string_view message_id, const model::Message& message);
     [[nodiscard]] std::expected<void, core::Error> append_event(const core::Event& event);
+    [[nodiscard]] std::expected<void, core::Error> claim_task_host();
     [[nodiscard]] std::expected<std::uint64_t, core::Error> max_event_sequence();
     [[nodiscard]] std::expected<std::vector<core::Event>, core::Error> events_after(std::string_view session_id, std::uint64_t sequence, std::size_t limit = 500);
     [[nodiscard]] std::expected<std::optional<std::string>, core::Error> learnable_reply(
@@ -35,6 +36,8 @@ public:
     [[nodiscard]] std::expected<std::vector<json>, core::Error> search_sessions(std::string_view query, std::size_t limit = 50);
 private:
     [[nodiscard]] std::expected<void, core::Error> exec_locked(std::string_view sql);
+    std::filesystem::path task_host_path_;
+    sqlite3* task_host_db_{};
     sqlite3* db_{};
     mutable std::mutex mutex_;
 };

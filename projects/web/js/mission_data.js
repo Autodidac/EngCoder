@@ -32,7 +32,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P0-005",
     "priority": "P0",
     "title": "Learning Remove + Ban end-to-end — evidence reader and serialized ingestion implemented; in-flight weight-training cancellation remains",
-    "details": "Existing trainer may consume previously captured verified JSONL evidence without rechecking bans. Deny during every training ingestion, retroactive purge/ban, concurrent ingestion safeguards.",
+    "details": "The isolated UI now preserves saved feedback after cancellation or a failed mutation and shows removal controls immediately after saving. Existing trainer may consume previously captured verified JSONL evidence without rechecking bans. Deny during every training ingestion, retroactive purge/ban, concurrent ingestion safeguards.",
     "status": "open"
   },
   {
@@ -88,7 +88,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-013",
     "priority": "P1",
     "title": "Task restart/cancel/approval lifecycle tests",
-    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing and restart reconciliation. Release fixtures verify Deny, Stop, wrong-call and stale approvals, and preserving an intervening file edit. Inside Codex, the approval cleared after restart and Run info retained the reason after reload. Web fixtures cover Stop during submission, temporary disconnects, terminal cursor replay and attaching one observer when the saved chat is reopened. Working-source integration and a full standalone desktop restart remain open.",
+    "details": "Pending approvals must survive refresh and execute only with consent. The isolated Windows Release candidate covers cancellation and preparation terminal events, CRLF preservation, patch preflight, paged reads, durable queueing and restart reconciliation. Release fixtures verify Deny, Stop, wrong-call and stale approvals, and preserving an intervening file edit. Inside Codex, the approval cleared after restart and Run info retained the reason after reload. Web fixtures cover Stop during submission, temporary disconnects, terminal cursor replay and attaching one observer when the saved chat is reopened. The reviewed candidate was integrated with user approval on 2026-11-17; a full standalone desktop restart remains open.",
     "status": "open"
   },
   {
@@ -123,7 +123,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-018",
     "priority": "P1",
     "title": "Training preemption and conversation Foundation acceptance",
-    "details": "A one-step CUDA smoke updated a disposable conversational candidate and left the active generation unchanged after rejection. Expand a deduplicated conversation-only batch and assess fresh dialogue across multiple turns before promotion. Keep role-play and C++ curricula in separate addon scopes. Verify checkpoint/resume, VRAM release, evidence deduplication, promotion, rejection, and rollback under realistic workload.",
+    "details": "An isolated 110-example English batch completed 440 CUDA training steps / 110 optimizer updates; held-out loss improved but fresh replies remained unusable, so the candidate was rejected. The native API resumed exactly one bounded step without promotion. Candidate repairs cover cold-backbone training, readiness dtype, scoped-addon isolation, checkpoint compatibility and step caps. Expand useful conversation coverage and independent holdouts before promotion; repetition alone does not provide missing skills. Keep role-play and C++ curricula separate. Verify checkpoint/resume, VRAM release, evidence deduplication, promotion, rejection, and rollback under realistic workload.",
     "status": "open"
   },
   {
@@ -137,7 +137,7 @@ const ENGCODER_OPEN_MISSIONS = Object.freeze([
     "id": "P1-020",
     "priority": "P1",
     "title": "Main chat/footer end-to-end UX",
-    "details": "The browser passed dock resizing and width persistence at 1,440 × 900 and compact overlay at 620 × 800. Run info retained a restart failure after reload. A live C++ repair inside Codex at 1,280 × 720 confirmed that Run info showed the approval, checkpoint, build and tests after reload. Verify bottom anchoring while streaming, send/regenerate/refresh, toolbar wrapping across 320–768 px, and loaded-model 4K/DPI. Include Load/More, the composer and offline MathML in Windows Edge and fallback coverage.",
+    "details": "The browser passed dock resizing and width persistence at 1,440 × 900 and compact overlay at 620 × 800. Run info retained a restart failure after reload. A live C++ repair inside Codex at 1,280 × 720 confirmed that Run info showed the approval, checkpoint, build and tests after reload. The isolated preview also passed Lab header/tab scrolling at 360 × 800 and normal-width feedback spacing; stale training state and false model-residency labels are repaired. Verify bottom anchoring while streaming, send/regenerate/refresh, remaining toolbar widths across 320–768 px, and loaded-model 4K/DPI. Include Load/More, the composer and offline MathML in Windows Edge and fallback coverage.",
     "status": "open"
   },
   {

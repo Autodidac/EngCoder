@@ -1,7 +1,7 @@
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <expected>
 #include <mutex>
 #include <stop_token>
@@ -72,10 +72,14 @@ public:
         core::EventBus& events);
 
     [[nodiscard]] std::expected<TaskResult, core::Error> run(const TaskRequest&, std::stop_token = {});
+    [[nodiscard]] std::expected<void, core::Error> activate_task_host();
+    [[nodiscard]] std::expected<void, core::Error> record_queued_task(const TaskRequest&);
     [[nodiscard]] bool resolve_approval(std::string_view task_id, std::string_view call_id, bool approved);
 
 private:
     void emit(const TaskRequest&, std::string type, core::json data = core::json::object());
+    [[nodiscard]] std::expected<void, core::Error> persist_task_event(
+        const TaskRequest&, std::string type, core::json data, bool publish);
     [[nodiscard]] std::string system_prompt() const;
 
     core::Config config_;
@@ -96,7 +100,9 @@ private:
         bool approved{false};
     };
 
-    std::atomic_uint64_t sequence_{0};
+    std::mutex event_mutex_;
+    std::uint64_t sequence_{};
+    bool task_host_active_{false};
     std::mutex execution_mutex_;
     std::mutex approval_mutex_;
     std::condition_variable_any approval_cv_;

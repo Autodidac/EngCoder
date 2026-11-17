@@ -72,6 +72,10 @@ For a conversation-first EngCoder, build the Foundation batch around ordinary En
 
 Keep C++ examples in the C++23 addons with independent compile and test evidence. Role-play belongs in a separate addon curriculum. The current built-in addon registry has no dedicated role-play component yet.
 
+Prefer reusable behaviors over exhaustive phrase variants: asking for missing context, following a short instruction, correcting a misunderstanding, tracking a changed fact, and admitting uncertainty. Supply an NPC's role, scene facts, and current objective as inference context; do not teach each character's changing biography to the shared Foundation. Other natural and programming languages need separate curricula/components rather than expanding this English/C++ scope implicitly.
+
+Compare training checkpoints using fresh responses, held-out scores, supervised-token exposure, and actual weight bytes. Repeating a compact dataset does not add new coverage, and a smaller training loss does not prove conversational ability. Keep storage for active weights, candidate weights, optimizer checkpoints, and source evidence separately accounted. Additional addons must justify their own size and measured usefulness; do not create one merely for a greeting variant.
+
 Thumbs-up on an ordinary chat reply saves the exact verified prompt and reply for Learning. Use it for replies that answer the turn naturally, follow the user's preferences, and make sense in context. Record authored and teacher-generated curriculum with their own provenance. The compiler can still exclude saved evidence for scope, privacy, duplication, or insufficient support for a live delta. The active weights change only when a separately trained candidate passes evaluation and is promoted.
 
 ## Candidate lifecycle

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -313,6 +314,7 @@ std::expected<std::uint16_t, core::Error> RuntimeHost::start_server() {
     if (impl_->server_thread.joinable()) {
         impl_->server_thread.join();
     }
+    if (auto active = impl_->runtime.activate_task_host(); !active) return std::unexpected(active.error());
 
     impl_->server_launch_finished.store(false, std::memory_order_release);
     impl_->server_launch_result.store(false, std::memory_order_release);
@@ -370,6 +372,9 @@ std::string RuntimeHost::web_url() const {
 }
 
 bool RuntimeHost::serve_forever() {
+    if (auto active = impl_->runtime.activate_task_host(); !active) {
+        throw std::runtime_error(active.error().message);
+    }
     return impl_->server.listen();
 }
 

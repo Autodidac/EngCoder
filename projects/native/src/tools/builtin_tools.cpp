@@ -230,12 +230,35 @@ void register_builtin_tools(
 
     registry.add(make_tool(
         "workspace.read",
-        "Read a UTF-8/text project file inside the workspace.",
+        "Read a UTF-8/text project file inside the workspace. In candidate mode or with line arguments, "
+        "return a bounded page of complete lines. Use the one-based start_line from next_line to continue.",
         object_schema(
-            {{"path", string_schema()}},
+            {
+                {"path", string_schema()},
+                {"start_line", integer_schema(1, workspace::max_text_file_bytes)},
+                {"max_lines", integer_schema(1, workspace::max_text_page_lines)},
+            },
             {"path"}),
-        [&workspace](const json& arguments, const Context&) -> std::expected<json, core::Error> {
-            const auto result = workspace.read_text(arguments.at("path").get<std::string>());
+        [&workspace](const json& arguments, const Context& context) -> std::expected<json, core::Error> {
+            const auto& path = arguments.at("path").get_ref<const std::string&>();
+            if (context.candidate_mode || arguments.contains("start_line") || arguments.contains("max_lines")) {
+                if ((arguments.contains("start_line") && !arguments.at("start_line").is_number_integer()) ||
+                    (arguments.contains("max_lines") && !arguments.at("max_lines").is_number_integer())) {
+                    return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+                        "start_line and max_lines must be positive integers"});
+                }
+                const auto start_line = arguments.value("start_line", std::uint64_t{1});
+                const auto max_lines = arguments.value("max_lines", std::uint64_t{workspace::default_text_page_lines});
+                if (start_line > workspace::max_text_file_bytes || max_lines > workspace::max_text_page_lines) {
+                    return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+                        "workspace read page is outside the line limits"});
+                }
+                auto page = workspace.read_text_page(path, static_cast<std::size_t>(start_line), static_cast<std::size_t>(max_lines));
+                if (!page) return std::unexpected(page.error());
+                return json{{"content", std::move(page->content)}, {"start_line", start_line},
+                    {"next_line", page->next_line ? json(*page->next_line) : json(nullptr)}};
+            }
+            const auto result = workspace.read_text(path);
             if (!result) {
                 return std::unexpected(result.error());
             }
@@ -282,7 +305,7 @@ void register_builtin_tools(
 
             const auto write_result = workspace.write_text(
                 path,
-                arguments.at("content").get<std::string>(), !context.create_files_only);
+                arguments.at("content").get<std::string>(), !context.candidate_mode);
 
             if (!write_result) {
                 return std::unexpected(write_result.error());
@@ -296,7 +319,7 @@ void register_builtin_tools(
 
     registry.add(make_tool(
         "workspace.patch",
-        "Replace an exact text block in a project file. Fails instead of guessing if the expected block is absent or ambiguous.",
+        "Replace one exact text block in a project file. Uniform CRLF files accept LF blocks and preserve CRLF. Missing or ambiguous matches fail.",
         object_schema(
             {
                 {"path", string_schema()},
@@ -306,42 +329,23 @@ void register_builtin_tools(
             {"path", "expected", "replacement"}),
         [&workspace, &checkpoints](const json& arguments, const Context&) -> std::expected<json, core::Error> {
             const auto path = arguments.at("path").get<std::string>();
-            const auto expected = arguments.at("expected").get<std::string>();
-            const auto replacement = arguments.at("replacement").get<std::string>();
-
-            if (expected.empty()) {
-                return std::unexpected(core::Error{
-                    core::make_error_code(core::Errc::invalid_argument),
-                    "expected block must not be empty",
-                });
-            }
+            const auto& expected = arguments.at("expected").get_ref<const std::string&>();
+            const auto& replacement = arguments.at("replacement").get_ref<const std::string&>();
 
             auto text = workspace.read_text(path);
             if (!text) {
                 return std::unexpected(text.error());
             }
 
-            const auto first = text->find(expected);
-            if (first == std::string::npos) {
-                return std::unexpected(core::Error{
-                    core::make_error_code(core::Errc::invalid_argument),
-                    "expected block not found",
-                });
-            }
-
-            if (text->find(expected, first + expected.size()) != std::string::npos) {
-                return std::unexpected(core::Error{
-                    core::make_error_code(core::Errc::invalid_argument),
-                    "expected block is ambiguous",
-                });
-            }
+            const auto patch = workspace::plan_text_patch(*text, expected, replacement);
+            if (!patch) return std::unexpected(patch.error());
 
             const auto checkpoint = checkpoints.capture(path);
             if (!checkpoint) {
                 return std::unexpected(checkpoint.error());
             }
 
-            text->replace(first, expected.size(), replacement);
+            text->replace(patch->offset, patch->length, patch->replacement);
             const auto write_result = workspace.write_text(path, *text);
             if (!write_result) {
                 return std::unexpected(write_result.error());

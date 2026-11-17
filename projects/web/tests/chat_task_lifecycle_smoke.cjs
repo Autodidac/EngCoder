@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const js = path.resolve(__dirname, '../js');
 const api = fs.readFileSync(path.join(js, 'api.js'), 'utf8');
 const main = fs.readFileSync(path.join(js, 'main.js'), 'utf8');
+const render = fs.readFileSync(path.join(js, 'render.js'), 'utf8');
 const section = (start, end) => api.slice(api.indexOf(start), api.indexOf(end));
 const runtime = 'http://localhost:14321';
 const response = (status, body) => ({ok: status >= 200 && status < 300, status, json: async () => body});
@@ -150,6 +151,85 @@ async function testInvalidEvents() {
   assert.equal(polls, 40, 'Malformed success responses must exhaust the reconnect budget');
 }
 
+async function testRestartTerminalReplay() {
+  const {app, pollEngCoderTask} = harness();
+  app.controller = new AbortController();
+  const state = {content: 'partial reply', lastEventSequence: 12};
+  app.eventActivityLine = () => '';
+  app.captureRawOutput = () => {};
+  app.recordExecutionEvent = (message, event) => { message.lastEventSequence = event.sequence; };
+  app.fetch = async url => {
+    assert.ok(url.endsWith('?after=11'), 'Retry the terminal cursor from a legacy snapshot');
+    return response(200, {events: [{
+      task_id: 't', sequence: 12, type: 'task.failed', data: {error: 'EngCoder restarted'}
+    }]});
+  };
+  const result = await pollEngCoderTask({task_id: 't', session_id: 's'}, {}, state, {},
+    () => assert.fail('The terminal cursor must be saved together with the completed message'));
+  assert.equal(result.kind, 'failed');
+  assert.equal(result.error, 'EngCoder restarted');
+  assert.equal(state.content, 'partial reply');
+
+  app.fetch = async () => response(200, {events: [
+    {task_id: 't', sequence: 12, type: 'model.text_delta', data: {delta: 'partial reply'}},
+    {task_id: 't', sequence: 13, type: 'task.cancelled', data: {}}
+  ]});
+  const resumed = await pollEngCoderTask({task_id: 't', session_id: 's'}, {}, state, {});
+  assert.equal(resumed.kind, 'cancelled');
+  assert.equal(state.lastEventSequence, 13);
+  assert.equal(state.content, 'partial reply', 'Replaying the cursor must not duplicate saved streamed content');
+}
+
+async function testReopenChatWithSavedTask() {
+  const {app, resumeSavedEngCoderTask} = harness();
+  const state = {};
+  const last = {role: 'assistant', runtimeTaskId: 'pending', runtimeSessionId: 'owner', lastEventSequence: 14,
+    approvalRequest: {taskId: 'pending', callId: 'patch'}};
+  const opened = {id: 1, name: 'Owner', messages: [last]};
+  const other = {id: 2, name: 'Other', messages: []};
+  const items = [];
+  const owners = [];
+  const polls = [];
+  let renders = 0;
+  let finish;
+  Object.assign(app, {
+    chats: [opened, other], currentChatId: 2,
+    currentChat: () => app.chats.find(chat => chat.id === app.currentChatId),
+    chatListEl: {set innerHTML(_value) { items.length = 0; }, appendChild: item => items.push(item)},
+    document: {createElement: () => ({dataset: {}, classList: {add() {}},
+      addEventListener(type, callback) { if (type === 'click') this.open = callback; }})},
+    renderActiveChat: () => { ++renders; }, refreshLastUserFromChat: () => {},
+    chatEl: {querySelectorAll: () => [{closest: () => ({__assistantState: state})}]},
+    assistantMessageSnapshot: value => ({...value}),
+    finalizeAssistantState: (message, _timing, reason) => {
+      message.completionReason = reason;
+      message.approvalRequest = null;
+    },
+    eventActivityLine: () => '', captureRawOutput: () => {}, recordExecutionEvent: () => {},
+    resumeSavedEngCoderTask: () => { owners.push(resumeSavedEngCoderTask()); },
+    fetch: (url, options) => {
+      assert.equal(options.method, undefined, 'Reopening the chat must not submit another task');
+      polls.push(url);
+      return new Promise(resolve => { finish = resolve; });
+    },
+  });
+  vm.runInContext(render.slice(render.indexOf('function renderChatList('), render.indexOf('function newChat(')), app);
+  app.renderChatList();
+  items.find(item => item.dataset.id === '1').open();
+  assert.equal(app.currentChatId, 1);
+  assert.equal(polls.length, 1, 'Opening the task chat should attach an observer');
+  assert.match(polls[0], /\/api\/sessions\/owner\/events\?after=13$/);
+  items.find(item => item.dataset.id === '1').open();
+  assert.equal(renders, 1, 'Reselecting the current chat must retain its message elements');
+  assert.equal(polls.length, 1, 'Reselecting during a poll must reuse the active observer');
+  finish(response(200, {events: [{task_id: 'pending', sequence: 15, type: 'task.failed',
+    data: {error: 'EngCoder restarted'}}]}));
+  await Promise.all(owners);
+  assert.equal(last.completionReason, 'engcoder-error');
+  assert.equal(last.approvalRequest, null);
+  assert.equal(polls.length, 1);
+}
+
 (async () => {
   assert.ok(main.indexOf('void resumeSavedEngCoderTask()') > main.indexOf("setStatus(currentChat()"));
   await testStopDuringSubmission('cancelled');
@@ -158,5 +238,7 @@ async function testInvalidEvents() {
   await testRetryStop();
   await testResumeApproval();
   await testInvalidEvents();
+  await testRestartTerminalReplay();
+  await testReopenChatWithSavedTask();
   console.log('PASS: Stop races, approval refresh and stale acknowledgments, and malformed task event responses');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -18,6 +18,10 @@
 namespace engcoder::model {
 namespace {
 
+[[nodiscard]] std::unexpected<core::Error> model_operation_busy(core::Errc code = core::Errc::process_failed) {
+    return std::unexpected(core::Error{core::make_error_code(code),
+        "Another native model operation is in progress. Wait for it to finish and try again."});
+}
 [[nodiscard]] bool path_is_within(const std::filesystem::path& candidate, const std::filesystem::path& root) {
     auto candidate_it = candidate.begin();
     auto root_it = root.begin();
@@ -463,6 +467,8 @@ std::optional<RuntimeModelProfile> NativeModelManager::find(std::string_view id_
 }
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::register_model(const nlohmann::json& spec) {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     try {
         RuntimeModelProfile profile;
         profile.runtime = RuntimeKind::qwen_flash;
@@ -575,6 +581,8 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::register_model(co
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::link_local_gguf(
     std::string_view id_or_uri, const std::filesystem::path& existing_file) {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     // Validate the path before modifying the saved profile. This never copies,
     // downloads, renames, or removes the original file(s).
     auto normalized = normalize_local_gguf_path(existing_file);
@@ -589,11 +597,6 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::link_local_gguf(
         return std::unexpected(core::Error{
             core::make_error_code(core::Errc::model_unavailable),
             "Unknown native model: " + std::string{id_or_uri}});
-    }
-    if (install_state_.value("state", std::string{"idle"}) == "installing") {
-        return std::unexpected(core::Error{
-            core::make_error_code(core::Errc::process_failed),
-            "Wait for the model download to finish before linking local weights"});
     }
 
     auto bytes = local_gguf_set_bytes(*normalized);
@@ -634,8 +637,16 @@ void NativeModelManager::set_install_state(nlohmann::json state) {
     install_state_ = std::move(state);
 }
 
+bool NativeModelManager::install_in_progress() const {
+    const std::scoped_lock lock(mutex_);
+    return install_state_.value("state", std::string{"idle"}) == "installing" ||
+        runtime_install_state_.value("state", std::string{"idle"}) == "installing";
+}
+
 std::expected<nlohmann::json, core::Error> NativeModelManager::install(std::string_view id_or_uri) {
     RuntimeModelProfile profile;
+    std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock()) return model_operation_busy();
     {
         std::scoped_lock lock(mutex_);
         auto found = find_locked(id_or_uri);
@@ -690,12 +701,11 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::install(std::stri
 
     if (install_worker_.joinable()) install_worker_.join();
     set_install_state({{"state", "installing"}, {"model", runtime_model_uri(profile)}, {"display_name", profile.display_name}});
-    install_worker_ = std::jthread([this, profile](std::stop_token stop) {
-        if (stop.stop_requested()) return;
-        auto started = qwen_flash_.ensure_started(profile);
+    auto run = [this, profile](std::stop_token stop) {
+        auto started = qwen_flash_.ensure_started(profile, std::chrono::steady_clock::time_point::max(), stop);
         if (!started) {
             set_install_state({
-                {"state", "failed"},
+                {"state", started.error().code == core::make_error_code(core::Errc::cancelled) ? "cancelled" : "failed"},
                 {"model", runtime_model_uri(profile)},
                 {"error", started.error().message},
                 {"cache", qwen_flash_.cache_status(profile)},
@@ -708,12 +718,20 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::install(std::stri
             {"model", runtime_model_uri(profile)},
             {"cache", qwen_flash_.cache_status(profile)},
         });
-    });
+    };
+    try {
+        install_worker_ = std::jthread(std::move(run));
+    } catch (const std::system_error& error) {
+        set_install_state({{"state", "failed"}, {"model", runtime_model_uri(profile)}, {"error", error.what()}});
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed), error.what()});
+    }
 
     return nlohmann::json{{"state", "installing"}, {"model", runtime_model_uri(profile)}};
 }
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::provision_runtime() {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     if (const auto server = qwen_flash_.discover_server(); !server.empty() && qwen_flash_.runtime_verified()) {
         std::scoped_lock lock(mutex_);
         runtime_install_state_ = {
@@ -723,22 +741,6 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::provision_runtime
             {"verified", true},
         };
         return runtime_install_state_;
-    }
-
-    {
-        std::scoped_lock lock(mutex_);
-        if (runtime_install_state_.value("state", std::string{"idle"}) == "installing") {
-            return std::unexpected(core::Error{
-                core::make_error_code(core::Errc::process_failed),
-                "Qwen Flash runtime installation is already active",
-            });
-        }
-        if (install_state_.value("state", std::string{"idle"}) == "installing") {
-            return std::unexpected(core::Error{
-                core::make_error_code(core::Errc::process_failed),
-                "Wait for the active model download to finish before installing the runtime",
-            });
-        }
     }
 
 #ifdef _WIN32
@@ -778,7 +780,7 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::provision_runtime
         };
     }
 
-    runtime_worker_ = std::jthread([this, executable, arguments](std::stop_token stop) {
+    auto run = [this, executable, arguments](std::stop_token stop) {
         process::Request request;
         request.executable = executable;
         request.arguments = arguments;
@@ -809,7 +811,14 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::provision_runtime
         }
         std::scoped_lock lock(mutex_);
         runtime_install_state_ = std::move(state);
-    });
+    };
+    try {
+        runtime_worker_ = std::jthread(std::move(run));
+    } catch (const std::system_error& error) {
+        const std::scoped_lock lock(mutex_);
+        runtime_install_state_ = {{"state", "failed"}, {"runtime", "qwen-flash"}, {"error", error.what()}};
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed), error.what()});
+    }
 
     return nlohmann::json{
         {"state", "installing"},
@@ -822,6 +831,8 @@ std::expected<std::string, core::Error> NativeModelManager::prepare(
     std::chrono::steady_clock::time_point deadline,
     std::stop_token stop,
     bool reload) {
+    const std::shared_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock()) return model_operation_busy(core::Errc::model_unavailable);
     RuntimeModelProfile profile;
     {
         std::scoped_lock lock(mutex_);
@@ -856,6 +867,8 @@ std::expected<std::string, core::Error> NativeModelManager::prepare_with_local_o
     std::chrono::steady_clock::time_point deadline,
     std::stop_token stop,
     bool reload) {
+    const std::shared_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock()) return model_operation_busy(core::Errc::model_unavailable);
     auto normalized_local = normalize_local_gguf_path(local_path_override);
     if (!normalized_local) {
         return std::unexpected(core::Error{
@@ -935,20 +948,18 @@ std::optional<std::string> NativeModelManager::active_model_uri() const {
 }
 
 void NativeModelManager::stop_active() {
+    // Wait for install admission to publish its worker before requesting Stop.
+    const std::shared_lock operation(operation_mutex_);
+    if (install_worker_.joinable()) install_worker_.request_stop();
     qwen_flash_.stop();
 }
 
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::clear_transient_cache(std::string_view id_or_uri) {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     auto profile = find(id_or_uri);
     if (!profile) return std::unexpected(core::Error{core::make_error_code(core::Errc::model_unavailable), "Unknown native model"});
-    {
-        std::scoped_lock lock(mutex_);
-        if (install_state_.value("state", std::string{}) == "installing") {
-            return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed),
-                "Wait for the model download to finish before clearing temporary cache files"});
-        }
-    }
     if (qwen_flash_.running()) {
         return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed),
             "Unload the native model before clearing temporary cache files"});
@@ -976,9 +987,10 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::clear_transient_c
             name.ends_with(".lock") || name.ends_with(".aria2") || name.ends_with(".incomplete")) return true;
         return ext == ".tmp" || ext == ".part" || ext == ".partial";
     };
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(
-             candidate, std::filesystem::directory_options::skip_permission_denied, ec)) {
-        if (ec) { ec.clear(); continue; }
+    for (std::filesystem::recursive_directory_iterator it(
+             candidate, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const auto& entry = *it;
         if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
         if (!transient(entry.path())) continue;
         // Model weights are never cache-trash. Even a .part-like GGUF name is preserved.
@@ -996,23 +1008,22 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::clear_transient_c
 }
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::delete_downloaded_weights(std::string_view id_or_uri) {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     auto profile = find(id_or_uri);
     if (!profile) return std::unexpected(core::Error{core::make_error_code(core::Errc::model_unavailable), "Unknown native model"});
-    {
-        std::scoped_lock lock(mutex_);
-        if (install_state_.value("state", std::string{}) == "installing") {
-            return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed),
-                "Wait for the model download to finish before deleting downloaded model weights"});
-        }
-    }
-    if (qwen_flash_.running() && qwen_flash_.active_model_id() == profile->id) {
+    return erase_downloaded_weights(*profile);
+}
+
+std::expected<nlohmann::json, core::Error> NativeModelManager::erase_downloaded_weights(const RuntimeModelProfile& profile) {
+    if (qwen_flash_.running() && qwen_flash_.active_model_id() == profile.id) {
         return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed), "Unload the model before deleting downloaded weights"});
     }
-    if (profile->source == ModelSourceKind::local_gguf) {
+    if (profile.source == ModelSourceKind::local_gguf) {
         return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument), "EngCoder will not delete a Local GGUF file. Delete external model files manually if intended."});
     }
 
-    const auto cache = qwen_flash_.cache_status(*profile);
+    const auto cache = qwen_flash_.cache_status(profile);
     const auto path = std::filesystem::path{cache.value("path", std::string{})};
     if (path.empty()) return nlohmann::json{{"weights_deleted", false}, {"bytes_deleted", 0}};
     std::error_code ec;
@@ -1025,10 +1036,12 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::delete_downloaded
     const auto bytes = cache.value("cached_bytes", std::uint64_t{});
     std::filesystem::remove_all(candidate, ec);
     if (ec) return std::unexpected(core::Error{core::make_error_code(core::Errc::process_failed), "Could not delete downloaded model weights: " + ec.message()});
-    return nlohmann::json{{"weights_deleted", true}, {"bytes_deleted", bytes}, {"model", runtime_model_uri(*profile)}, {"profile_preserved", true}};
+    return nlohmann::json{{"weights_deleted", true}, {"bytes_deleted", bytes}, {"model", runtime_model_uri(profile)}, {"profile_preserved", true}};
 }
 
 std::expected<nlohmann::json, core::Error> NativeModelManager::remove(std::string_view id_or_uri, bool delete_cache) {
+    const std::unique_lock operation(operation_mutex_, std::try_to_lock);
+    if (!operation.owns_lock() || install_in_progress()) return model_operation_busy();
     auto profile = find(id_or_uri);
     if (!profile) return std::unexpected(core::Error{core::make_error_code(core::Errc::model_unavailable), "Unknown native model"});
     if (qwen_flash_.running() && qwen_flash_.active_model_id() == profile->id) {
@@ -1037,7 +1050,7 @@ std::expected<nlohmann::json, core::Error> NativeModelManager::remove(std::strin
 
     std::error_code ec;
     if (delete_cache) {
-        auto deleted = delete_downloaded_weights(id_or_uri);
+        auto deleted = erase_downloaded_weights(*profile);
         if (!deleted) return std::unexpected(deleted.error());
     }
     // The built-in profile is deliberately non-removable, but its downloaded

@@ -299,13 +299,15 @@ function recordExecutionEvent(state, event, activityLine = '') {
 
   if (!Array.isArray(state.activityEvents)) state.activityEvents = [];
   if (activityLine) {
-    state.activityEvents.push({
+    const item = {
       sequence: Number(event.sequence) || 0,
       timestampMs: eventMs,
       type: String(event.type || ''),
       text: String(activityLine)
-    });
+    };
+    state.activityEvents.push(item);
     if (state.activityEvents.length > 300) state.activityEvents.splice(0, state.activityEvents.length - 300);
+    if (state.candidateIteration) recordCandidateEvidence(stats, event, item);
   }
 }
 
@@ -324,10 +326,65 @@ function conciseRuntimeError(value) {
   return first.length > 220 ? `${first.slice(0, 217)}…` : first;
 }
 
+function isCandidateEditTool(name) {
+  return name === 'workspace.patch' || name === 'workspace.write';
+}
+
+function candidateCheckpointId(event) {
+  const data = event?.data;
+  const checkpointId = data?.result?.checkpoint_id;
+  return event?.type === 'tool.completed' && isCandidateEditTool(data?.name) &&
+    data?.result?.ok === true && typeof checkpointId === 'string' && /^cp_[A-Za-z0-9_]{1,100}$/.test(checkpointId)
+    ? checkpointId : '';
+}
+
+function recordCandidateEvidence(stats, event, item) {
+  const data = event.data || {};
+  let checkKey = '';
+  switch (event.type) {
+    case 'iteration.check_started':
+    case 'iteration.check_finished':
+      checkKey = `${data.stage}:${data.attempt}:${data.check}`;
+      break;
+    case 'tool.completed':
+      if (!candidateCheckpointId(event)) return;
+      break;
+    case 'tool.approved':
+    case 'tool.denied':
+    case 'tool.review_failed':
+    case 'tool.failed':
+      if (!isCandidateEditTool(data.name)) return;
+      break;
+    case 'verification.completed':
+      if (data.status !== 'candidate build and tests passed') return;
+      break;
+    case 'iteration.repair':
+    case 'iteration.escalated':
+    case 'iteration.escalation_unavailable':
+    case 'iteration.lesson':
+    case 'task.failed':
+    case 'task.cancelled':
+      break;
+    default:
+      return;
+  }
+
+  if (!Array.isArray(stats.candidateEvidence)) stats.candidateEvidence = [];
+  const evidence = stats.candidateEvidence;
+  if (item.sequence > 0 && evidence.some(receipt => receipt?.sequence === item.sequence)) return;
+  if (checkKey) {
+    const prior = evidence.findIndex(receipt => receipt?.checkKey === checkKey);
+    if (prior >= 0) evidence.splice(prior, 1);
+  }
+  evidence.push({ ...item, checkKey });
+  if (evidence.length > 64) evidence.splice(0, evidence.length - 64);
+}
+
 function eventActivityLine(event) {
   const data = event?.data || {};
   const detailed = $('showActivityDetails')?.checked !== false;
   switch (event?.type) {
+    case 'task.queued': return 'Queued request';
     case 'task.created': return 'Accepted request';
     case 'controller.decision': {
       const capability = data.addon ? `${String(data.addon).toUpperCase()} addon` : 'KeyMaker Foundation';
@@ -357,11 +414,14 @@ function eventActivityLine(event) {
     case 'model.tool_call_started': return detailed ? `Prepared tool call · ${data.name || 'unknown'}` : '';
     case 'tool.requested': return `Tool · ${data.name || 'unknown'}`;
     case 'tool.reviewed': return detailed ? `Policy · ${data.name || 'tool'} ${data.disposition || 'reviewed'}` : '';
-    case 'tool.completed': return `Completed tool · ${data.name || 'unknown'}`;
+    case 'tool.completed': {
+      const checkpointId = candidateCheckpointId(event);
+      return checkpointId ? `Checkpoint saved · ${checkpointId}` : `Completed tool · ${data.name || 'unknown'}`;
+    }
     case 'tool.denied': return `Blocked tool · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error || 'policy')}`;
     case 'tool.approval_required': return `Approval required · ${data.name || 'tool'}`;
     case 'tool.approved': return `Approved tool · ${data.name || 'tool'}`;
-    case 'tool.review_failed': return `Tool review failed · ${data.name || 'unknown'}`;
+    case 'tool.review_failed': return `Tool review failed · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error)}`;
     case 'tool.failed': return `Tool failed · ${data.name || 'unknown'} · ${conciseRuntimeError(data.error)}`;
     case 'agent.stall_detected': return 'Changed strategy after repeated action';
     case 'iteration.started': return 'Candidate self-iteration started';
@@ -369,8 +429,8 @@ function eventActivityLine(event) {
     case 'iteration.check_finished': {
       const stage = data.stage === 'baseline' ? 'Baseline' : 'Candidate';
       const attempt = Number.isInteger(data.attempt) && data.attempt > 0 ? ` · attempt ${data.attempt}` : '';
-      const result = event.type === 'iteration.check_started' ? 'running'
-        : data.exit_code === 0 ? 'passed' : `failed${Number.isInteger(data.exit_code) ? ` (exit ${data.exit_code})` : ''}`;
+      const result = event.type === 'iteration.check_started' ? 'started'
+        : data.exit_code === 0 ? 'passed' : Number.isInteger(data.exit_code) ? `failed (exit ${data.exit_code})` : 'result unavailable';
       return `${stage} ${data.check}${attempt} · ${result}`;
     }
     case 'iteration.repair': return `Candidate repair ${data.attempt} of 2`;
@@ -380,7 +440,8 @@ function eventActivityLine(event) {
       ? `Saved verified memory · ${data.lesson} · No weight update`
       : `Verified lesson · ${data.lesson} · No new memory or weight update`;
     case 'iteration.lesson_reused': return `Recalled C++ boundary memory · ${data.lesson}`;
-    case 'verification.completed': return `Verified · ${data.status || 'completed'}`;
+    case 'verification.completed': return data.status === 'candidate build and tests passed'
+      ? 'Candidate build and tests passed' : data.status === 'model_finished' ? 'Model finished' : 'Verification finished';
     case 'task.completed': return 'Completed';
     case 'task.failed': return `Failed · ${conciseRuntimeError(data.error)}`;
     case 'task.cancelled': return 'Stopped';
@@ -511,7 +572,9 @@ async function submitEngCoderTask(sessionId, message, retryModel = '', retryRole
 }
 
 async function pollEngCoderTask(submission, assistantBody, assistantState, timing, persistProgress = () => {}) {
-  let after = Math.max(0, Number(assistantState.lastEventSequence) || 0);
+  const savedSequence = Math.max(0, Number(assistantState.lastEventSequence) || 0);
+  // Older snapshots could persist a terminal cursor before finalizing the message.
+  let after = Math.max(0, savedSequence - 1);
   let pollFailures = 0;
   let pollDelayMs = 100;
 
@@ -530,8 +593,10 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
       let progressPending = false;
       let processedEvents = 0;
       for (const event of payload.events) {
-        after = Math.max(after, Number(event?.sequence) || 0);
+        const sequence = Number(event?.sequence) || 0;
+        after = Math.max(after, sequence);
         if (event?.task_id !== submission.task_id) continue;
+        if (sequence > 0 && sequence <= savedSequence && !terminalFromEvent(event)) continue;
         sawTaskEvent = true;
         if (event.type === 'iteration.started') assistantState.candidateIteration = true;
 
@@ -610,9 +675,8 @@ async function pollEngCoderTask(submission, assistantBody, assistantState, timin
         progressPending = true;
         if (terminal) {
           // Flush the completed content before returning, even on a very
-          // busy backend with many text fragments in one response.
+          // busy backend. The caller saves the terminal cursor with final state.
           updateAssistantMessage(assistantBody, assistantState);
-          persistProgress();
           return terminal;
         }
         // A large event backlog must not monopolize the JS event loop and

@@ -227,11 +227,15 @@ function syncRunInfo() {
     ? state.activityEvents
     : cleanThinkingContent(state.thinking || '').split('\n').filter(Boolean).map(text => ({ text }));
   const timelineOpen = !!state.activityThinkingOpen;
-  const candidateEvidence = events.filter(item =>
+  const savedCandidateEvidence = Array.isArray(stats.candidateEvidence) ? stats.candidateEvidence : [];
+  const candidateEvidence = savedCandidateEvidence.length ? savedCandidateEvidence : events.filter(item =>
     ['iteration.check_started', 'iteration.check_finished', 'iteration.repair',
       'iteration.escalated', 'iteration.escalation_unavailable', 'iteration.lesson'].includes(item.type));
-  const candidate = candidateEvidence.length ? sectionHtml('Candidate repair evidence', candidateEvidence.map(item =>
-    `<div class="activity-line">${esc(item.text || '')}</div>`).join('')) : '';
+  const candidate = candidateEvidence.length ? sectionHtml('Candidate repair evidence', candidateEvidence.map(item => {
+    const text = String(item?.text || '');
+    const label = item?.type === 'iteration.check_started' ? text.replace(/ · running$/, ' · started') : text;
+    return label ? `<div class="activity-line">${esc(label)}</div>` : '';
+  }).join('')) : '';
   const timeline = events.length ? `<section class="activity-section">
     <div class="activity-section-header">Runtime timeline</div>
     <details class="activity-details" data-activity-thinking ${timelineOpen ? 'open' : ''}>
@@ -574,7 +578,7 @@ function canSaveAssistantForLearning(message) {
     message.completionReason === 'engcoder-task' && !isCandidateReply(message);
 }
 
-async function markAssistantVerified(message, button) {
+async function markAssistantVerified(message, button, onSaved) {
   if (!canSaveAssistantForLearning(message)) return;
   if (message?.verifiedForLearning) {
     setVerifyButtonState(button, true);
@@ -606,6 +610,7 @@ async function markAssistantVerified(message, button) {
     verified: true
   };
 
+  const chat = currentChat?.();
   if (button) button.disabled = true;
   try {
     const response = await fetch(`${engcoderBase()}/api/engcoder/learning/evidence`, {
@@ -621,7 +626,6 @@ async function markAssistantVerified(message, button) {
 
     message.sourcePrompt = prompt;
     message.verifiedForLearning = true;
-    const chat = currentChat?.();
     if (chat?.messages) {
       for (let index = chat.messages.length - 1; index >= 0; --index) {
         const item = chat.messages[index];
@@ -640,11 +644,52 @@ async function markAssistantVerified(message, button) {
     showError('');
     saveAll();
     void refreshLearningStatus?.().catch?.(() => {});
+    onSaved?.();
   } catch (error) {
     setVerifyButtonState(button, false);
     showError(`Could not save verified learning evidence: ${String(error?.message || error)}`);
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function removeAssistantLearning(message, verifyButton, controls, ban, onChanged) {
+  const chat = currentChat?.();
+  const prompt = String(message?.sourcePrompt || '').trim();
+  const answer = cleanAssistantContent(message?.content || '').trim();
+  if (!prompt || !answer) {
+    showError('The original learning prompt or answer is missing. Open Learning & memory to manage this item.');
+    return;
+  }
+  controls.forEach(button => { button.disabled = true; });
+  try {
+    let result;
+    if (ban) {
+      result = await banLearningEpisode({ prompt, response: answer });
+    } else {
+      const response = await fetch(`${engcoderBase()}/api/engcoder/memory/recent?limit=100`, { cache: 'no-store' });
+      const recent = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(recent?.error || `Learning HTTP ${response.status}`);
+      const episode = (recent?.items || []).find(item => String(item.prompt || '') === prompt && String(item.response || '') === answer);
+      if (!episode) throw new Error('Learning item was not found. Open Learning & memory and refresh.');
+      result = await removeLearningEpisode(episode);
+    }
+    if (result?.cancelled) return;
+    message.verifiedForLearning = false;
+    for (const item of chat?.messages || []) {
+      if (item?.role === 'assistant' && item.runtimeTaskId === message.runtimeTaskId &&
+          item.runtimeSessionId === message.runtimeSessionId && cleanAssistantContent(item.content || '').trim() === answer) {
+        item.verifiedForLearning = false;
+      }
+    }
+    saveAll();
+    setVerifyButtonState(verifyButton, false);
+    showError(result?.refresh_warning || '');
+    onChanged?.();
+  } catch (error) {
+    showError(`Could not ${ban ? 'ban' : 'remove'} learning evidence: ${String(error?.message || error)}`);
+  } finally {
+    controls.forEach(button => { button.disabled = false; });
   }
 }
 
@@ -832,7 +877,7 @@ function renderAssistantBody(container, message) {
       verifyBtn.type = 'button';
       verifyBtn.className = 'assistant-action-btn verify-action-btn';
       verifyBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v10"></path><path d="M3 10h4v10H3z"></path><path d="M7 18h9.5a2 2 0 0 0 1.9-1.4l2-6A2 2 0 0 0 18.5 8H14l1-4a2 2 0 0 0-2-2l-1 1-5 7"></path></svg>';
-      verifyBtn.addEventListener('click', () => void markAssistantVerified(message, verifyBtn));
+      verifyBtn.addEventListener('click', () => void markAssistantVerified(message, verifyBtn, () => renderAssistantBody(container, message)));
 
       const feedbackStatus = document.createElement('span');
       feedbackStatus.className = 'assistant-feedback-status';
@@ -845,40 +890,20 @@ function renderAssistantBody(container, message) {
       if (canLearn && message?.verifiedForLearning === true) {
         const removeLearn = document.createElement('button');
         removeLearn.type = 'button';
-        removeLearn.className = 'assistant-action-btn';
+        removeLearn.className = 'assistant-action-btn assistant-text-action';
         removeLearn.title = 'Remove from learning';
         removeLearn.setAttribute('aria-label', 'Remove from learning');
         removeLearn.textContent = 'Remove';
-        removeLearn.addEventListener('click', async () => {
-          const prompt = String(message?.sourcePrompt || getLastUserMessageText() || '').trim();
-          const answer = cleanAssistantContent(message?.content || '').trim();
-          if (!prompt || !answer) return;
-          const recent = await fetch(`${engcoderBase()}/api/engcoder/memory/recent?limit=100`, { cache: 'no-store' }).then(r => r.json());
-          const episode = (recent?.items || []).find(item => String(item.prompt || '') === prompt && String(item.response || '') === answer);
-          if (!episode) { showError('Learning item was not found. Open Learning & memory and refresh.'); return; }
-          await removeLearningEpisode(episode);
-          message.verifiedForLearning = false;
-          saveAll();
-          setVerifyButtonState(verifyBtn, false);
-          removeLearn.remove();
-          banLearn.remove();
-        });
         const banLearn = document.createElement('button');
         banLearn.type = 'button';
-        banLearn.className = 'assistant-action-btn';
+        banLearn.className = 'assistant-action-btn assistant-text-action';
         banLearn.title = 'Remove and ban from all future learning';
         banLearn.setAttribute('aria-label', 'Remove and ban from learning');
         banLearn.textContent = 'Ban';
-        banLearn.addEventListener('click', async () => {
-          const episode = { prompt: String(message?.sourcePrompt || getLastUserMessageText() || '').trim(), response: cleanAssistantContent(message?.content || '').trim() };
-          const result = await banLearningEpisode(episode);
-          if (result?.cancelled) return;
-          message.verifiedForLearning = false;
-          saveAll();
-          setVerifyButtonState(verifyBtn, false);
-          removeLearn.remove();
-          banLearn.remove();
-        });
+        const learningControls = [verifyBtn, removeLearn, banLearn];
+        const refreshFeedback = () => renderAssistantBody(container, message);
+        removeLearn.addEventListener('click', () => void removeAssistantLearning(message, verifyBtn, learningControls, false, refreshFeedback));
+        banLearn.addEventListener('click', () => void removeAssistantLearning(message, verifyBtn, learningControls, true, refreshFeedback));
         actions.append(removeLearn, banLearn);
       }
       actions.append(feedbackStatus);
@@ -1030,11 +1055,14 @@ function renderChatList() {
     li.dataset.id = String(chat.id);
     if (chat.id === currentChatId) li.classList.add('active');
     li.addEventListener('click', () => {
-      currentChatId = chat.id;
-      renderChatList();
-      renderActiveChat();
-      refreshLastUserFromChat();
-      saveAll();
+      if (currentChatId !== chat.id) {
+        currentChatId = chat.id;
+        renderChatList();
+        renderActiveChat();
+        refreshLastUserFromChat();
+        saveAll();
+      }
+      void resumeSavedEngCoderTask();
     });
     li.addEventListener('contextmenu', event => {
       event.preventDefault();

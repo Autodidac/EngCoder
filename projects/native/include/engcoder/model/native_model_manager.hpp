@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <stop_token>
@@ -64,10 +65,13 @@ private:
     [[nodiscard]] std::optional<RuntimeModelProfile> find_locked(std::string_view id_or_uri) const;
     void save_profile(const RuntimeModelProfile& profile) const;
     void set_install_state(nlohmann::json state);
+    [[nodiscard]] bool install_in_progress() const;
+    [[nodiscard]] std::expected<nlohmann::json, core::Error> erase_downloaded_weights(const RuntimeModelProfile& profile);
 
     const core::Config& config_;
     std::filesystem::path state_root_;
     std::filesystem::path catalog_root_;
+    std::shared_mutex operation_mutex_;
     mutable std::mutex mutex_;
     std::vector<RuntimeModelProfile> profiles_;
     std::jthread install_worker_;

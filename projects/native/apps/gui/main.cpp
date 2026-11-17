@@ -1256,7 +1256,7 @@ void resolve_desktop_source_paths(engcoder::core::Config& config) {
 
     const auto edge = edge_executable();
     if (!edge) {
-        runtime->stop_server();
+        runtime.reset();
         (void)MessageBoxW(nullptr,
             L"Microsoft Edge was not found. EngCoder will open the diagnostic native UI instead.\n\n"
             L"The shared Desktop/Web interface requires an installed Edge runtime.",
@@ -1268,17 +1268,7 @@ void resolve_desktop_source_paths(engcoder::core::Config& config) {
     // exactly the same local history/theme/settings persistence as Web mode.
     // It is isolated from the user's normal Edge profile, so normal browser
     // sessions cannot absorb the app-mode launch.
-    wchar_t local_app_data[32768]{};
-    const auto local_length = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", local_app_data, static_cast<DWORD>(std::size(local_app_data)));
-    std::filesystem::path profile_root;
-    if (local_length > 0 && local_length < std::size(local_app_data)) {
-        profile_root = local_app_data;
-    } else {
-        profile_root = std::filesystem::temp_directory_path();
-    }
-    profile_root /= "EngCoder";
-    profile_root /= "DesktopProfile";
+    const auto profile_root = config.data_root / "DesktopProfile";
     std::error_code file_error;
     std::filesystem::create_directories(profile_root, file_error);
 
@@ -1299,8 +1289,8 @@ void resolve_desktop_source_paths(engcoder::core::Config& config) {
         edge->c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
         CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &startup, &process);
     if (!launched) {
-        runtime->stop_server();
         const auto error = GetLastError();
+        runtime.reset();
         const auto message = L"Unable to start the EngCoder desktop web surface (Edge error " +
             std::to_wstring(error) + L"). The diagnostic native UI will open instead.";
         (void)MessageBoxW(nullptr, message.c_str(), L"EngCoder desktop UI", MB_OK | MB_ICONWARNING);

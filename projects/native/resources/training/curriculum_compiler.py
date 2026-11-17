@@ -31,6 +31,17 @@ MAX_REPLAY_BUDGET = 256
 MAX_DELTA_LIMIT = 256
 
 
+def bootstrap_step_budget(maximum_steps: int, prior_steps: int, target_steps: int) -> int:
+    """Bound initial and repair passes by the caller's unchanged safety cap."""
+    ceiling = max(1, int(maximum_steps))
+    prior = max(0, int(prior_steps))
+    target = max(0, int(target_steps))
+    if target == 0:
+        return ceiling
+    remaining = target - prior if prior < target else max(1, target // 10)
+    return min(ceiling, remaining)
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingValidationSchedule:
     """Deterministic evaluation boundaries for a bounded training run.

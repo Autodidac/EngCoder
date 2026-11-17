@@ -21,6 +21,10 @@ namespace engcoder::training {
 
 using json = nlohmann::json;
 
+// Worker stdout is a bounded sequence of progress objects followed by one
+// terminal object, which may be pretty-printed across several lines.
+[[nodiscard]] std::expected<json, core::Error> parse_training_worker_output(std::string_view text);
+
 struct TrainingRequest {
     std::string scope{"keymaker-foundation"};
     std::uint32_t max_steps{500};

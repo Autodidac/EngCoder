@@ -16,7 +16,7 @@ struct Context {
     std::string workspace_root;
     std::stop_token stop;
     json addon_models = json::object(); // per-session model assignments, never tool authority
-    bool create_files_only{false};
+    bool candidate_mode{false};
 };
 
 struct Definition {

@@ -8,20 +8,64 @@
 #include <thread>
 
 namespace engcoder::training {
-namespace {
 
-[[nodiscard]] json parse_last_json(std::string_view text) {
-    const auto first = text.find('{');
-    const auto last = text.rfind('}');
-    if (first == std::string_view::npos || last == std::string_view::npos || last < first) {
-        return json{{"output", text}};
+std::expected<json, core::Error> parse_training_worker_output(std::string_view text) {
+    const auto invalid = [](std::string message) -> std::expected<json, core::Error> {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::process_failed),
+            "invalid training worker output: " + std::move(message),
+        });
+    };
+    constexpr std::size_t maximum_output_bytes = 4U * 1024U * 1024U;
+    constexpr std::size_t maximum_nesting = 128;
+    if (text.size() > maximum_output_bytes) return invalid("output exceeds size limit");
+    json terminal;
+    std::size_t cursor = 0;
+    while (cursor < text.size()) {
+        if (text[cursor] == ' ' || text[cursor] == '\t' || text[cursor] == '\r' || text[cursor] == '\n') {
+            ++cursor;
+            continue;
+        }
+        if (!terminal.is_null()) return invalid("unexpected output after terminal result");
+        if (text[cursor] != '{') return invalid("expected a JSON object");
+        const auto start = cursor;
+        std::size_t depth = 0;
+        bool quoted = false;
+        bool escaped = false;
+        do {
+            const auto character = text[cursor++];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == '"') quoted = false;
+            } else if (character == '"') {
+                quoted = true;
+            } else if (character == '{' || character == '[') {
+                if (++depth > maximum_nesting) return invalid("JSON nesting exceeds limit");
+            } else if (character == '}' || character == ']') {
+                if (depth == 0) return invalid("unmatched JSON closing delimiter");
+                --depth;
+            }
+        } while (cursor < text.size() && depth != 0);
+        if (depth != 0 || quoted) return invalid("incomplete JSON object");
+        auto object = json::parse(text.substr(start, cursor - start), nullptr, false);
+        if (object.is_discarded() || !object.is_object()) return invalid("malformed JSON object");
+        if (object.contains("event")) {
+            if (!object["event"].is_string() || object["event"].get_ref<const std::string&>().empty()) {
+                return invalid("invalid progress event");
+            }
+        } else {
+            if (object.contains("status") && !object["status"].is_string()) {
+                return invalid("invalid result status");
+            }
+            terminal = std::move(object);
+        }
     }
-    try {
-        return json::parse(text.substr(first, last - first + 1));
-    } catch (...) {
-        return json{{"output", text}};
-    }
+    if (terminal.is_null()) return invalid("missing terminal result");
+    return terminal;
 }
+
+namespace {
 
 void copy_if_missing(const std::filesystem::path& source, const std::filesystem::path& target) {
     if (std::filesystem::exists(target) || !std::filesystem::is_regular_file(source)) return;
@@ -102,9 +146,10 @@ std::expected<json, core::Error> TrainingService::run_worker(
             "training worker exited with code " + std::to_string(result->exit_code) + ": " + detail,
         });
     }
-    auto payload = parse_last_json(result->stdout_text);
-    payload["_exit_code"] = result->exit_code;
-    if (result->exit_code == 75) payload["status"] = "preempted";
+    auto payload = parse_training_worker_output(result->stdout_text);
+    if (!payload) return std::unexpected(payload.error());
+    (*payload)["_exit_code"] = result->exit_code;
+    if (result->exit_code == 75) (*payload)["status"] = "preempted";
     return payload;
 }
 
@@ -215,7 +260,7 @@ void TrainingService::run_training(std::stop_token stop, TrainingRequest request
         std::scoped_lock lock(mutex_);
         last_status_ = *result;
         last_status_.erase("_exit_code");
-        last_status_["state"] = "completed";
+        last_status_["state"] = result->value("status", std::string{}) == "rejected" ? "rejected" : "completed";
     } else {
         std::scoped_lock lock(mutex_);
         last_status_ = json{

@@ -64,10 +64,13 @@ assert.equal(body.label, 'Run information');
 assert.equal(t1.selected, 'false');assert.equal(t2.selected,'true');
 assert.doesNotMatch(body.innerHTML, /Candidate repair evidence/);
 
-const eventFormatting = api.slice(api.indexOf('function eventActivityLine('), api.indexOf('function terminalFromEvent('));
+const eventFormatting = api.slice(api.indexOf('function conciseRuntimeError('), api.indexOf('function terminalFromEvent('));
 ctxt.$ = () => null;
 vm.runInContext(eventFormatting + '\nthis.formatEvent = eventActivityLine;', ctxt);
+const rejectedPatch = {type: 'tool.review_failed', data: {name: 'workspace.patch', error: 'expected block is ambiguous\nextra detail'}};
+assert.equal(ctxt.formatEvent(rejectedPatch), 'Tool review failed · workspace.patch · expected block is ambiguous');
 ctxt.activeThinkingState.activityEvents = [
+  rejectedPatch,
   {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'tests', attempt: 1, exit_code: 8}},
   {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'build', attempt: 2, exit_code: 0}},
   {type: 'iteration.check_finished', data: {stage: 'candidate', check: 'tests', attempt: 2, exit_code: 0}},
@@ -79,6 +82,48 @@ assert.match(evidence, /Candidate tests · attempt 1 · failed \(exit 8\)/);
 assert.match(evidence, /Candidate build · attempt 2 · passed/);
 assert.match(evidence, /Candidate tests · attempt 2 · passed/);
 assert.doesNotMatch(body.innerHTML, /data-activity-thinking open/);
+assert.match(body.innerHTML, /Tool review failed · workspace\.patch · expected block is ambiguous/);
+
+const recordSource = api.slice(api.indexOf('function freshExecutionStats('), api.indexOf('async function deleteRuntimeSession('));
+vm.runInContext(recordSource + '\nthis.record = recordExecutionEvent;', ctxt);
+const checkpoint = {type: 'tool.completed', data: {name: 'workspace.patch', result: {ok: true, checkpoint_id: 'cp_test_01'}}};
+assert.equal(ctxt.formatEvent(checkpoint), 'Checkpoint saved · cp_test_01');
+assert.equal(ctxt.formatEvent({type: 'tool.completed', data: {name: 'workspace.read', result: checkpoint.data.result}}),
+  'Completed tool · workspace.read');
+assert.equal(ctxt.formatEvent({type: 'tool.completed', data: {name: 'workspace.patch', result: {ok: false, checkpoint_id: 'cp_false'}}}),
+  'Completed tool · workspace.patch');
+assert.equal(ctxt.formatEvent({type: 'tool.completed', data: {name: 'workspace.patch'}}), 'Completed tool · workspace.patch');
+assert.equal(ctxt.formatEvent({type: 'verification.completed', data: {status: 'model_finished'}}), 'Model finished');
+const candidateState = {candidateIteration: true, content: 'Draft', completionState: 'Stopped'};
+const record = (target, event) => ctxt.record(target, event, ctxt.formatEvent(event));
+const checkEvent = (type, check, attempt, detail = {}) => ({type, data: {stage: 'candidate', check, attempt, ...detail}});
+record(candidateState, {type: 'tool.approved', data: {name: 'workspace.patch', source: 'user'}});
+assert.doesNotMatch(JSON.stringify(candidateState.executionStats.candidateEvidence), /Checkpoint saved/);
+record(candidateState, checkpoint);
+record(candidateState, checkEvent('iteration.check_started', 'build', 1));
+record(candidateState, checkEvent('iteration.check_finished', 'build', 1, {exit_code: 0}));
+record(candidateState, checkEvent('iteration.check_started', 'tests', 1));
+record(candidateState, {type: 'task.cancelled', sequence: 12});
+record(candidateState, {type: 'task.cancelled', sequence: 12});
+for (let index = 0; index < 305; index++) record(candidateState, {type: 'model.request', data: {model: 'fixture'}});
+ctxt.activeThinkingState = JSON.parse(JSON.stringify(candidateState));
+ctxt.draw();
+const cancelledEvidence = body.innerHTML.split('Runtime timeline')[0];
+assert.match(cancelledEvidence, /Approved tool · workspace\.patch/);
+assert.match(cancelledEvidence, /Checkpoint saved · cp_test_01/);
+assert.match(cancelledEvidence, /Candidate build · attempt 1 · passed/);
+assert.doesNotMatch(cancelledEvidence, /Candidate build · attempt 1 · started/);
+assert.match(cancelledEvidence, /Candidate tests · attempt 1 · started/);
+assert.match(cancelledEvidence, />Stopped</);
+assert.equal((cancelledEvidence.match(/class="activity-line">Stopped</g) || []).length, 1);
+assert.doesNotMatch(cancelledEvidence, /tests · attempt 1 · (running|passed)/);
+const ordinaryState = {content: 'Ordinary conversation'};
+record(ordinaryState, checkpoint);
+record(ordinaryState, {type: 'verification.completed', data: {status: 'model_finished'}});
+ctxt.activeThinkingState = ordinaryState;
+ctxt.draw();
+assert.doesNotMatch(body.innerHTML, /Candidate repair evidence/);
+
 // Output mode must not expose run metadata or JSON. It only streams generated text.
 ctxt.rightPanelView='output';
 const pre={textContent:'',scrollHeight:100,scrollTop:0,clientHeight:100,dataset:{}};

@@ -37,8 +37,20 @@ std::expected<void, core::Error> TaskScheduler::submit(TaskRequest request) {
         });
     }
 
-    active_.emplace(request.task_id, std::stop_source{});
-    queue_.push_back(std::move(request));
+    const auto entry = active_.try_emplace(request.task_id).first;
+    const auto previous_size = queue_.size();
+    try {
+        queue_.push_back(std::move(request));
+        if (auto recorded = runtime_.record_queued_task(queue_.back()); !recorded) {
+            queue_.pop_back();
+            active_.erase(entry);
+            return recorded;
+        }
+    } catch (...) {
+        if (queue_.size() > previous_size) queue_.pop_back();
+        active_.erase(entry);
+        throw;
+    }
     cv_.notify_one();
     return {};
 }

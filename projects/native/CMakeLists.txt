@@ -166,6 +166,7 @@ if(ENGCODER_BUILD_TESTS)
         tests/test_qwen_output_journal.cpp
         tests/test_native_model_manager.cpp
         tests/test_process.cpp
+        tests/test_training_service.cpp
     )
     target_link_libraries(engcoder_tests PRIVATE engcoder::core Catch2::Catch2WithMain)
     engcoder_set_warnings(engcoder_tests)
@@ -184,6 +185,9 @@ if(ENGCODER_BUILD_TESTS)
         add_test(NAME boundary_lab_routing
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_boundary_lab.py")
         set_tests_properties(boundary_lab_routing PROPERTIES TIMEOUT 30)
+        add_test(NAME training_bootstrap_boundary
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_training_bootstrap.py")
+        set_tests_properties(training_bootstrap_boundary PROPERTIES TIMEOUT 30)
     endif()
 endif()
 

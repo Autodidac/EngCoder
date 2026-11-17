@@ -6,11 +6,14 @@
 #include "engcoder/model/runtime_model.hpp"
 #include "engcoder/models/model_registry.hpp"
 
+#include <array>
+#include <barrier>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -122,6 +125,95 @@ TEST_CASE("runtime model profiles round-trip without collapsing runtime identity
     CHECK(local_round_trip.source == engcoder::model::ModelSourceKind::local_gguf);
     CHECK(local_round_trip.repo.empty());
     CHECK(local_round_trip.local_path == local.local_path);
+}
+
+TEST_CASE("local model cache operations wait for backend installation to finish") {
+    TempTree temp{unique_temp_root("engcoder-native-install-admission")};
+    engcoder::core::Config config;
+    config.workspace = temp.root / "workspace";
+    config.data_root = temp.root / "state";
+    config.model_root = config.data_root / "models";
+    config.model_cache_root = config.data_root / "model-cache";
+    config.qwen_flash_server = temp.root / "absent-server";
+    config.qwen_flash_enabled = false;
+    const auto scripts = config.workspace / "runtime" / "qwen-flash";
+    std::filesystem::create_directories(scripts);
+    std::filesystem::create_directories(config.data_root);
+#ifdef _WIN32
+    std::ofstream(scripts / "install-runtime.ps1") << R"PS(param([string]$StateRoot)
+[IO.File]::WriteAllText((Join-Path $StateRoot 'fixture-entered'), '')
+for ($attempt = 0; $attempt -lt 100; ++$attempt) {
+    if ([IO.File]::Exists((Join-Path $StateRoot 'fixture-release'))) { exit 3 }
+    Start-Sleep -Milliseconds 50
+}
+exit 4
+)PS";
+#else
+    std::ofstream(scripts / "install-runtime.sh") << R"SH(
+: > "$1/fixture-entered"
+for ((attempt=0; attempt<100; ++attempt)); do
+    if [ -f "$1/fixture-release" ]; then exit 3; fi
+    sleep 0.05
+done
+exit 4
+)SH";
+#endif
+    const auto fixture = temp.root / "fixture.gguf";
+    std::ofstream(fixture, std::ios::binary) << "GGUFfixture";
+    engcoder::model::NativeModelManager manager(config, config.data_root);
+    REQUIRE(manager.register_model({{"id", "fixture"}, {"source", "local-gguf"}, {"local_path", fixture.string()}}));
+    std::barrier start(3);
+    std::array<bool, 2> admitted{};
+    const auto submit = [&](std::size_t index) {
+        start.arrive_and_wait();
+        admitted[index] = manager.provision_runtime().has_value();
+    };
+    std::jthread first(submit, 0);
+    std::jthread second(submit, 1);
+    start.arrive_and_wait();
+    first.join();
+    second.join();
+    REQUIRE(admitted[0] != admitted[1]);
+    const auto wait_for = [](auto condition) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+        while (!condition() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return condition();
+    };
+    REQUIRE(wait_for([&] { return std::filesystem::is_regular_file(config.data_root / "fixture-entered"); }));
+    CHECK_FALSE(manager.provision_runtime());
+    CHECK_FALSE(manager.install("fixture"));
+    CHECK_FALSE(manager.prepare("fixture"));
+    CHECK_FALSE(manager.clear_transient_cache("fixture"));
+    const auto deletion = manager.delete_downloaded_weights("fixture");
+    REQUIRE_FALSE(deletion);
+    CHECK(deletion.error().code == engcoder::core::make_error_code(engcoder::core::Errc::process_failed));
+    CHECK_FALSE(manager.remove("fixture", false));
+    CHECK(manager.find("fixture"));
+    CHECK(std::filesystem::is_regular_file(fixture));
+
+    std::ofstream(config.data_root / "fixture-release").put('\n');
+    REQUIRE(wait_for([&] { return manager.describe().at("runtime_install").value("state", "") == "failed"; }));
+    const auto installed = manager.install("fixture");
+    REQUIRE(installed);
+    CHECK(installed->at("state") == "installed");
+    CHECK(std::filesystem::is_regular_file(fixture));
+
+    REQUIRE(manager.register_model({{"id", "cached-fixture"}, {"repo", "example/engcoder-operation-fixture"},
+        {"quant", "Q4_K_M"}}));
+    const auto cached = manager.find("cached-fixture");
+    REQUIRE(cached);
+    const auto cache = std::filesystem::path{manager.qwen_flash().cache_status(*cached).at("path").get<std::string>()};
+    const auto relative = cache.lexically_relative(config.model_cache_root);
+    REQUIRE_FALSE(relative.empty());
+    REQUIRE(*relative.begin() != "..");
+    std::filesystem::create_directories(cache);
+    std::ofstream(cache / "cached-fixture-Q4_K_M.gguf", std::ios::binary) << "GGUFcached-fixture";
+    const auto removed = manager.remove("cached-fixture", true);
+    REQUIRE(removed);
+    CHECK(removed->at("removed") == true);
+    CHECK_FALSE(std::filesystem::exists(cache));
 }
 
 TEST_CASE("native model manager seeds Qwen Flash and derives ids for user models") {

@@ -1154,13 +1154,14 @@ std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
         auto ready = wait_until_ready(deadline, stop);
         lock.lock();
 
-        if (!ready) {
+        const bool cancelled = stop.stop_requested() || active_model_id_ != profile.id;
+        if (!ready || cancelled) {
             if (worker_.joinable()) {
                 worker_.request_stop();
                 worker_.join();
             }
             running_.store(false, std::memory_order_release);
-            if (active_model_id_ != profile.id) {
+            if (cancelled) {
                 return std::unexpected(core::Error{
                     core::make_error_code(core::Errc::cancelled),
                     "Qwen Flash model load was cancelled",
@@ -1169,10 +1170,10 @@ std::expected<std::string, core::Error> QwenFlashRuntime::ensure_started(
             return std::unexpected(ready.error());
         }
 
-        if (active_model_id_ != profile.id || worker_exited_.load(std::memory_order_acquire)) {
+        if (worker_exited_.load(std::memory_order_acquire)) {
             return std::unexpected(core::Error{
                 core::make_error_code(core::Errc::model_unavailable),
-                "Qwen Flash model load was cancelled",
+                "Qwen Flash backend exited during model startup",
             });
         }
 
@@ -1393,9 +1394,10 @@ std::filesystem::path QwenFlashRuntime::cached_model_path(const RuntimeModelProf
 
         std::vector<SplitCandidate> splits;
         std::vector<std::filesystem::path> single_files;
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(
-                 root, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (ec) break;
+        for (std::filesystem::recursive_directory_iterator it(
+                 root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            const auto& entry = *it;
             if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
             const auto raw_name = entry.path().filename().string();
             const auto name = lower(raw_name);
@@ -1495,9 +1497,10 @@ nlohmann::json QwenFlashRuntime::cache_status(const RuntimeModelProfile& profile
         std::error_code ec;
 
         if (std::filesystem::is_directory(root, ec) && !ec) {
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(
-                     root, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (ec) break;
+            for (std::filesystem::recursive_directory_iterator it(
+                     root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                const auto& entry = *it;
                 if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
                 const auto raw_name = entry.path().filename().string();
                 const auto name = lower(raw_name);

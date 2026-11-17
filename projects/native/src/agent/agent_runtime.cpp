@@ -70,7 +70,10 @@ bool iteration_arguments_valid(const model::ToolCall& call) {
         const auto& value = call.arguments.at(key);
         return value.is_number_integer() && value >= 1 && value <= maximum;
     };
-    if (call.name == "workspace.read") return has_text("path");
+    if (call.name == "workspace.read") {
+        return has_text("path") && optional_limit("start_line", workspace::max_text_file_bytes) &&
+            optional_limit("max_lines", workspace::max_text_page_lines);
+    }
     if (call.name == "workspace.search") return has_text("query") && optional_limit("max_results", 500);
     if (call.name == "workspace.tree") return optional_text("path") && optional_limit("max_entries", 5000);
     if (call.name == "git.diff") return optional_text("path") &&
@@ -141,16 +144,32 @@ AgentRuntime::AgentRuntime(
       tools_(tools),
       store_(store),
       events_(events),
-      context_(config_.max_active_context_chars, config_.max_tool_output_chars) {
+      context_(config_.max_active_context_chars, config_.max_tool_output_chars) {}
+
+std::expected<void, core::Error> AgentRuntime::activate_task_host() {
+    std::scoped_lock lock(event_mutex_);
+    if (task_host_active_) return {};
+    if (auto claim = store_.claim_task_host(); !claim) return claim;
     const auto persisted = store_.max_event_sequence();
-    if (persisted) {
-        sequence_.store(*persisted, std::memory_order_relaxed);
-    }
+    if (!persisted) return std::unexpected(persisted.error());
+    sequence_ = *persisted;
+    task_host_active_ = true;
+    return {};
 }
 
 void AgentRuntime::emit(const TaskRequest& request, std::string type, core::json data) {
+    (void)persist_task_event(request, std::move(type), std::move(data), true);
+}
+
+std::expected<void, core::Error> AgentRuntime::record_queued_task(const TaskRequest& request) {
+    if (auto active = activate_task_host(); !active) return active;
+    return persist_task_event(request, "task.queued", core::json::object(), false);
+}
+
+std::expected<void, core::Error> AgentRuntime::persist_task_event(
+    const TaskRequest& request, std::string type, core::json data, bool publish) {
     core::Event event{
-        ++sequence_,
+        0,
         std::chrono::system_clock::now(),
         request.project_id,
         request.session_id,
@@ -158,8 +177,13 @@ void AgentRuntime::emit(const TaskRequest& request, std::string type, core::json
         std::move(type),
         std::move(data),
     };
-    (void)store_.append_event(event);
-    events_.publish(event);
+    const auto persisted = [&] {
+        std::scoped_lock lock(event_mutex_);
+        event.sequence = ++sequence_;
+        return store_.append_event(event);
+    }();
+    if (publish) events_.publish(event);
+    return persisted;
 }
 
 bool AgentRuntime::resolve_approval(
@@ -209,6 +233,7 @@ Operating contract:
 std::expected<TaskResult, core::Error> AgentRuntime::run(
     const TaskRequest& request,
     std::stop_token stop) {
+    if (auto active = activate_task_host(); !active) return std::unexpected(active.error());
     std::unique_lock execution_lock(execution_mutex_);
     training_.begin_inference();
     struct InferencePriorityGuard {
@@ -217,6 +242,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
     } inference_guard{training_};
 
     if (stop.stop_requested()) {
+        emit(request, "task.cancelled");
         return std::unexpected(core::Error{
             core::make_error_code(core::Errc::cancelled),
             "cancelled",
@@ -260,6 +286,8 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             "make the requested checkpointed edits, then summarize the change. The host runs the "
             "configured build and tests when you finish. If a check fails, use the diagnostics to "
             "make a targeted repair before finishing again. Each edit needs operator approval. "
+            "Use workspace.read with start_line and max_lines for the needed source excerpt. "
+            "For an unknown location, search for a specific symbol first and read around the match. "
             "Use workspace.patch to edit an existing file and workspace.write only to create a new file.";
     }
     // These are orchestration guidelines, not undocumented llama.cpp/LM Studio
@@ -852,6 +880,7 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
             {"model", requested_model},
             {"error", prepared.error().message},
         });
+        emit(request, "task.failed", {{"error", prepared.error().message}});
         return std::unexpected(prepared.error());
     }
 
@@ -1188,8 +1217,18 @@ std::expected<TaskResult, core::Error> AgentRuntime::run(
                             "Use an exact patch to change an existing candidate file."});
                     } else if (call.name == "workspace.patch") {
                         auto preimage = candidate_workspace->read_text(relative.generic_string());
-                        if (!preimage) review = std::unexpected(preimage.error());
-                        else approved_preimage = std::move(*preimage);
+                        if (!preimage) {
+                            review = std::unexpected(preimage.error());
+                        } else {
+                            const auto patch = workspace::plan_text_patch(*preimage,
+                                call.arguments.at("expected").get_ref<const std::string&>(),
+                                call.arguments.at("replacement").get_ref<const std::string&>());
+                            if (patch) {
+                                approved_preimage = std::move(*preimage);
+                            } else {
+                                review = std::unexpected(patch.error());
+                            }
+                        }
                     }
                     if (review) approved_path = *path;
                 }

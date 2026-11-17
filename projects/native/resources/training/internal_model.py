@@ -2120,6 +2120,7 @@ def evaluate_generation_readiness(
         generation=generation,
         manifest=manifest,
         device=device,
+        dtype=next(model.parameters()).dtype,
     )
     # These prompts are intentionally absent from the training corpus. They span
     # transformation, dialogue repair, grounded reading, reasoning, and arithmetic
@@ -2936,8 +2937,9 @@ def configure_training_scope(model: EngCoderModel, scope: str) -> list[nn.Parame
                 matched = True
         if not matched:
             raise ValueError(f"unknown internal skill module: {scope}")
-        for parameter in model.final_norm.parameters():
-            parameter.requires_grad = True
+        # Modular updates must not change the shared output normalization: it
+        # affects every lane, even when only one addon supplied the examples.
+        # Full Foundation bootstrap explicitly selects the all/core scope.
     return [parameter for parameter in model.parameters() if parameter.requires_grad]
 
 
@@ -2957,6 +2959,22 @@ def _next_generation(state_root: Path, parent: str) -> str:
             except ValueError:
                 continue
     return f"g{number:06d}"
+
+
+def checkpoint_training_scope_matches(
+    checkpoint: dict[str, Any], model: EngCoderModel, scope: str,
+) -> bool:
+    """Reject old scoped optimizer layouts before restoring shared tensors."""
+    expected = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
+    saved = checkpoint.get("trainable_parameter_names")
+    if saved is not None:
+        return saved == expected
+    # Legacy all-weight checkpoints used this same layout. Legacy scoped
+    # checkpoints trained final_norm as well, so restart from the parent.
+    if canonical_training_scope(scope) not in {"all", "core", "bootstrap", "general"}:
+        return False
+    groups = checkpoint.get("optimizer", {}).get("param_groups", [])
+    return len(groups) == 1 and len(groups[0].get("params", [])) == len(expected)
 
 
 def save_training_checkpoint(
@@ -2989,6 +3007,9 @@ def save_training_checkpoint(
             "scope": scope,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "trainable_parameter_names": [
+                name for name, parameter in model.named_parameters() if parameter.requires_grad
+            ],
             "steps": steps,
             "tokens_seen": tokens_seen,
             "order": order,
@@ -3106,13 +3127,9 @@ def train_candidate(
         # cumulative history so retries cannot overshoot by a full bootstrap.
         # If the target has been reached but canaries still fail, use one small
         # extension window rather than an ineffective one-step retry.
-        if prior_total_steps < effective_bootstrap_target:
-            maximum_steps = min(
-                max(1, int(maximum_steps)),
-                effective_bootstrap_target - prior_total_steps,
-            )
-        else:
-            maximum_steps = max(1, effective_bootstrap_target // 10)
+        maximum_steps = _curriculum_compiler.bootstrap_step_budget(
+            maximum_steps, prior_total_steps, effective_bootstrap_target
+        )
     scope_filter = (
         None
         if training_data_scope in {"all", "core", "bootstrap", "general"}
@@ -3235,6 +3252,14 @@ def train_candidate(
     restored_gradients = False
     if maximum_steps > 0 and checkpoint_path.is_file():
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        checkpoint_scope_matches = checkpoint_training_scope_matches(checkpoint, model, optimizer_scope)
+        if not checkpoint_scope_matches:
+            print(json.dumps({
+                "event": "checkpoint-scope-rejected",
+                "scope": optimizer_scope,
+                "reason": "trainable parameter layout changed; restarting from parent generation",
+                "parent": parent,
+            }), flush=True)
         if (
             checkpoint.get("format") == FORMAT_VERSION
             and checkpoint.get("parent") == parent
@@ -3244,6 +3269,7 @@ def train_candidate(
             and checkpoint.get("bootstrap_policy") == BOOTSTRAP_POLICY
             and checkpoint.get("training_data_fingerprint") == training_data_fingerprint
             and checkpoint.get("anchor_data_fingerprint") == anchor_data_fingerprint
+            and checkpoint_scope_matches
         ):
             model.load_state_dict(checkpoint["model"], strict=True)
             optimizer.load_state_dict(checkpoint["optimizer"])

@@ -31,6 +31,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+if not __package__:
+    # Embeddable Python's isolated search path omits the script directory.
+    # Resolve only our own backend directory, never the caller's working tree.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 try:
     from . import curriculum_guard as curriculum
     from . import curriculum_compiler as curriculum_compiler

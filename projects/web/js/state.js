@@ -409,13 +409,13 @@ function renderModelRoles() {
   const foundation = runtimeArchitecture?.foundation;
   const addons = runtimeArchitecture?.addons || [];
   const items = [
-    controller ? { name: 'Architect', detail: controller.model || 'deterministic fallback', kind: 'controller', pinned: true } : null,
-    foundation ? { name: 'KeyMaker Foundation', detail: foundation.model || 'unassigned', kind: 'foundation', pinned: true } : null,
+    controller ? { name: 'Architect', detail: controller.model || 'deterministic fallback', kind: 'controller', configured: !!controller.model, enabled: controller.enabled !== false } : null,
+    foundation ? { name: 'KeyMaker Foundation', detail: foundation.model || 'unassigned', kind: 'foundation', configured: !!foundation.model } : null,
     ...addons.map(addon => ({
       name: addon.display_name || addon.id,
       detail: addon.model || 'not assigned',
       kind: 'addon',
-      pinned: false,
+      configured: !!addon.model,
       enabled: addon.enabled !== false
     }))
   ].filter(Boolean);
@@ -428,19 +428,19 @@ function renderModelRoles() {
     name.textContent = item.name;
     const meta = document.createElement('span');
     meta.className = 'model-role-meta';
-    meta.textContent = `${item.kind}${item.pinned ? ' · pinned' : ' · on demand'} · ${item.detail}`;
+    meta.textContent = `${item.kind} assignment${item.kind === 'addon' ? ' · on demand' : ''} · ${item.detail}`;
     name.appendChild(meta);
     const badge = document.createElement('span');
     badge.className = 'model-role-select';
-    badge.textContent = item.enabled === false ? 'Disabled' : (item.pinned ? 'Resident' : 'Addon');
+    badge.textContent = item.enabled === false ? 'Disabled' : item.configured ? 'Configured' : item.kind === 'controller' ? 'Fallback' : 'Unassigned';
     row.append(name, badge);
     list.appendChild(row);
   }
 
   const internalAvailable = runtimeArchitecture?.internal_host?.available === true;
   status.textContent = internalAvailable
-    ? `Internal EngCoder generation available · ${addons.filter(a => a.enabled !== false).length} capability addons registered`
-    : `No trained internal generation yet · external models remain available while you bootstrap EngCoder`;
+    ? `Internal EngCoder generation available · ${addons.filter(a => a.enabled !== false).length} capability addons registered. Assignments do not indicate loaded models; see EngCoder Lab → Runtime for live status.`
+    : `No trained internal generation yet. Assignments do not indicate loaded models; see EngCoder Lab → Runtime for live status.`;
 }
 
 function syncReviewModelChoices() {
@@ -1378,15 +1378,40 @@ function renderTrainingRelationship() {
 function renderTrainingStatus(payload) {
   trainingState = payload || null;
   renderTrainingRelationship();
+  const enabled = payload?.enabled === true;
+  const running = payload?.running === true;
+  const paused = payload?.state === 'paused';
+  const disabledControls = {
+    initializeModel: !enabled || running,
+    startTraining: !enabled || running,
+    pauseTraining: !enabled || !running || paused || payload?.state === 'paused-for-inference',
+    resumeTraining: !enabled || !running || !paused,
+    cancelTraining: !enabled || !running,
+    trainingProfile: !enabled || running,
+    trainingScope: !enabled || running,
+    trainingSteps: !enabled || running,
+    checkpointSteps: !enabled || running,
+    refreshTraining: false,
+  };
+  for (const [id, disabled] of Object.entries(disabledControls)) {
+    const control = $(id);
+    if (control) control.disabled = disabled;
+  }
   const host = $('trainingStatus');
   if (!host) return;
   if (!payload) { host.textContent = 'Training status unavailable.'; return; }
-  const progress = payload.progress || {};
-  const state = progress.phase || payload.state || (payload.running ? 'running' : 'idle');
-  const step = Number(progress.step || payload.steps || 0);
-  const max = Number(progress.maximum_steps || payload.max_steps || 0);
-  const scope = progress.training_data_scope || progress.scope || payload.scope || '';
-  const percent = Number(progress.percent);
+  const lifecycle = payload.enabled === false ? 'disabled' : (payload.state || (payload.running ? 'running' : 'idle'));
+  // The progress file survives jobs and process restarts. It must not override
+  // native terminal/queued/paused state or supply a previous job's success text.
+  const finishedPhases = new Set(['complete', 'completed', 'failed', 'rejected', 'repair-required', 'candidate-ready', 'initialized']);
+  const progress = payload.running && lifecycle === 'running' &&
+    !finishedPhases.has(payload.progress?.phase) ? (payload.progress || {}) : {};
+  const outcome = lifecycle === 'completed' && typeof payload.status === 'string' ? payload.status : lifecycle;
+  const state = progress.phase || outcome;
+  const step = Number(progress.step ?? payload.executed_steps ?? payload.steps ?? 0);
+  const max = Number(progress.maximum_steps ?? payload.planned_maximum_steps ?? payload.max_steps ?? 0);
+  const scope = progress.training_data_scope || payload.training_data_scope || progress.scope || payload.scope || '';
+  const percent = progress.percent == null ? NaN : Number(progress.percent);
   host.innerHTML = '';
   const line = document.createElement('div');
   line.className = 'training-status-line';
@@ -1401,9 +1426,12 @@ function renderTrainingStatus(payload) {
     track.appendChild(bar);
     host.appendChild(track);
   }
-  if (progress.message) {
+  const detail = payload.error || progress.message ||
+    (state === 'disabled' ? 'Training is disabled for this runtime.' : '') ||
+    (state === 'rejected' ? 'Candidate rejected. Active weights were not replaced.' : '');
+  if (detail) {
     const message = document.createElement('small');
-    message.textContent = progress.message;
+    message.textContent = detail;
     host.appendChild(message);
   }
 }
@@ -1416,13 +1444,25 @@ async function refreshTrainingStatus() {
   return payload;
 }
 
+async function refreshLearningAfterMutation(result) {
+  try {
+    await refreshLearningStatus();
+    return result;
+  } catch (error) {
+    // A failed read cannot undo an acknowledged mutation. Keep that outcome
+    // distinct so callers update saved feedback instead of claiming failure.
+    const warning = `Learning change saved, but the learning list could not refresh: ${String(error?.message || error)}`;
+    showError(warning);
+    return { ...result, refresh_warning: warning };
+  }
+}
+
 async function removeLearningEpisode(episode) {
   const hash = String(episode?.content_hash || '');
   if (!hash) throw new Error('This learning item has no content hash. Refresh the learning list and try again.');
   if (!window.confirm('Remove this item from EngCoder learning memory?')) return { cancelled: true };
   const result = await postEngCoder('/api/engcoder/learning/remove', { content_hash: hash });
-  await refreshLearningStatus();
-  return result;
+  return refreshLearningAfterMutation(result);
 }
 
 async function banLearningEpisode(episode) {
@@ -1431,8 +1471,7 @@ async function banLearningEpisode(episode) {
   if (!prompt && !response) throw new Error('This learning item has no content to ban.');
   if (!window.confirm('Remove and BAN this content from learning?\n\nEngCoder will refuse this prompt or response content from every future learning-ingestion path until you explicitly unban it.')) return { cancelled: true };
   const result = await postEngCoder('/api/engcoder/learning/ban', { prompt, response, reason: 'user-banned' });
-  await refreshLearningStatus();
-  return result;
+  return refreshLearningAfterMutation(result);
 }
 
 async function unbanLearningItem(item) {
@@ -1440,8 +1479,7 @@ async function unbanLearningItem(item) {
   if (!id) throw new Error('Ban id is missing.');
   if (!window.confirm('Unban this content and allow it to be learned again in the future?')) return { cancelled: true };
   const result = await postEngCoder('/api/engcoder/learning/unban', { ban_id: id });
-  await refreshLearningStatus();
-  return result;
+  return refreshLearningAfterMutation(result);
 }
 
 function renderLearningStatus(status, recent, bans) {

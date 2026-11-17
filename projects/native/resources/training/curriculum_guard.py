@@ -484,6 +484,14 @@ def enforce_namespace(namespace: argparse.Namespace) -> argparse.Namespace:
 
     if not ready:
         namespace.scope = ENGLISH_TARGET
+        # Native start/resume does not pass a bootstrap target. A cold
+        # Foundation must train its shared backbone, not only an addon on top
+        # of random frozen weights. Preserve explicit cumulative targets and
+        # leave the caller's per-run safety cap unchanged.
+        if int(getattr(namespace, "bootstrap_target_steps", 0) or 0) <= 0:
+            namespace.bootstrap_target_steps = max(
+                1, int(getattr(namespace, "max_steps", 1) or 1)
+            )
         if hasattr(namespace, "seed_dataset"):
             namespace.seed_dataset = filter_dataset(
                 namespace.seed_dataset,

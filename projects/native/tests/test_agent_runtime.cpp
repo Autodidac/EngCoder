@@ -45,14 +45,24 @@ public:
             CHECK(request.messages.back().content.find(boundary ? "remaining capacity" : "missing fixture symbol") != std::string::npos);
         }
         if (turn % 2 == 0) {
+            const std::string prefix = turn == 0 ? "original" : "edited " + std::to_string(turn / 2);
             return engcoder::model::ModelResponse{.tool_calls = {
                 {"unexpected-" + std::to_string(turn), "process.run", {{"executable", "ctest"}}},
                 {"protected-" + std::to_string(turn), "workspace.patch",
                     {{"path", boundary ? "tests.cpp" : "build/test.cpp"}, {"expected", "old"}, {"replacement", "new"}}},
                 {"overwrite-" + std::to_string(turn), "workspace.write",
                     {{"path", "fixture.cpp"}, {"content", "unreviewed whole-file overwrite"}}},
+                {"empty-" + std::to_string(turn), "workspace.patch",
+                    {{"path", "fixture.cpp"}, {"expected", ""}, {"replacement", "unused"}}},
+                {"missing-" + std::to_string(turn), "workspace.patch",
+                    {{"path", "fixture.cpp"}, {"expected", "missing before approval"}, {"replacement", "unused"}}},
+                {"ambiguous-" + std::to_string(turn), "workspace.patch",
+                    {{"path", "fixture.cpp"}, {"expected", "aaa"}, {"replacement", "unused"}}},
+                {"unchanged-" + std::to_string(turn), "workspace.patch",
+                    {{"path", "fixture.cpp"}, {"expected", "aaaa\nfooter"}, {"replacement", "aaaa\r\nfooter"}}},
                 {"edit-" + std::to_string(turn), "workspace.patch",
-                    {{"path", "fixture.cpp"}, {"expected", "old"}, {"replacement", "new"}}},
+                    {{"path", "fixture.cpp"}, {"expected", prefix + "\naaaa\nfooter"},
+                        {"replacement", "edited " + std::to_string(turn / 2 + 1) + "\naaaa\nfooter"}}},
             }};
         }
         return engcoder::model::ModelResponse{.text = "Candidate change summary"};
@@ -119,6 +129,7 @@ public:
 
     std::expected<engcoder::model::json, engcoder::core::Error> prepare(std::string_view model) override {
         requested_prepare_model = std::string{model};
+        if (prepare_error) return std::unexpected(*prepare_error);
         return engcoder::model::json{
             {"model", "qwenflash://native-test"},
             {"effective_context_tokens", 81920},
@@ -144,6 +155,7 @@ public:
     }
 
     std::optional<engcoder::model::ModelRequest> last_request;
+    std::optional<engcoder::core::Error> prepare_error;
     std::string requested_prepare_model;
 };
 class ToolCallingModelProvider final : public engcoder::model::IModelProvider {
@@ -391,6 +403,60 @@ TEST_CASE("learning provenance excludes completed candidate runs") {
     CHECK_FALSE(wrong_session->has_value());
 }
 
+TEST_CASE("only the task host reconciles interrupted task events once") {
+    using namespace engcoder;
+    const auto root = std::filesystem::temp_directory_path() / "engcoder-task-restart-recovery";
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    const auto path = root / "events.sqlite";
+    const auto append = [&](persistence::SessionStore& store, std::uint64_t sequence,
+        std::string task, std::string type) {
+        REQUIRE(store.append_event({.sequence = sequence, .project_id = "default", .session_id = "session",
+            .task_id = std::move(task), .type = std::move(type)}));
+    };
+    {
+        persistence::SessionStore host(path);
+        REQUIRE(host.claim_task_host());
+        append(host, 1, "pending", "task.queued");
+        append(host, 2, "pending", "task.created");
+        append(host, 3, "pending", "task.awaiting_approval");
+        append(host, 4, "never-started", "task.queued");
+        append(host, 5, "legacy", "task.created");
+        append(host, 6, "finished", "task.created");
+        append(host, 7, "finished", "task.completed");
+        append(host, 8, "cancelled", "task.queued");
+        append(host, 9, "cancelled", "task.cancelled");
+        append(host, 10, "failed", "task.queued");
+        append(host, 11, "failed", "task.failed");
+
+        persistence::SessionStore other(path);
+        const auto refused = other.claim_task_host();
+        REQUIRE_FALSE(refused);
+        CHECK(refused.error().message.find("Another EngCoder task host") != std::string::npos);
+        CHECK(other.max_event_sequence() == 11);
+    }
+    {
+        persistence::SessionStore restarted(path);
+        REQUIRE(restarted.claim_task_host());
+        const auto events = restarted.events_after("session", 11);
+        REQUIRE(events);
+        REQUIRE(events->size() == 3);
+        const std::vector<std::string> tasks{"pending", "never-started", "legacy"};
+        for (std::size_t index = 0; index < events->size(); ++index) {
+            const auto& event = events->at(index);
+            CHECK(event.sequence == 12 + index);
+            CHECK(event.task_id == tasks.at(index));
+            CHECK(event.type == "task.failed");
+            CHECK(event.data.at("reason") == "runtime_restart");
+        }
+    }
+    persistence::SessionStore reopened(path);
+    REQUIRE(reopened.claim_task_host());
+    CHECK(reopened.max_event_sequence() == 14);
+}
+
 TEST_CASE("candidate iteration requires approved edits and native validation") {
     using namespace engcoder;
     const auto root = std::filesystem::temp_directory_path() / "engcoder-candidate-iteration";
@@ -415,7 +481,10 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     const bool boundary = GENERATE(false, true);
     const bool stronger_available = GENERATE(false, true);
     const bool changed_while_pending = GENERATE(false, true);
-    std::ofstream(root / "fixture.cpp") << "original";
+    const auto reset_candidate = [&] {
+        std::ofstream(root / "fixture.cpp", std::ios::binary) << "original\r\naaaa\r\nfooter\r\n";
+    };
+    reset_candidate();
     if (boundary) {
         config.iteration_boundary_source = "fixture.cpp";
         config.iteration_boundary_rule = "capacity";
@@ -440,7 +509,7 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
         [&](const core::json& args, const tools::Context&) -> std::expected<core::json, core::Error> {
             ++edits;
             CHECK(args.at("path") == "fixture.cpp");
-            if (boundary) std::ofstream(root / "fixture.cpp") << "edited " << edits;
+            std::ofstream(root / "fixture.cpp", std::ios::binary) << "edited " << edits << "\r\naaaa\r\nfooter\r\n";
             return core::json{{"ok", true}, {"checkpoint_id", "fixture"}};
         }});
     tools.add({{"process.run", "fixture process", core::json::object()},
@@ -463,6 +532,7 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     const auto subscription = events.subscribe([&](const core::Event& event) {
         if (event.type == "task.awaiting_approval") {
             CHECK(event.data.at("tool") == "workspace.patch");
+            CHECK(event.data.at("call_id").get<std::string>().starts_with("edit-"));
             if (changed_while_pending) std::ofstream(root / "fixture.cpp") << "newer operator content";
             CHECK(runtime.resolve_approval(event.task_id, event.data.at("call_id").get<std::string>(), !deny));
         }
@@ -511,9 +581,10 @@ TEST_CASE("candidate iteration requires approved edits and native validation") {
     }
     if (!result) CHECK(learning.recent().at("items").empty());
     if (result && boundary) {
-        std::ofstream(root / "fixture.cpp") << "original";
+        reset_candidate();
         model.turns = 0;
         model.expect_memory = true;
+        edits = 0;
         checks.clear();
         const auto repeated = runtime.run({.project_id = "candidate", .session_id = "iteration-second",
             .task_id = "iteration-repeat", .user_message = "Check a second boundary fixture.",
@@ -722,20 +793,55 @@ TEST_CASE("agent runtime adopts the model assigned by provider preparation") {
             .auto_route = false,
         };
 
-        const auto result = runtime.run(request);
-        REQUIRE(result);
-        REQUIRE(result->final_text == "assigned-model-ok");
-        REQUIRE(model.requested_prepare_model == "auto");
-        REQUIRE(model.last_request.has_value());
-        CHECK(model.last_request->model == "qwenflash://native-test");
+        SECTION("uses the assigned model for generation") {
+            const auto result = runtime.run(request);
+            REQUIRE(result);
+            REQUIRE(result->final_text == "assigned-model-ok");
+            REQUIRE(model.requested_prepare_model == "auto");
+            REQUIRE(model.last_request.has_value());
+            CHECK(model.last_request->model == "qwenflash://native-test");
 
-        const auto persisted = store.events_after(request.session_id, 0);
-        REQUIRE(persisted);
-        const auto request_event = std::ranges::find_if(*persisted, [](const engcoder::core::Event& event) {
-            return event.type == "model.request";
-        });
-        REQUIRE(request_event != persisted->end());
-        CHECK(request_event->data.value("model", std::string{}) == "qwenflash://native-test");
+            const auto persisted = store.events_after(request.session_id, 0);
+            REQUIRE(persisted);
+            const auto request_event = std::ranges::find_if(*persisted, [](const engcoder::core::Event& event) {
+                return event.type == "model.request";
+            });
+            REQUIRE(request_event != persisted->end());
+            CHECK(request_event->data.value("model", std::string{}) == "qwenflash://native-test");
+        }
+
+        SECTION("cancellation before execution persists exactly one terminal event") {
+            std::stop_source stopped;
+            stopped.request_stop();
+            const auto result = runtime.run(request, stopped.get_token());
+            REQUIRE_FALSE(result);
+            CHECK(result.error().code == engcoder::core::make_error_code(engcoder::core::Errc::cancelled));
+            CHECK(model.requested_prepare_model.empty());
+            CHECK_FALSE(model.last_request);
+            const auto persisted = store.events_after(request.session_id, 0);
+            REQUIRE(persisted);
+            REQUIRE(persisted->size() == 1);
+            CHECK(persisted->front().task_id == request.task_id);
+            CHECK(persisted->front().type == "task.cancelled");
+        }
+
+        SECTION("preparation failure persists the original error and terminal event") {
+            model.prepare_error = engcoder::core::Error{
+                engcoder::core::make_error_code(engcoder::core::Errc::model_generation_error), "fixture cannot prepare model"};
+            const auto result = runtime.run(request);
+            REQUIRE_FALSE(result);
+            CHECK(result.error().message == model.prepare_error->message);
+            CHECK_FALSE(model.last_request);
+            const auto persisted = store.events_after(request.session_id, 0);
+            REQUIRE(persisted);
+            REQUIRE(persisted->size() >= 2);
+            CHECK((*persisted)[persisted->size() - 2].type == "residency.failed");
+            CHECK(persisted->back().type == "task.failed");
+            CHECK(persisted->back().data.value("error", std::string{}) == model.prepare_error->message);
+            CHECK(std::ranges::count_if(*persisted, [](const engcoder::core::Event& event) {
+                return event.type == "task.failed" || event.type == "task.cancelled" || event.type == "task.completed";
+            }) == 1);
+        }
     }
 
     std::filesystem::remove_all(root);

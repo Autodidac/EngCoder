@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -16,6 +17,64 @@ bool is_ignored(const std::filesystem::path& p) {
     }
     return false;
 }
+
+bool has_uniform_crlf(std::string_view text) {
+    auto newline = text.find_first_of("\r\n");
+    if (newline == std::string_view::npos) return false;
+
+    while (newline != std::string_view::npos) {
+        if (text.substr(newline, 2) != "\r\n") return false;
+        newline = text.find_first_of("\r\n", newline + 2);
+    }
+    return true;
+}
+
+std::expected<std::string, core::Error> patch_text_as_crlf(std::string_view text) {
+    std::string result;
+    result.reserve(text.size());
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const char byte = text[index];
+        if (byte == '\r' && (index + 1 == text.size() || text[index + 1] != '\n')) {
+            return std::unexpected(core::Error{
+                core::make_error_code(core::Errc::invalid_argument),
+                "patch text contains a standalone carriage return in a CRLF file",
+            });
+        }
+        if (byte == '\n' && (index == 0 || text[index - 1] != '\r')) result.push_back('\r');
+        result.push_back(byte);
+    }
+    return result;
+}
+
+std::unexpected<core::Error> invalid_patch(std::string message) {
+    return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument), std::move(message)});
+}
+}
+
+std::expected<TextPatch, core::Error> plan_text_patch(
+    std::string_view source, std::string_view expected, std::string_view replacement) {
+    if (expected.empty()) return invalid_patch("expected block must not be empty");
+
+    std::string adjusted_expected;
+    std::string adjusted_replacement;
+    if (has_uniform_crlf(source)) {
+        auto expected_crlf = patch_text_as_crlf(expected);
+        if (!expected_crlf) return std::unexpected(expected_crlf.error());
+        auto replacement_crlf = patch_text_as_crlf(replacement);
+        if (!replacement_crlf) return std::unexpected(replacement_crlf.error());
+        adjusted_expected = std::move(*expected_crlf);
+        adjusted_replacement = std::move(*replacement_crlf);
+        expected = adjusted_expected;
+        replacement = adjusted_replacement;
+    }
+
+    const auto first = source.find(expected);
+    if (first == std::string_view::npos) return invalid_patch("expected block not found");
+    if (source.find(expected, first + 1) != std::string_view::npos) {
+        return invalid_patch("expected block is ambiguous");
+    }
+    if (expected == replacement) return invalid_patch("replacement does not change the expected block");
+    return TextPatch{first, expected.size(), std::string{replacement}};
 }
 
 Workspace::Workspace(std::filesystem::path root) : root_(std::filesystem::weakly_canonical(std::move(root))) {
@@ -46,6 +105,46 @@ std::expected<std::string, core::Error> Workspace::read_text(std::string_view re
     if (!ec && size > max_bytes) return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), "file exceeds read limit"});
     std::ifstream in(*path, std::ios::binary); if (!in) return std::unexpected(core::Error{core::make_error_code(core::Errc::io_error), "unable to open file"});
     std::ostringstream ss; ss << in.rdbuf(); return ss.str();
+}
+
+std::expected<TextPage, core::Error> Workspace::read_text_page(
+    std::string_view relative, std::size_t start_line, std::size_t max_lines) const {
+    if (start_line == 0 || start_line > max_text_file_bytes || max_lines == 0 || max_lines > max_text_page_lines) {
+        return std::unexpected(core::Error{
+            core::make_error_code(core::Errc::invalid_argument), "workspace read page is outside the line limits"});
+    }
+    const auto contents = read_text(relative);
+    if (!contents) return std::unexpected(contents.error());
+
+    const std::string_view text = *contents;
+    std::size_t start = 0;
+    for (std::size_t line = 1; line < start_line; ++line) {
+        const auto newline = text.find('\n', start);
+        if (newline == std::string_view::npos || newline + 1 == text.size()) {
+            return std::unexpected(core::Error{
+                core::make_error_code(core::Errc::invalid_argument), "start_line is past the end of the file"});
+        }
+        start = newline + 1;
+    }
+
+    std::size_t end = start;
+    std::size_t lines = 0;
+    while (end < text.size() && lines < max_lines) {
+        const auto newline = text.find('\n', end);
+        const auto next = newline == std::string_view::npos ? text.size() : newline + 1;
+        if (next - start > max_text_page_bytes) break;
+        end = next;
+        ++lines;
+    }
+    if (end == start && end < text.size()) {
+        return std::unexpected(core::Error{core::make_error_code(core::Errc::invalid_argument),
+            "Line " + std::to_string(start_line) + " exceeds the read page byte limit. Try start_line " +
+            std::to_string(start_line + 1) + " to skip it."});
+    }
+    return TextPage{
+        .content = std::string{text.substr(start, end - start)},
+        .next_line = end < text.size() ? std::optional{start_line + lines} : std::nullopt,
+    };
 }
 
 std::expected<void, core::Error> Workspace::write_text(
